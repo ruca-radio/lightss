@@ -122,7 +122,7 @@ class TestIsAvailable:
 
 class TestRecognizeSync:
     def test_running_event_loop_uses_separate_loop(self, monkeypatch):
-        async def fake_recognize_microphone(duration, sample_rate):
+        async def fake_recognize_microphone(duration, sample_rate, device=None):
             return {"title": "Song", "artist": "Artist"}
 
         def fail_run_coroutine_threadsafe(coro, loop):

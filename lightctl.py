@@ -606,6 +606,29 @@ def save_config(config: dict) -> None:
         json.dump(config, f, indent=2)
 
 
+def get_mic_device() -> str | int | None:
+    """Return the preferred microphone device for sounddevice.
+
+    Priority: LIGHT_MIC_DEVICE env var → config mic_device key →
+    auto-detect first USB audio input → None (sounddevice default).
+    """
+    env = os.environ.get("LIGHT_MIC_DEVICE", "").strip()
+    if env:
+        return int(env) if env.isdigit() else env
+    cfg_val = load_config().get("mic_device", "")
+    if cfg_val:
+        return int(cfg_val) if str(cfg_val).isdigit() else str(cfg_val)
+    # Auto-detect: prefer USB audio input devices over built-in
+    try:
+        import sounddevice as sd  # type: ignore[import-untyped]
+        for dev in sd.query_devices():
+            if dev.get("max_input_channels", 0) > 0 and "USB" in dev.get("name", ""):
+                return dev["index"]
+    except Exception:
+        pass
+    return None
+
+
 # ---------------------------------------------------------------------------
 # HTTP client
 # ---------------------------------------------------------------------------
@@ -901,6 +924,8 @@ def run_mode1(
     blocksize = 1024
 
     logger.info("Mode 1 listening on the default microphone. Press Ctrl+C to stop.")
+    if device is None:
+        device = get_mic_device()
     if isinstance(device, str) and device.isdigit():
         device = int(device)
     samplerate = resolve_input_samplerate(sd, device, samplerate)

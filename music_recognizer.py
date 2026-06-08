@@ -11,6 +11,8 @@ from typing import Any
 
 import numpy as np
 
+import lightctl
+
 logger = logging.getLogger("music_recognizer")
 
 # Optional dependencies — gracefully degrade if unavailable
@@ -48,25 +50,27 @@ DEFAULT_DURATION = 5.0
 DEFAULT_SAMPLE_RATE = 0  # 0 = auto-detect from device at runtime
 
 
-def _get_device_samplerate() -> int:
-    """Return the default input device's native sample rate."""
+def _get_device_samplerate(device: str | int | None = None) -> int:
+    """Return the native sample rate of the given (or default) input device."""
     try:
-        info = sd.query_devices(kind="input")
+        info = sd.query_devices(device=device, kind="input") if device is not None else sd.query_devices(kind="input")
         return int(info.get("default_samplerate", 44100))
     except Exception:
         return 44100
 
 
-def _record_audio(duration: float, sample_rate: int) -> np.ndarray:
-    """Record audio from the default input device."""
+def _record_audio(duration: float, sample_rate: int, device: str | int | None = None) -> np.ndarray:
+    """Record audio from the preferred input device."""
     if not _sounddevice_available:
         raise RuntimeError("sounddevice is not available")
+    if device is None:
+        device = lightctl.get_mic_device()
     if sample_rate == 0:
-        sample_rate = _get_device_samplerate()
-    logger.info("Recording %.1fs from microphone @ %d Hz...", duration, sample_rate)
+        sample_rate = _get_device_samplerate(device)
+    logger.info("Recording %.1fs from microphone @ %d Hz (device=%r)...", duration, sample_rate, device)
     frames = int(duration * sample_rate)
     # Record as float32, then convert to int16
-    recording = sd.rec(frames, samplerate=sample_rate, channels=1, dtype=np.float32)
+    recording = sd.rec(frames, samplerate=sample_rate, channels=1, dtype=np.float32, device=device)
     sd.wait()
     # Convert float32 [-1.0, 1.0] to int16
     int16_data = np.clip(recording * 32767, -32768, 32767).astype(np.int16)
@@ -135,6 +139,7 @@ def _parse_shazam_result(result: dict[str, Any]) -> dict[str, Any] | None:
 async def recognize_microphone(
     duration: float = DEFAULT_DURATION,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
+    device: str | int | None = None,
 ) -> dict[str, Any] | None:
     """Record audio from the microphone and recognize the song via Shazam.
 
@@ -148,9 +153,11 @@ async def recognize_microphone(
     if AudioSegment is None:
         raise RuntimeError("pydub is not available")
 
+    if device is None:
+        device = lightctl.get_mic_device()
     if sample_rate == 0:
-        sample_rate = _get_device_samplerate()
-    audio_data = await asyncio.to_thread(_record_audio, duration, sample_rate)
+        sample_rate = _get_device_samplerate(device)
+    audio_data = await asyncio.to_thread(_record_audio, duration, sample_rate, device)
     segment = _make_audio_segment(audio_data, sample_rate)
 
     audio_buf = io.BytesIO()
@@ -169,12 +176,13 @@ async def recognize_microphone(
 def recognize_sync(
     duration: float = DEFAULT_DURATION,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
+    device: str | int | None = None,
 ) -> dict[str, Any] | None:
     """Synchronous wrapper around :func:`recognize_microphone`."""
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(recognize_microphone(duration, sample_rate))
+        return asyncio.run(recognize_microphone(duration, sample_rate, device))
 
     result: dict[str, Any] | None = None
     error: BaseException | None = None
@@ -182,7 +190,7 @@ def recognize_sync(
     def run_in_thread() -> None:
         nonlocal result, error
         try:
-            result = asyncio.run(recognize_microphone(duration, sample_rate))
+            result = asyncio.run(recognize_microphone(duration, sample_rate, device))
         except BaseException as exc:
             error = exc
 
