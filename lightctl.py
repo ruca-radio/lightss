@@ -633,14 +633,19 @@ def get_mic_device() -> str | int | None:
 # HTTP client
 # ---------------------------------------------------------------------------
 
+_WLED_MIN_POST_INTERVAL = 0.15  # seconds between consecutive POSTs to avoid 503s
+
 @dataclass
 class LightClient:
     host: str = DEFAULT_HOST
     timeout: float = 2.5
     dry_run: bool = False
+    _last_post_time: float = 0.0
+    _post_lock: threading.Lock = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         self.host = normalize_host(self.host)
+        self._post_lock = threading.Lock()
 
     @property
     def json_url(self) -> str:
@@ -780,14 +785,19 @@ class LightClient:
             logger.info("dry-run: %s", body.decode("utf-8"))
             return
 
-        request = urllib.request.Request(
-            self.state_url,
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with self._request_with_retry(request) as response:
-            response.read()
+        with self._post_lock:
+            elapsed = time.time() - self._last_post_time
+            if elapsed < _WLED_MIN_POST_INTERVAL:
+                time.sleep(_WLED_MIN_POST_INTERVAL - elapsed)
+            request = urllib.request.Request(
+                self.state_url,
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with self._request_with_retry(request) as response:
+                response.read()
+            self._last_post_time = time.time()
 
 
 # ---------------------------------------------------------------------------

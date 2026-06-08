@@ -994,6 +994,10 @@ def system_knowledge_prompt() -> str:
         "EDM or pop; deep reds and purples with slow pulse for metal or dark ambient; bright warm tones "
         "for reggae or funk. Match the color palette and effect tempo to the song's emotional feel. "
         "Mention the song in your response when relevant. "
+        "When the user specifies an explicit numeric value — 'set brightness to 241', "
+        "'set RGBW to 255 0 0 0', 'temperature 5000K', 'effect 28 speed 200' — use that exact "
+        "value in the action. Do not substitute, approximate, or override explicit user values "
+        "with your own aesthetic judgement. Explicit commands are instructions, not suggestions. "
         "Never use blink, strobe, flash, lightning, sparkle, fireworks, or seizure-like effects. "
         f"Allowed effect ids are: {safe_effect_prompt()}. "
         "Use chase/rainbow/flow effects when the user asks for motion. "
@@ -1701,10 +1705,10 @@ def payload_for_action(action: str, data: dict[str, Any]) -> lightctl.WledPayloa
 
 
 # ---------------------------------------------------------------------------
-# Rate limiting
+# AI request serialisation — last-submitted request wins
 # ---------------------------------------------------------------------------
-_ai_last_request: dict[str, float] = {}
-_AI_RATE_LIMIT_SEC = 5.0
+_ai_sequence: int = 0
+_ai_sequence_lock = threading.Lock()
 _AI_MAX_PROMPT_LEN = 2000
 
 
@@ -1928,20 +1932,25 @@ def make_handler(state: GuiState):
                     prompt = str(data.get("prompt", "")).strip()
                     if not prompt:
                         raise ValueError("Prompt is required.")
-                    client_ip = self.client_address[0]
-                    now = time.time()
-                    if client_ip in _ai_last_request and now - _ai_last_request[client_ip] < _AI_RATE_LIMIT_SEC:
-                        self.respond_json({"ok": False, "error": "Rate limited. Please wait 5 seconds."}, status=429)
-                        return
                     if len(prompt) > _AI_MAX_PROMPT_LEN:
                         self.respond_json({"ok": False, "error": "Prompt too long (max 2000 chars)."}, status=400)
                         return
-                    _ai_last_request[client_ip] = now
+                    with _ai_sequence_lock:
+                        global _ai_sequence
+                        _ai_sequence += 1
+                        my_seq = _ai_sequence
                     now_playing = data.get("now_playing")
                     if not isinstance(now_playing, dict):
                         now_playing = get_now_playing()
                     device_snapshot = state.client.get_device_snapshot()
-                    result = apply_ai_plan(state.client, call_openai_for_plan(prompt, now_playing, device_snapshot))
+                    plan = call_openai_for_plan(prompt, now_playing, device_snapshot)
+                    # Discard result if a newer request arrived while we were calling OpenAI
+                    with _ai_sequence_lock:
+                        still_current = (_ai_sequence == my_seq)
+                    if not still_current:
+                        self.respond_json({"ok": False, "error": "Superseded by a newer request."}, status=409)
+                        return
+                    result = apply_ai_plan(state.client, plan)
                     self.respond_json(
                         {
                             "ok": True,
