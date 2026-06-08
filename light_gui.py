@@ -424,6 +424,15 @@ HTML_TEMPLATE = """<!doctype html>
             <div class="beat-lamp" id="beatLamp"></div>
           </div>
         </div>
+        <div class="card" id="autonomousCard">
+          <h2>🌊 Autonomous AI Mode</h2>
+          <p style="font-size:12px;color:var(--text-secondary);margin:0 0 10px;">Continuously identifies songs and generates a unique beatmatched show. Dims to ambient during quiet/conversation.</p>
+          <div class="row">
+            <button onclick="startAutonomous()" title="Start autonomous AI light show">▶ Start</button>
+            <button class="secondary" onclick="send('autonomous_stop')" title="Stop autonomous AI mode">■ Stop</button>
+          </div>
+          <div id="autonomousStatus" style="margin-top:10px;font-size:12px;color:var(--text-secondary);">Inactive</div>
+        </div>
         <div class="card">
           <h2>🎵 Music</h2>
           <div class="row">
@@ -892,6 +901,36 @@ HTML_TEMPLATE = """<!doctype html>
       }
     }
 
+    async function startAutonomous() {
+      // Stop browser Mode 1 first — autonomous has its own beat thread
+      stopAudioReactive();
+      await send('autonomous_start');
+    }
+
+    function updateAutonomousStatus(auto) {
+      const el = document.getElementById('autonomousStatus');
+      if (!el) return;
+      if (!auto || !auto.running) {
+        el.textContent = 'Inactive';
+        el.style.color = 'var(--text-secondary)';
+        return;
+      }
+      if (auto.quiet) {
+        el.textContent = '🌙 Ambient — quiet detected';
+        el.style.color = '#aaa';
+        return;
+      }
+      const song = auto.song;
+      if (song && song.title) {
+        const genre = song.genre ? ` · ${song.genre}` : '';
+        el.textContent = `🎵 ${song.title} — ${song.artist || ''}${genre}`;
+        el.style.color = 'var(--success)';
+      } else {
+        el.textContent = '🔍 Listening for music...';
+        el.style.color = '#ffd43b';
+      }
+    }
+
     async function restartController() {
       if (!confirm('Reboot the WLED controller? It will be offline for a few seconds.')) return;
       status.textContent = 'Restarting controller...';
@@ -905,6 +944,7 @@ HTML_TEMPLATE = """<!doctype html>
     evtSource.onmessage = (event) => {
       try {
         const payload = JSON.parse(event.data);
+        updateAutonomousStatus(payload.autonomous || null);
         if (payload.state) {
           const st = payload.state;
           const onOff = st.on ? 'ON' : 'OFF';
@@ -1705,6 +1745,205 @@ def payload_for_action(action: str, data: dict[str, Any]) -> lightctl.WledPayloa
 
 
 # ---------------------------------------------------------------------------
+# Autonomous AI mode
+# ---------------------------------------------------------------------------
+
+class AutonomousMode:
+    """Server-side loop: detects song changes, AI-generates a themed beatmatched show."""
+
+    POLL_SEC = 20          # song detection poll interval
+    QUIET_SEC = 60         # seconds without beats → ambient dim
+    SHAZAM_INTERVAL = 90   # min seconds between mic-recognition attempts
+
+    def __init__(self, client: lightctl.LightClient) -> None:
+        self._client = client
+        self._stop = threading.Event()
+        self._main_thread: threading.Thread | None = None
+        self._reactive = lightctl.ReactiveMode(client)
+        self._beat_thread: lightctl.ReactiveThread | None = None
+        self._current_song_key: str = ""
+        self._current_song: dict | None = None
+        self._last_beat_time: float = time.time()
+        self._in_quiet: bool = False
+        self._lock = threading.Lock()
+
+    # ---- public interface -----------------------------------------------
+
+    def start(self) -> str:
+        if self._main_thread and self._main_thread.is_alive():
+            return "Autonomous AI mode is already running."
+        self._stop.clear()
+        self._current_song_key = ""
+        self._last_beat_time = time.time()
+        self._in_quiet = False
+        self._main_thread = threading.Thread(target=self._run, daemon=True, name="auto-main")
+        self._main_thread.start()
+        self._start_beat()
+        return "Autonomous AI mode started — listening for music..."
+
+    def stop(self) -> str:
+        self._stop.set()
+        self._stop_beat()
+        return "Autonomous AI mode stopped."
+
+    def is_running(self) -> bool:
+        return bool(self._main_thread and self._main_thread.is_alive())
+
+    def status(self) -> dict:
+        with self._lock:
+            return {
+                "running": self.is_running(),
+                "quiet": self._in_quiet,
+                "song": self._current_song,
+            }
+
+    # ---- beat detection -------------------------------------------------
+
+    def _beat_callback(self, energy: float, is_beat: bool) -> None:
+        if is_beat:
+            with self._lock:
+                self._last_beat_time = time.time()
+                self._in_quiet = False
+
+    def _start_beat(self) -> None:
+        self._beat_thread = lightctl.ReactiveThread(
+            self._client,
+            level_callback=self._beat_callback,
+            reactive_mode=self._reactive,
+        )
+        self._beat_thread.start()
+
+    def _stop_beat(self) -> None:
+        if self._beat_thread and self._beat_thread.is_alive():
+            self._beat_thread.stop()
+            # give sounddevice a moment to release the device
+            time.sleep(0.3)
+
+    # ---- main loop ------------------------------------------------------
+
+    def _run(self) -> None:
+        last_shazam = 0.0
+        while not self._stop.wait(self.POLL_SEC):
+            with self._lock:
+                secs_silent = time.time() - self._last_beat_time
+                already_quiet = self._in_quiet
+            if secs_silent > self.QUIET_SEC and not already_quiet:
+                with self._lock:
+                    self._in_quiet = True
+                self._enter_quiet_mode()
+                continue
+
+            now_playing = get_now_playing()  # playerctl/MPRIS — instant, no mic
+            if not now_playing and (time.time() - last_shazam) > self.SHAZAM_INTERVAL:
+                now_playing = self._shazam_identify()
+                last_shazam = time.time()
+            if not now_playing:
+                continue
+
+            song_key = f"{now_playing.get('title', '')}||{now_playing.get('artist', '')}"
+            with self._lock:
+                changed = song_key != self._current_song_key
+            if changed:
+                with self._lock:
+                    self._current_song_key = song_key
+                    self._current_song = now_playing
+                    self._in_quiet = False
+                self._apply_song_show(now_playing)
+
+    # ---- helpers --------------------------------------------------------
+
+    def _shazam_identify(self) -> dict | None:
+        if not music_recognizer.is_available():
+            return None
+        try:
+            logger.info("Autonomous: Shazam identification attempt")
+            self._stop_beat()
+            result = music_recognizer.recognize_sync()
+            self._start_beat()
+            if result:
+                return {
+                    "title": result.get("title", ""),
+                    "artist": result.get("artist", ""),
+                    "album": result.get("album", ""),
+                    "genre": result.get("genre", ""),
+                    "status": "Playing",
+                    "source": "shazam",
+                }
+        except Exception:
+            logger.exception("Autonomous: Shazam failed")
+            self._start_beat()
+        return None
+
+    def _enter_quiet_mode(self) -> None:
+        logger.info("Autonomous: quiet/conversation detected — dimming to ambient")
+        try:
+            self._client.post_state(lightctl.color_payload(
+                *lightctl.kelvin_to_rgbw(2700), transition_ms=3000
+            ))
+            self._client.post_state(lightctl.brightness_payload(60, transition_ms=3000))
+        except Exception:
+            logger.exception("Autonomous: quiet mode transition failed")
+
+    def _apply_song_show(self, now_playing: dict) -> None:
+        title = now_playing.get("title", "Unknown")
+        artist = now_playing.get("artist", "Unknown")
+        genre = now_playing.get("genre", "")
+        logger.info("Autonomous: new song '%s' by %s — generating show", title, artist)
+        try:
+            prompt = (
+                f"New song now playing: '{title}' by {artist}"
+                + (f" (genre: {genre})" if genre else "")
+                + ". Beat-reactive mode is running continuously — do NOT include mode1_start. "
+                "Design a complete, unique light show: choose an effect, palette by name, primary "
+                "color, secondary color, effect speed, intensity, and brightness that match this "
+                "song's specific mood, energy, and tempo. Both color slots will be used by beat "
+                "detection for two-tone rhythmic pulsing. Be bold and creative — each song should "
+                "feel distinctly different. Reference the actual energy and genre of this song."
+            )
+            snapshot = self._client.get_device_snapshot()
+            plan = call_openai_for_plan(prompt, now_playing, snapshot)
+            plan["actions"] = [
+                a for a in plan.get("actions", [])
+                if a.get("action") not in ("mode1_start", "mode1_stop")
+            ]
+            # Update beat detection palette/effects from AI response
+            colors = self._extract_colors(plan)
+            effects = self._extract_effects(plan)
+            if colors:
+                self._reactive.palette = colors
+            if effects:
+                self._reactive.effects = tuple(effects)
+            apply_ai_plan(self._client, plan)
+            logger.info("Autonomous: show applied for '%s'", title)
+        except Exception:
+            logger.exception("Autonomous: failed to apply show for '%s'", title)
+
+    @staticmethod
+    def _extract_colors(plan: dict) -> list[tuple[int, int, int, int]]:
+        colors: list[tuple[int, int, int, int]] = []
+        for action in plan.get("actions", []):
+            for rk, gk, bk, wk in (
+                ("red", "green", "blue", "white"),
+                ("red2", "green2", "blue2", "white2"),
+                ("red3", "green3", "blue3", "white3"),
+            ):
+                vals = [action.get(k) for k in (rk, gk, bk, wk)]
+                if any(v is not None for v in vals[:3]):
+                    c: tuple[int, int, int, int] = tuple(int(v or 0) for v in vals)  # type: ignore[assignment]
+                    if any(c):
+                        colors.append(c)
+        return colors
+
+    @staticmethod
+    def _extract_effects(plan: dict) -> list[int]:
+        return [
+            int(a["effect"])
+            for a in plan.get("actions", [])
+            if a.get("effect") is not None and int(a["effect"]) in lightctl.SAFE_EFFECTS
+        ]
+
+
+# ---------------------------------------------------------------------------
 # AI request serialisation — last-submitted request wins
 # ---------------------------------------------------------------------------
 _ai_sequence: int = 0
@@ -1764,6 +2003,7 @@ class GuiState:
     def __init__(self, client: lightctl.LightClient) -> None:
         self.client = client
         self.mode1 = lightctl.ReactiveThread(client)
+        self.autonomous = AutonomousMode(client)
         self.schedule = ScheduleExecutor(client)
         self.schedule.start()
         self.fade_timer: lightctl.FadeTimer | None = None
@@ -1884,12 +2124,14 @@ def make_handler(state: GuiState):
                 self.end_headers()
                 try:
                     while True:
+                        auto_status = state.autonomous.status()
                         try:
                             st = state.client.get_state()
-                            payload = json.dumps({"state": st})
+                            payload = json.dumps({"state": st, "autonomous": auto_status})
                             self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
                         except Exception:
-                            self.wfile.write(b"data: {\"error\": \"device_unavailable\"}\n\n")
+                            payload = json.dumps({"error": "device_unavailable", "autonomous": auto_status})
+                            self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
                         self.wfile.flush()
                         time.sleep(2)
                 except (BrokenPipeError, ConnectionResetError):
@@ -1989,6 +2231,12 @@ def make_handler(state: GuiState):
                         message = state.start_sunrise(float(data.get("minutes", 30)), int(data.get("brightness", 255)))
                     elif action == "sunrise_stop":
                         message = state.stop_sunrise()
+                    elif action == "autonomous_start":
+                        # Stop browser Mode 1 if running — autonomous has its own beat thread
+                        state.mode1.stop()
+                        message = state.autonomous.start()
+                    elif action == "autonomous_stop":
+                        message = state.autonomous.stop()
                     elif action == "restart":
                         try:
                             state.client.post_state(lightctl.restart_payload())

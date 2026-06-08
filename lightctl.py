@@ -870,12 +870,14 @@ class ReactiveThread:
         samplerate: int | None = None,
         level_callback: Callable[[float, bool], None] | None = None,
         error_callback: Callable[[BaseException], None] | None = None,
+        reactive_mode: ReactiveMode | None = None,
     ) -> None:
         self.client = client
         self.device = device
         self.samplerate = samplerate
         self.level_callback = level_callback
         self.error_callback = error_callback
+        self.reactive_mode = reactive_mode
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -905,6 +907,7 @@ class ReactiveThread:
                 samplerate=self.samplerate,
                 stop_event=self._stop,
                 level_callback=self.level_callback,
+                reactive_mode=self.reactive_mode,
             )
         except BaseException as exc:
             if self.error_callback is not None:
@@ -919,6 +922,7 @@ def run_mode1(
     samplerate: int | None = None,
     stop_event: threading.Event | None = None,
     level_callback: Callable[[float, bool], None] | None = None,
+    reactive_mode: ReactiveMode | None = None,
 ) -> None:
     try:
         import numpy as np
@@ -930,7 +934,7 @@ def run_mode1(
         ) from exc
 
     detector = BeatDetector()
-    mode = ReactiveMode(client)
+    mode = reactive_mode if reactive_mode is not None else ReactiveMode(client)
     blocksize = 1024
 
     logger.info("Mode 1 listening on the default microphone. Press Ctrl+C to stop.")
