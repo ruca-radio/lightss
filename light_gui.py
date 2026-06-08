@@ -77,11 +77,17 @@ def ai_action_reference() -> str:
         "Available AI actions:\n"
         "- on/off: direct power control.\n"
         "- brightness: global brightness 0-255.\n"
-        "- color: RGBW channels red/green/blue/white 0-255.\n"
+        "- color: primary RGBW channels red/green/blue/white 0-255. Optionally set secondary color "
+        "(red2/green2/blue2/white2) and tertiary color (red3/green3/blue3/white3) for effects that use "
+        "multiple color slots — check 'Safe effect parameter hints' in the device snapshot.\n"
         "- temperature: Kelvin 2000-6500 converted to RGBW.\n"
-        "- effect: safe WLED effect id with speed 0-255, optional intensity 0-255, palette id 0-70, and c1/c2/c3 0-255.\n"
-        "- palette: WLED palette id 0-70 for the active segment.\n"
-        "- scene/random/preset/playlist: named scene, random safe scene, WLED preset 1-250, or playlist id.\n"
+        "- effect: safe WLED effect id with speed 0-255, optional intensity 0-255, palette id 0-N "
+        "(use palette name from 'All palettes' list in snapshot), and c1/c2/c3 0-255 (meanings per "
+        "effect listed in 'Safe effect parameter hints'). Always include primary color; add secondary/"
+        "tertiary colors when the hint shows 'colors 1+2' or 'colors 1+2+3'.\n"
+        "- palette: WLED palette id 0-N for the active segment. Choose by name from the palette list.\n"
+        "- scene/random/preset/playlist: named scene, random safe scene, WLED preset by id "
+        "(choose from 'Saved WLED presets' in snapshot), or playlist id.\n"
         "- nightlight: WLED nightlight on/off, duration minutes, mode, and target brightness.\n"
         "- udp_sync: WLED UDP send/receive sync toggles.\n"
         "- native_audio_reactive: device AudioReactive usermod on/off when installed.\n"
@@ -97,7 +103,45 @@ def ai_action_reference() -> str:
         "- 'use the device audio reactive mode' -> native_audio_reactive enabled true.\n"
         "- 'wake me up over 30 minutes' -> sunrise_start minutes 30.\n"
         "- 'sync this WLED to the room group' -> udp_sync send true recv true.\n"
+        "- 'ocean chase two-tone blue and teal' -> effect Chase with blue primary and teal secondary color.\n"
     )
+
+
+def _parse_fxdata_hints(fxdata: list) -> dict[int, str]:
+    """Extract color-slot and parameter hints for safe effects from WLED fxdata."""
+    hints: dict[int, str] = {}
+    for effect_id, name in lightctl.SAFE_EFFECTS.items():
+        if effect_id >= len(fxdata):
+            continue
+        entry = str(fxdata[effect_id])
+        # Format: name@sx,ix,c1,c2,c3;col0,col1,col2;pal;flags
+        at_split = entry.split("@", 1)
+        rest = at_split[1] if len(at_split) > 1 else ""
+        parts = rest.split(";")
+        params = [p.strip() for p in parts[0].split(",")] if parts else []
+        col_labels = [c.strip() for c in parts[1].split(",")] if len(parts) > 1 else []
+
+        sx_label = params[0] if len(params) > 0 and params[0] not in ("", "!") else None
+        ix_label = params[1] if len(params) > 1 and params[1] not in ("", "!") else None
+        c1_label = params[2] if len(params) > 2 and params[2] not in ("", "!") else None
+        c2_label = params[3] if len(params) > 3 and params[3] not in ("", "!") else None
+        c3_label = params[4] if len(params) > 4 and params[4] not in ("", "!") else None
+
+        col2_used = len(col_labels) > 1 and col_labels[1]
+        col3_used = len(col_labels) > 2 and col_labels[2]
+
+        hint_parts = []
+        if col2_used and col3_used:
+            hint_parts.append("colors 1+2+3")
+        elif col2_used:
+            hint_parts.append("colors 1+2")
+        for label, key in ((c1_label, "c1"), (c2_label, "c2"), (c3_label, "c3"),
+                           (sx_label, "sx"), (ix_label, "ix")):
+            if label:
+                hint_parts.append(f"{key}={label}")
+        if hint_parts:
+            hints[effect_id] = "; ".join(hint_parts)
+    return hints
 
 
 def device_snapshot_text(snapshot: dict | None) -> str:
@@ -108,6 +152,8 @@ def device_snapshot_text(snapshot: dict | None) -> str:
     config = snapshot.get("config") if isinstance(snapshot.get("config"), dict) else {}
     effects = snapshot.get("effects") if isinstance(snapshot.get("effects"), list) else []
     palettes = snapshot.get("palettes") if isinstance(snapshot.get("palettes"), list) else []
+    fxdata = snapshot.get("fxdata") if isinstance(snapshot.get("fxdata"), list) else []
+    presets_raw = snapshot.get("presets") if isinstance(snapshot.get("presets"), dict) else {}
     seg = state.get("seg", [{}])[0] if state.get("seg") else {}
     leds = info.get("leds", {}) if isinstance(info.get("leds"), dict) else {}
     light_cfg = config.get("light", {}) if isinstance(config.get("light"), dict) else {}
@@ -135,8 +181,27 @@ def device_snapshot_text(snapshot: dict | None) -> str:
         f"Config defaults: transition={transition_cfg}, nightlight={nightlight_cfg}",
         f"Sync config: {sync_cfg}; live config: {live_cfg}",
         f"Effects available: {len(effects)} total; safe ids: {lightctl.SAFE_EFFECTS}",
-        f"Palettes available: {len(palettes)} total; first palettes: {palettes[:12]}",
+        "All palettes (use id number when setting palette):\n  "
+        + "\n  ".join(f"{i}: {name}" for i, name in enumerate(palettes)),
     ]
+    fx_hints = _parse_fxdata_hints(fxdata)
+    if fx_hints:
+        hint_lines = "\n  ".join(
+            f"{eid} {lightctl.SAFE_EFFECTS[eid]}: {hint}"
+            for eid, hint in fx_hints.items()
+            if eid in lightctl.SAFE_EFFECTS
+        )
+        lines.append(f"Safe effect parameter hints (colors/c1/c2/c3/sx/ix meanings):\n  {hint_lines}")
+    if presets_raw:
+        preset_entries = sorted(
+            ((k, v) for k, v in presets_raw.items() if isinstance(v, dict) and v.get("n")),
+            key=lambda x: int(x[0]) if str(x[0]).isdigit() else 9999,
+        )
+        if preset_entries:
+            lines.append(
+                "Saved WLED presets: "
+                + ", ".join(f"{pid}={p['n']}" for pid, p in preset_entries)
+            )
     live = snapshot.get("live")
     if live:
         lines.append(f"Live endpoint status: {live}")
@@ -911,9 +976,15 @@ def system_knowledge_prompt() -> str:
         "All colors the LEDs can produce are represented by RGBW values, so you may choose any "
         "combination from [0,0,0,0] through [255,255,255,255]. Named colors should be translated "
         "to RGBW values; use the white channel for softer pastel, warm, or room-light looks. "
-        "Hex colors like #ff6600 are also accepted. You can set random scenes, load WLED presets "
-        "by ID (1-250), start a sunrise wake-up simulation, or begin a scene cycle that rotates "
-        "through favorites automatically. "
+        "Hex colors like #ff6600 are also accepted. "
+        "Many WLED effects use two or three color slots. When the device snapshot shows "
+        "'colors 1+2' or 'colors 1+2+3' for an effect, always set secondary (red2/green2/blue2/white2) "
+        "and tertiary (red3/green3/blue3/white3) colors — this makes the effect look dramatically better. "
+        "The device has 70+ named palettes (Ocean, Forest, Party, Rainbow, Sunset, etc.). Choose palettes "
+        "by their id number from the 'All palettes' list in the device snapshot — match the palette name "
+        "to the mood. Effects with palette support will ignore the color slots and use the palette instead. "
+        "You can set random scenes, load WLED presets by ID from the 'Saved WLED presets' list, "
+        "start a sunrise wake-up simulation, or begin a scene cycle that rotates through favorites automatically. "
         "Mode 1 uses the browser webcam microphone, a VU meter, beat detection, and beat-synced "
         "effect cycling. If the user asks to run effects with the beat, include mode1_start plus "
         "safe effect/brightness/color setup. "
@@ -1206,6 +1277,14 @@ def build_openai_request(
                                     "green": {"type": ["integer", "null"], "minimum": 0, "maximum": 255},
                                     "blue": {"type": ["integer", "null"], "minimum": 0, "maximum": 255},
                                     "white": {"type": ["integer", "null"], "minimum": 0, "maximum": 255},
+                                    "red2": {"type": ["integer", "null"], "minimum": 0, "maximum": 255},
+                                    "green2": {"type": ["integer", "null"], "minimum": 0, "maximum": 255},
+                                    "blue2": {"type": ["integer", "null"], "minimum": 0, "maximum": 255},
+                                    "white2": {"type": ["integer", "null"], "minimum": 0, "maximum": 255},
+                                    "red3": {"type": ["integer", "null"], "minimum": 0, "maximum": 255},
+                                    "green3": {"type": ["integer", "null"], "minimum": 0, "maximum": 255},
+                                    "blue3": {"type": ["integer", "null"], "minimum": 0, "maximum": 255},
+                                    "white3": {"type": ["integer", "null"], "minimum": 0, "maximum": 255},
                                     "kelvin": {"type": ["integer", "null"], "minimum": 2000, "maximum": 6500},
                                     "effect": {"type": ["integer", "null"], "enum": list(lightctl.SAFE_EFFECTS) + [None]},
                                     "speed": {"type": ["integer", "null"], "minimum": 0, "maximum": 255},
@@ -1246,6 +1325,14 @@ def build_openai_request(
                                     "green",
                                     "blue",
                                     "white",
+                                    "red2",
+                                    "green2",
+                                    "blue2",
+                                    "white2",
+                                    "red3",
+                                    "green3",
+                                    "blue3",
+                                    "white3",
                                     "kelvin",
                                     "effect",
                                     "speed",
@@ -1390,13 +1477,24 @@ def payload_for_ai_action(action: dict[str, Any]) -> lightctl.WledPayload:
     if kind == "brightness":
         return lightctl.brightness_payload(int_or_default("brightness", 180), transition_ms=transition_ms)
     if kind == "color":
-        return lightctl.color_payload(
+        payload = lightctl.color_payload(
             int_or_default("red", 255),
             int_or_default("green", 255),
             int_or_default("blue", 255),
             int_or_default("white", 0),
             transition_ms=transition_ms,
         )
+        seg = payload.setdefault("seg", [{}])[0]
+        col = seg.setdefault("col", [[]])
+        while len(col) < 3:
+            col.append([])
+        if any(action.get(k) is not None for k in ("red2", "green2", "blue2", "white2")):
+            col[1] = [int_or_default("red2", 0), int_or_default("green2", 0),
+                      int_or_default("blue2", 0), int_or_default("white2", 0)]
+        if any(action.get(k) is not None for k in ("red3", "green3", "blue3", "white3")):
+            col[2] = [int_or_default("red3", 0), int_or_default("green3", 0),
+                      int_or_default("blue3", 0), int_or_default("white3", 0)]
+        return payload
     if kind == "temperature":
         return lightctl.color_payload(
             *lightctl.kelvin_to_rgbw(int_or_default("kelvin", 4000)),
@@ -1409,6 +1507,27 @@ def payload_for_ai_action(action: dict[str, Any]) -> lightctl.WledPayload:
             value = optional_int(source)
             if value is not None:
                 seg[dest] = lightctl.clamp_byte(value)
+        # Color slots: primary, secondary, tertiary
+        col = seg.get("col", [])
+        while len(col) < 3:
+            col.append([])
+        if any(action.get(k) is not None for k in ("red", "green", "blue", "white")):
+            col[0] = [lightctl.clamp_byte(int_or_default("red", 255)),
+                      lightctl.clamp_byte(int_or_default("green", 255)),
+                      lightctl.clamp_byte(int_or_default("blue", 255)),
+                      lightctl.clamp_byte(int_or_default("white", 0))]
+        if any(action.get(k) is not None for k in ("red2", "green2", "blue2", "white2")):
+            col[1] = [lightctl.clamp_byte(int_or_default("red2", 0)),
+                      lightctl.clamp_byte(int_or_default("green2", 0)),
+                      lightctl.clamp_byte(int_or_default("blue2", 0)),
+                      lightctl.clamp_byte(int_or_default("white2", 0))]
+        if any(action.get(k) is not None for k in ("red3", "green3", "blue3", "white3")):
+            col[2] = [lightctl.clamp_byte(int_or_default("red3", 0)),
+                      lightctl.clamp_byte(int_or_default("green3", 0)),
+                      lightctl.clamp_byte(int_or_default("blue3", 0)),
+                      lightctl.clamp_byte(int_or_default("white3", 0))]
+        if any(c for c in col):
+            seg["col"] = col
         return payload
     if kind == "scene":
         return lightctl.scene_payload(str(action.get("scene") or "warm"), transition_ms=transition_ms)

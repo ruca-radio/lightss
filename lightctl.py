@@ -28,6 +28,7 @@ LIVE_PATH = "/json/live"
 CONFIG_PATH = "/json/cfg"
 FXDATA_PATH = "/json/fxdata"
 NETWORKS_PATH = "/json/net"
+PRESETS_PATH = "/json/presets"
 SAFE_EFFECTS = {
     2: "Breathe",
     8: "Colorloop",
@@ -658,6 +659,10 @@ class LightClient:
     def networks_url(self) -> str:
         return f"{self.host}{NETWORKS_PATH}"
 
+    @property
+    def presets_url(self) -> str:
+        return f"{self.host}{PRESETS_PATH}"
+
     def _get_json_url(self, url: str) -> dict | list:
         request = urllib.request.Request(url, method="GET")
         with self._request_with_retry(request) as response:
@@ -699,6 +704,10 @@ class LightClient:
         data = self._get_json_url(self.networks_url)
         return data if isinstance(data, dict) else {}
 
+    def get_presets(self) -> dict:
+        data = self._get_json_url(self.presets_url)
+        return data if isinstance(data, dict) else {}
+
     def _snapshot_part(self, name: str, loader: Callable[[], dict | list]) -> dict | list:
         try:
             return loader()
@@ -720,6 +729,7 @@ class LightClient:
             "nodes": self._snapshot_part("nodes", self.get_nodes),
             "live": self._snapshot_part("live", self.get_live),
             "networks": self._snapshot_part("networks", self.get_networks),
+            "presets": self._snapshot_part("presets", self.get_presets),
         }
 
     def _request_with_retry(
