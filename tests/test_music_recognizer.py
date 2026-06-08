@@ -112,7 +112,7 @@ class TestIsAvailable:
     def test_available_reason(self):
         reason = music_recognizer.available_reason()
         assert isinstance(reason, str)
-        assert " Music recognition" in reason or "unavailable" in reason.lower()
+        assert "Music recognition" in reason
 
 
 class TestRecognizeSync:

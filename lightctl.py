@@ -70,6 +70,20 @@ class SegPayload(TypedDict, total=False):
     col: list[list[int]]
     fx: int
     sx: int
+    ix: int
+    pal: int
+    c1: int
+    c2: int
+    c3: int
+    on: bool
+    frz: bool
+    rev: bool
+    mi: bool
+    bri: int
+    grp: int
+    spc: int
+    of: int
+    cct: int
 
 
 class WledPayload(TypedDict, total=False):
@@ -77,6 +91,11 @@ class WledPayload(TypedDict, total=False):
     bri: int
     seg: list[SegPayload]
     transition: int
+    ps: int
+    pl: int
+    nl: dict
+    udpn: dict
+    AudioReactive: dict
 
 
 # ---------------------------------------------------------------------------

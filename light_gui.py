@@ -1101,7 +1101,7 @@ def get_now_playing_with_shazam_fallback(
     return None
 
 
-def match_lights_to_song(client: lightctl.LightClient, model: str = "gpt-4o-mini") -> dict[str, Any]:
+def match_lights_to_song(client: lightctl.LightClient) -> dict[str, Any]:
     """Detect the currently playing song and ask the AI to create matching lights.
 
     Returns a dict with keys: ok, message, response, confirmations, client_actions, now_playing.
@@ -1667,8 +1667,9 @@ class GuiState:
 def make_handler(state: GuiState):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
-            if self.path == "/api/now-playing":
-                parsed = urllib.parse.urlparse(self.path)
+            parsed = urllib.parse.urlparse(self.path)
+            path = parsed.path
+            if path == "/api/now-playing":
                 query = urllib.parse.parse_qs(parsed.query)
                 use_shazam = query.get("shazam", [""])[0].lower() in ("1", "true", "yes")
                 now_playing = get_now_playing_with_shazam_fallback(use_shazam=use_shazam)
@@ -1680,7 +1681,7 @@ def make_handler(state: GuiState):
                     }
                 )
                 return
-            if self.path == "/api/recognize":
+            if path == "/api/recognize":
                 if not music_recognizer.is_available():
                     self.respond_json(
                         {"ok": False, "error": music_recognizer.available_reason()},
@@ -1712,7 +1713,7 @@ def make_handler(state: GuiState):
                     logger.exception("Shazam recognition error")
                     self.respond_json({"ok": False, "error": str(exc)}, status=500)
                 return
-            if self.path == "/api/match-lights":
+            if path == "/api/match-lights":
                 try:
                     result = match_lights_to_song(state.client)
                     self.respond_json(
@@ -1728,7 +1729,7 @@ def make_handler(state: GuiState):
                     logger.exception("Match lights error")
                     self.respond_json({"ok": False, "error": str(exc)}, status=500)
                 return
-            if self.path == "/api/state":
+            if path == "/api/state":
                 try:
                     st = state.client.get_state()
                     self.respond_json({"ok": True, "state": st})
@@ -1736,7 +1737,7 @@ def make_handler(state: GuiState):
                     logger.exception("Error reading state")
                     self.respond_json({"ok": False, "error": str(exc)}, status=500)
                 return
-            if self.path == "/api/events":
+            if path == "/api/events":
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Cache-Control", "no-cache")
@@ -1754,7 +1755,7 @@ def make_handler(state: GuiState):
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 return
-            if self.path != "/":
+            if path != "/":
                 self.send_error(404)
                 return
             body = render_html().encode("utf-8")
@@ -1765,10 +1766,11 @@ def make_handler(state: GuiState):
             self.wfile.write(body)
 
         def do_HEAD(self) -> None:
-            if self.path not in ("/", "/api/now-playing", "/api/recognize", "/api/match-lights", "/api/state"):
+            path = urllib.parse.urlparse(self.path).path
+            if path not in ("/", "/api/now-playing", "/api/recognize", "/api/match-lights", "/api/state"):
                 self.send_error(404)
                 return
-            if self.path in ("/api/now-playing", "/api/recognize", "/api/match-lights", "/api/state"):
+            if path in ("/api/now-playing", "/api/recognize", "/api/match-lights", "/api/state"):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
@@ -1842,6 +1844,28 @@ def make_handler(state: GuiState):
                         message = state.start_sunrise(float(data.get("minutes", 30)), int(data.get("brightness", 255)))
                     elif action == "sunrise_stop":
                         message = state.stop_sunrise()
+                    elif action == "schedule":
+                        subaction = str(data.get("subaction", ""))
+                        if subaction == "add":
+                            sched_data: dict[str, Any] = {}
+                            scene_name = data.get("scene_name")
+                            if scene_name:
+                                sched_data["scene"] = str(scene_name)
+                            lightctl.add_schedule(
+                                str(data.get("time", "00:00")),
+                                str(data.get("action", "on")),
+                                sched_data,
+                            )
+                            message = "Schedule added."
+                        elif subaction == "remove":
+                            lightctl.remove_schedule(int(data.get("index", -1)))
+                            message = "Schedule removed."
+                        elif subaction == "list":
+                            entries = lightctl.list_schedule()
+                            self.respond_json({"ok": True, "entries": entries, "message": "OK"})
+                            return
+                        else:
+                            message = "Unknown schedule subaction."
                     else:
                         state.client.post_state(payload_for_action(action, data))
                         message = f"Sent {action}."

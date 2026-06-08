@@ -140,8 +140,11 @@ async def recognize_microphone(
     audio_data = await asyncio.to_thread(_record_audio, duration, sample_rate)
     segment = _make_audio_segment(audio_data, sample_rate)
 
+    audio_buf = io.BytesIO()
+    segment.export(audio_buf, format="wav")
+
     shazam = Shazam()
-    result = await shazam.recognize_song(segment)
+    result = await shazam.recognize_song(audio_buf.getvalue())
     parsed = _parse_shazam_result(result)
     if parsed:
         logger.info("Recognized: %s — %s", parsed.get("artist"), parsed.get("title"))
