@@ -45,13 +45,24 @@ if _try_import_errors:
     logger.debug("music_recognizer optional deps unavailable: %s", _try_import_errors)
 
 DEFAULT_DURATION = 5.0
-DEFAULT_SAMPLE_RATE = 16000
+DEFAULT_SAMPLE_RATE = 0  # 0 = auto-detect from device at runtime
+
+
+def _get_device_samplerate() -> int:
+    """Return the default input device's native sample rate."""
+    try:
+        info = sd.query_devices(kind="input")
+        return int(info.get("default_samplerate", 44100))
+    except Exception:
+        return 44100
 
 
 def _record_audio(duration: float, sample_rate: int) -> np.ndarray:
     """Record audio from the default input device."""
     if not _sounddevice_available:
         raise RuntimeError("sounddevice is not available")
+    if sample_rate == 0:
+        sample_rate = _get_device_samplerate()
     logger.info("Recording %.1fs from microphone @ %d Hz...", duration, sample_rate)
     frames = int(duration * sample_rate)
     # Record as float32, then convert to int16
@@ -137,6 +148,8 @@ async def recognize_microphone(
     if AudioSegment is None:
         raise RuntimeError("pydub is not available")
 
+    if sample_rate == 0:
+        sample_rate = _get_device_samplerate()
     audio_data = await asyncio.to_thread(_record_audio, duration, sample_rate)
     segment = _make_audio_segment(audio_data, sample_rate)
 
