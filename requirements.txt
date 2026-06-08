@@ -1,0 +1,4 @@
+numpy>=1.26,<2.0
+sounddevice>=0.4.6
+shazamio==0.2.0.0
+pydub>=0.25.1
