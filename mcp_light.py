@@ -246,6 +246,11 @@ def build_tools() -> list[dict]:
             "description": "Detect the currently playing song (via playerctl, MPRIS, or microphone fallback) and automatically generate a light show that matches its genre, mood, and energy using the AI. Returns the song info and the applied lighting plan.",
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
         },
+        {
+            "name": "restart_controller",
+            "description": "Reboot the WLED LED controller. The device will be briefly offline (a few seconds) while it restarts.",
+            "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
     ]
 
 
@@ -365,6 +370,12 @@ def call_tool(
             return text_result("No match found. Try playing music louder or closer to the microphone.")
         except Exception as exc:
             return text_result(f"Recognition failed: {exc}")
+    if name == "restart_controller":
+        try:
+            client.post_state(lightctl.restart_payload())
+        except RuntimeError:
+            pass  # Device may reboot before completing the HTTP response
+        return text_result("Restart command sent. Device will reconnect in a few seconds.")
     if name == "match_lights_to_song":
         # Try playerctl / MPRIS first, then fall back to Shazam microphone
         song = None

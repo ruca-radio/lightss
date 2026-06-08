@@ -357,6 +357,11 @@ def random_scene_payload(transition_ms: int = 0) -> WledPayload:
     return scene_payload(name, transition_ms=transition_ms)
 
 
+def restart_payload() -> WledPayload:
+    """Return a payload that triggers a WLED controller reboot."""
+    return {"rb": True}
+
+
 class FadeTimer:
     """Gradually reduce brightness over a duration, then turn off."""
 
@@ -1013,6 +1018,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     info_cmd = subparsers.add_parser("info", help="Read WLED controller info")
 
+    subparsers.add_parser("restart", help="Reboot the WLED controller")
+
     return parser
 
 
@@ -1128,6 +1135,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             logger.info("Uptime: %ds", info.get("uptime", 0))
             logger.info("Free heap: %d", info.get("freeheap", 0))
             logger.info("IP: %s", info.get("ip", "?"))
+        elif args.command == "restart":
+            try:
+                client.post_state(restart_payload())
+            except RuntimeError:
+                pass  # Device may reboot before completing the HTTP response
+            logger.info("Restart command sent. Device will reconnect in a few seconds.")
     except KeyboardInterrupt:
         logger.info("Stopped.")
         return 130

@@ -348,6 +348,7 @@ HTML_TEMPLATE = """<!doctype html>
             <button class="danger" onclick="send('off')" title="Turn lights off">Off</button>
             <button class="secondary" onclick="startAudioReactive()" title="Start microphone reactive beat mode">Mode 1</button>
             <button class="secondary" onclick="stopAudioReactive()" title="Stop microphone reactive mode">Stop Mode 1</button>
+            <button class="danger" onclick="restartController()" title="Reboot the WLED controller — device will be offline briefly">Restart Device</button>
           </div>
           <div class="meter-row" id="vuMeter" aria-label="Microphone level">
             <span>Mic</span>
@@ -826,7 +827,15 @@ HTML_TEMPLATE = """<!doctype html>
       }
     }
 
-    // SSE state updates
+    async function restartController() {
+      if (!confirm('Reboot the WLED controller? It will be offline for a few seconds.')) return;
+      status.textContent = 'Restarting controller...';
+      connIndicator.textContent = '🟡';
+      connText.textContent = 'Restarting...';
+      await send('restart');
+    }
+
+    // SSE state updates — polls the device every 2 seconds
     const evtSource = new EventSource('/api/events');
     evtSource.onmessage = (event) => {
       try {
@@ -841,6 +850,11 @@ HTML_TEMPLATE = """<!doctype html>
           stateSummary.textContent = `${onOff} | Bri ${bri} | Fx ${seg.fx ?? '-'} @ ${seg.sx ?? '-'}`;
           connIndicator.textContent = '🟢';
           connText.textContent = 'Connected';
+        } else if (payload.error) {
+          stateDisplay.textContent = 'Device offline — reconnecting...';
+          stateSummary.textContent = '--';
+          connIndicator.textContent = '🔴';
+          connText.textContent = 'Disconnected';
         }
       } catch (e) {
         stateDisplay.textContent = 'State update error';
@@ -1562,6 +1576,8 @@ def payload_for_action(action: str, data: dict[str, Any]) -> lightctl.WledPayloa
         return lightctl.random_scene_payload(transition_ms=transition_ms)
     if action == "preset":
         return lightctl.preset_payload(int(data.get("id", 1)), transition_ms=transition_ms)
+    if action == "restart":
+        return lightctl.restart_payload()
     raise ValueError(f"Unknown action: {action}")
 
 
@@ -1750,7 +1766,8 @@ def make_handler(state: GuiState):
                             payload = json.dumps({"state": st})
                             self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
                         except Exception:
-                            self.wfile.write(b"data: {}\n\n")
+                            self.wfile.write(b"data: {\"error\": \"device_unavailable\"}\n\n")
+                        self.wfile.flush()
                         time.sleep(2)
                 except (BrokenPipeError, ConnectionResetError):
                     pass
@@ -1844,6 +1861,12 @@ def make_handler(state: GuiState):
                         message = state.start_sunrise(float(data.get("minutes", 30)), int(data.get("brightness", 255)))
                     elif action == "sunrise_stop":
                         message = state.stop_sunrise()
+                    elif action == "restart":
+                        try:
+                            state.client.post_state(lightctl.restart_payload())
+                        except RuntimeError:
+                            pass  # Device may drop connection before responding
+                        message = "Restart command sent. Device will reconnect in a few seconds."
                     elif action == "schedule":
                         subaction = str(data.get("subaction", ""))
                         if subaction == "add":

@@ -233,6 +233,13 @@ class LightWorker:
     def random_scene(self, transition_ms: int = 0) -> str:
         return self._safe_post(lightctl.random_scene_payload(transition_ms=transition_ms))
 
+    def restart(self) -> str:
+        try:
+            self.client.post_state(lightctl.restart_payload())
+            return "Restart command sent."
+        except Exception:
+            return "Restart command sent (device may have rebooted before responding)."
+
 
 # ---------------------------------------------------------------------------
 # Signals
@@ -437,6 +444,16 @@ class MainWindow(QMainWindow):
         mode_layout.addWidget(self.vu_bar)
         mode_layout.addWidget(self.beat_label)
         layout.addWidget(mode_box)
+
+        # Restart
+        restart_box = QGroupBox("Device")
+        restart_layout = QHBoxLayout(restart_box)
+        btn_restart = QPushButton("⟳ Restart Controller")
+        btn_restart.setToolTip("Reboot the WLED controller — device will be offline briefly")
+        btn_restart.setStyleSheet("background: #8b3a3a; color: white; font-weight: bold;")
+        btn_restart.clicked.connect(self._on_restart)
+        restart_layout.addWidget(btn_restart)
+        layout.addWidget(restart_box)
 
         layout.addStretch()
         scroll = QScrollArea()
@@ -879,6 +896,20 @@ class MainWindow(QMainWindow):
             return
         result = self.worker.set_preset(self.preset_spin.value(), transition_ms=self._transition())
         self._set_status(f"Preset — {result}")
+
+    def _on_restart(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self,
+            "Restart Controller",
+            "Reboot the WLED controller? It will be offline for a few seconds.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        result = self.worker.restart()
+        self._set_status(result)
 
     def _on_fade_off(self) -> None:
         if self._ai_mode_active():
@@ -1398,6 +1429,10 @@ class TrayApplication(QApplication):
             )
             menu_scenes.addAction(act)
         menu.addMenu(menu_scenes)
+
+        act_restart = QAction("⟳ Restart Controller", self)
+        act_restart.triggered.connect(lambda checked=False: self._run_tray_action("Restart", self.worker.restart))
+        menu.addAction(act_restart)
 
         act_recognize = QAction("🎤 Recognize Music", self)
         act_recognize.triggered.connect(self._on_recognize_music)

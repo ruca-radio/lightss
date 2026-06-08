@@ -89,6 +89,11 @@ class TestParseShazamResult:
         assert parsed["artist"] == "Artist"
 
 
+pydub_available = music_recognizer.AudioSegment is not None
+requires_pydub = pytest.mark.skipif(not pydub_available, reason="pydub not installed")
+
+
+@requires_pydub
 class TestMakeAudioSegment:
     def test_creates_segment(self):
         audio_data = np.array([0, 1000, -1000, 32767, -32768], dtype=np.int16)
