@@ -9,14 +9,22 @@ import logging
 import threading
 from typing import Any
 
-import numpy as np
-
 import lightctl
+
+try:
+    import numpy as np
+except Exception as exc:  # pragma: no cover
+    np = None  # type: ignore[assignment]
+    _numpy_import_error = exc
+else:
+    _numpy_import_error = None
 
 logger = logging.getLogger("music_recognizer")
 
 # Optional dependencies — gracefully degrade if unavailable
 _try_import_errors: list[str] = []
+if _numpy_import_error is not None:
+    _try_import_errors.append(f"numpy: {_numpy_import_error}")
 
 _shazam_available = False
 Shazam = None
@@ -59,12 +67,14 @@ def _get_device_samplerate(device: str | int | None = None) -> int:
         return 44100
 
 
-def _record_audio(duration: float, sample_rate: int, device: str | int | None = None) -> np.ndarray:
+def _record_audio(duration: float, sample_rate: int, device: str | int | None = None) -> Any:
     """Record audio from the preferred input device.
 
     If the specific device is unavailable, this may raise; callers should treat
     recording failures as 'no match' rather than fatal errors.
     """
+    if np is None:
+        raise RuntimeError("numpy is not available")
     if not _sounddevice_available:
         raise RuntimeError("sounddevice is not available")
     if device is None:
@@ -97,7 +107,7 @@ def _record_audio(duration: float, sample_rate: int, device: str | int | None = 
     return int16_data
 
 
-def _make_audio_segment(audio_data: np.ndarray, sample_rate: int) -> Any:
+def _make_audio_segment(audio_data: Any, sample_rate: int) -> Any:
     """Wrap raw int16 mono PCM in a pydub AudioSegment."""
     if AudioSegment is None:
         raise RuntimeError("pydub is not available")
@@ -169,6 +179,8 @@ async def recognize_microphone(
     """
     if not _shazam_available:
         raise RuntimeError("shazamio is not available")
+    if np is None:
+        raise RuntimeError("numpy is not available")
     if not _sounddevice_available:
         raise RuntimeError("sounddevice is not available")
     if AudioSegment is None:
@@ -281,7 +293,7 @@ def recognize_audio_bytes_sync(audio_bytes: bytes) -> dict[str, Any] | None:
 
 def is_available() -> bool:
     """Return True if all required dependencies are present (for mic recording)."""
-    return _shazam_available and _sounddevice_available and AudioSegment is not None
+    return _shazam_available and _sounddevice_available and AudioSegment is not None and np is not None
 
 
 def can_identify_song() -> bool:
@@ -298,6 +310,8 @@ def available_reason() -> str:
     reasons = []
     if not _shazam_available:
         reasons.append("shazamio not installed")
+    if np is None:
+        reasons.append("numpy not installed")
     if not _sounddevice_available:
         reasons.append("sounddevice not installed")
     if AudioSegment is None:

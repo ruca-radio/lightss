@@ -213,25 +213,30 @@ HTML_TEMPLATE = """<!doctype html>
   <style>
     :root {
       color-scheme: dark;
-      --bg: #0d0d0d;
-      --card: #161616;
-      --text: #f4f4f4;
-      --text-secondary: #aaa;
-      --accent: #2d6cdf;
-      --accent-hover: #1a5ac8;
-      --danger: #b83232;
-      --danger-hover: #9a2a2a;
-      --secondary: #333;
-      --secondary-hover: #444;
-      --border: #2a2a2a;
-      --input-bg: #101010;
-      --success: #20c997;
-      --user-bubble: #1a4a8a;
-      --ai-bubble: #1e3a2f;
-      --radius-lg: 12px;
-      --radius-md: 8px;
-      --radius-sm: 6px;
-      font-family: Inter, system-ui, sans-serif;
+      --bg: #060712;
+      --card: rgba(18, 22, 42, 0.72);
+      --card-strong: rgba(25, 31, 58, 0.88);
+      --text: #f7fbff;
+      --text-secondary: #aab7d6;
+      --muted: #7380a4;
+      --accent: #8b5cf6;
+      --accent-2: #06b6d4;
+      --accent-3: #f472b6;
+      --accent-hover: #7c3aed;
+      --danger: #fb4666;
+      --danger-hover: #e11d48;
+      --secondary: rgba(255,255,255,0.10);
+      --secondary-hover: rgba(255,255,255,0.16);
+      --border: rgba(180, 205, 255, 0.16);
+      --input-bg: rgba(4, 8, 20, 0.70);
+      --success: #34d399;
+      --warning: #fbbf24;
+      --user-bubble: linear-gradient(135deg, #2563eb, #7c3aed);
+      --ai-bubble: linear-gradient(135deg, rgba(6,182,212,.22), rgba(52,211,153,.18));
+      --radius-lg: 22px;
+      --radius-md: 14px;
+      --radius-sm: 10px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       background: var(--bg);
       color: var(--text);
     }
@@ -239,217 +244,157 @@ HTML_TEMPLATE = """<!doctype html>
     body {
       margin: 0;
       min-height: 100vh;
-      background: var(--bg);
+      background:
+        radial-gradient(circle at 10% 0%, rgba(139,92,246,.42), transparent 32rem),
+        radial-gradient(circle at 88% 8%, rgba(6,182,212,.36), transparent 30rem),
+        radial-gradient(circle at 50% 100%, rgba(244,114,182,.20), transparent 34rem),
+        linear-gradient(180deg, #070817 0%, #050712 100%);
       color: var(--text);
-      font-family: Inter, system-ui, sans-serif;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       display: flex;
       flex-direction: column;
     }
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image: linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px);
+      background-size: 44px 44px;
+      mask-image: linear-gradient(to bottom, rgba(0,0,0,.75), transparent 72%);
+    }
     main {
       flex: 1;
-      padding: 16px;
-      max-width: 1200px;
+      padding: 24px;
+      max-width: 1280px;
       margin: 0 auto;
       width: 100%;
+      position: relative;
+      z-index: 1;
     }
-    h1 { font-size: 24px; margin: 0 0 16px; font-weight: 700; }
-    h2 { font-size: 16px; margin: 0 0 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+    h1 { font-size: clamp(28px, 4vw, 54px); margin: 6px 0 22px; font-weight: 900; letter-spacing: -0.055em; text-shadow: 0 0 32px rgba(139,92,246,.45); }
+    h2 { font-size: 16px; margin: 0 0 14px; font-weight: 800; display: flex; align-items: center; gap: 8px; letter-spacing: .01em; }
     .grid {
       display: grid;
-      grid-template-columns: 1.4fr 1fr;
-      gap: 16px;
+      grid-template-columns: minmax(0, 1.35fr) minmax(300px, .95fr);
+      gap: 18px;
     }
-    @media (max-width: 640px) {
+    @media (max-width: 820px) {
+      main { padding: 16px; }
       .grid { grid-template-columns: 1fr; }
+      .status-bar { flex-direction: column; align-items: flex-start; }
     }
     .card {
-      background: var(--card);
+      background: linear-gradient(145deg, rgba(255,255,255,.10), rgba(255,255,255,.045));
       border-radius: var(--radius-lg);
-      padding: 16px;
+      padding: 18px;
       border: 1px solid var(--border);
-      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-      margin-bottom: 16px;
+      box-shadow: 0 24px 80px rgba(0,0,0,.32), inset 0 1px 0 rgba(255,255,255,.12);
+      margin-bottom: 18px;
+      backdrop-filter: blur(18px) saturate(135%);
+      position: relative;
+      overflow: hidden;
     }
+    .card::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at 0 0, rgba(255,255,255,.10), transparent 18rem);
+      pointer-events: none;
+    }
+    .card > * { position: relative; z-index: 1; }
     .card:last-child { margin-bottom: 0; }
     .auto-card {
-      background: linear-gradient(135deg, #1a2a3a 0%, #161616 100%);
-      border-color: #2d4a66;
+      background: linear-gradient(135deg, rgba(139,92,246,.32), rgba(6,182,212,.16) 48%, rgba(244,114,182,.18));
+      border-color: rgba(255,255,255,.22);
     }
-    .auto-card h2 { color: #a8d6ff; }
+    .auto-card h2 { color: #e9d5ff; }
+    .smart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-top: 12px; }
+    .smart-chip { text-align:left; padding: 12px; border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.07); border-radius: 16px; min-height: 76px; }
+    .smart-chip b { display:block; color:#fff; margin-bottom:4px; }
+    .smart-chip span { color: var(--text-secondary); font-size: 12px; line-height: 1.3; }
     .tab-bar {
       display: flex;
-      gap: 4px;
-      margin: 8px 0 12px;
-      border-bottom: 1px solid var(--border);
+      gap: 8px;
+      margin: 18px 0;
+      padding: 6px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,.06);
+      border-radius: 999px;
+      width: fit-content;
     }
     .tab-btn {
       background: transparent;
       color: var(--text-secondary);
       border: none;
-      padding: 8px 16px;
+      padding: 10px 18px;
       font-size: 13px;
-      font-weight: 600;
-      border-bottom: 3px solid transparent;
-      margin-bottom: -1px;
+      font-weight: 800;
+      border-radius: 999px;
       cursor: pointer;
     }
     .tab-btn.active {
-      color: var(--text);
-      border-bottom-color: var(--accent);
+      color: white;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      box-shadow: 0 10px 30px rgba(6,182,212,.25);
     }
-    .tab-btn:hover:not(.active) {
-      color: var(--text);
-      background: #1a1a1a;
-    }
+    .tab-btn:hover:not(.active) { color: var(--text); background: rgba(255,255,255,.08); }
     .tab-content { display: none; }
     .tab-content.active { display: block; }
     .full-bleed-preview {
       width: 100vw;
       margin-left: calc(-50vw + 50%);
       margin-right: calc(-50vw + 50%);
-      background: #0a0a0a;
-      padding: 12px 0 8px;
-      border-bottom: 1px solid #1f1f1f;
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.7);
+      background: linear-gradient(180deg, rgba(5,7,18,.30), rgba(5,7,18,.76));
+      padding: 18px 0 12px;
+      border-block: 1px solid rgba(255,255,255,.10);
+      box-shadow: 0 25px 80px rgba(0, 0, 0, 0.55);
       position: relative;
       z-index: 10;
+      backdrop-filter: blur(16px);
     }
-    .strip-wrapper {
-      width: 100%;
-      max-width: none;
-      padding: 0 8px;
-      box-sizing: border-box;
-    }
+    .strip-wrapper { width: 100%; max-width: none; padding: 0 14px; box-sizing: border-box; }
     .led-strip {
       display: flex;
-      gap: 0.8px;
+      gap: 1px;
       justify-content: flex-start;
       align-items: stretch;
-      height: 130px;
-      padding: 6px 4px;
-      border-radius: 4px;
-      background: linear-gradient(180deg, #111 0%, #0a0a0a 50%, #050505 100%);
-      border: 8px solid #222;
-      box-shadow: 
-        inset 0 0 40px rgba(0,0,0,0.9),
-        0 0 0 1px #333,
-        0 6px 20px rgba(0,0,0,0.8);
+      height: clamp(96px, 14vw, 160px);
+      padding: 8px 6px;
+      border-radius: 24px;
+      background: linear-gradient(180deg, #111827 0%, #050712 54%, #02030a 100%);
+      border: 1px solid rgba(255,255,255,.18);
+      box-shadow: inset 0 0 42px rgba(0,0,0,.92), 0 0 0 8px rgba(255,255,255,.035), 0 20px 70px rgba(6,182,212,.18);
       position: relative;
       overflow: hidden;
     }
-    .led-strip::before {
-      content: '';
-      position: absolute;
-      top: 0; left: 0; right: 0;
-      height: 30%;
-      background: linear-gradient(180deg, rgba(255,255,255,0.06) 0%, transparent 100%);
-      pointer-events: none;
-      z-index: 2;
-    }
-    .led-segment {
-      flex: 1;
-      min-width: 1px;
-      background: #0d0d0d;
-      border-radius: 2px;
-      box-shadow: 
-        0 0 6px currentColor,
-        0 0 2px currentColor,
-        inset 0 0 3px rgba(255,255,255,0.15),
-        inset 0 -2px 3px rgba(0,0,0,0.6);
-      transition: background-color 16ms linear, box-shadow 16ms linear;
-      position: relative;
-      z-index: 1;
-    }
-    .led-strip.off .led-segment {
-      background: #111 !important;
-      box-shadow: inset 0 0 2px rgba(0,0,0,0.8) !important;
-    }
-    .preview-meta {
-      max-width: 1200px;
-      margin: 6px auto 0;
-      padding: 0 16px;
-      text-align: center;
-    }
-    .light-info {
-      font-size: 12px;
-      color: var(--text-secondary);
-      text-align: center;
-      line-height: 1.4;
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    }
-    .light-info .label {
-      display: inline-block;
-      background: #1a1a1a;
-      padding: 1px 6px;
-      border-radius: 8px;
-      margin: 1px;
-      border: 1px solid #333;
-      font-size: 11px;
-    }
-    .big-button {
-      width: 100%;
-      padding: 16px 20px;
-      font-size: 16px;
-      border-radius: var(--radius-md);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 10px;
-    }
-    .big-button.secondary { background: #2a4a6a; }
-    .big-button.secondary:hover { background: #335980; }
-    .auto-status {
-      text-align: center;
-      font-size: 13px;
-      color: var(--text-secondary);
-      min-height: 20px;
-    }
-    button {
-      border: 0;
-      border-radius: var(--radius-md);
-      padding: 10px 14px;
-      background: var(--accent);
-      color: white;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.15s ease;
-      font-size: 13px;
-    }
-    button:hover { background: var(--accent-hover); transform: translateY(-1px); }
-    button:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
-    button.secondary { background: var(--secondary); }
+    .led-strip::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 45%; background: linear-gradient(180deg, rgba(255,255,255,.12) 0%, transparent 100%); pointer-events: none; z-index: 2; }
+    .led-segment { flex: 1; min-width: 1px; background: #0d0d0d; border-radius: 999px; box-shadow: 0 0 10px currentColor, inset 0 0 5px rgba(255,255,255,.20), inset 0 -4px 6px rgba(0,0,0,.55); transition: background-color 16ms linear, box-shadow 16ms linear; position: relative; z-index: 1; }
+    .led-strip.off .led-segment { background: #0b1020 !important; box-shadow: inset 0 0 2px rgba(0,0,0,0.8) !important; }
+    .preview-meta { max-width: 1200px; margin: 10px auto 0; padding: 0 16px; text-align: center; }
+    .light-info { font-size: 12px; color: var(--text-secondary); text-align: center; line-height: 1.4; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .light-info .label { display: inline-block; background: rgba(255,255,255,.08); padding: 3px 8px; border-radius: 999px; margin: 2px; border: 1px solid rgba(255,255,255,.12); font-size: 11px; }
+    .big-button { width: 100%; padding: 16px 20px; font-size: 16px; border-radius: 18px; display: flex; align-items: center; justify-content: center; gap: 10px; }
+    .big-button.secondary { background: linear-gradient(135deg, rgba(6,182,212,.42), rgba(59,130,246,.30)); }
+    .big-button.secondary:hover { background: linear-gradient(135deg, rgba(6,182,212,.56), rgba(59,130,246,.44)); }
+    .auto-status { text-align: center; font-size: 13px; color: var(--text-secondary); min-height: 20px; margin-top: 10px; }
+    button { border: 0; border-radius: var(--radius-md); padding: 10px 14px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: white; font-weight: 800; cursor: pointer; transition: transform .16s ease, filter .16s ease, box-shadow .16s ease; font-size: 13px; box-shadow: 0 10px 28px rgba(139,92,246,.22); }
+    button:hover { filter: brightness(1.12); transform: translateY(-1px); }
+    button:focus { outline: 2px solid rgba(255,255,255,.7); outline-offset: 2px; }
+    button:disabled { opacity: .6; cursor: wait; transform: none; }
+    button.secondary { background: var(--secondary); box-shadow: none; }
     button.secondary:hover { background: var(--secondary-hover); }
-    button.danger { background: var(--danger); }
-    button.danger:hover { background: var(--danger-hover); }
-    label { display: grid; gap: 6px; margin: 10px 0; font-size: 13px; color: var(--text-secondary); }
-    input, select, textarea {
-      padding: 8px 10px;
-      border-radius: var(--radius-sm);
-      border: 1px solid #444;
-      background: var(--input-bg);
-      color: white;
-      font-family: inherit;
-      transition: all 0.15s ease;
-    }
-    input:focus, select:focus, textarea:focus {
-      outline: 2px solid var(--accent);
-      outline-offset: 2px;
-      border-color: var(--accent);
-    }
-    input[type="range"] { width: 100%; padding: 0; }
-    input[type="number"] { width: 80px; }
+    button.danger { background: linear-gradient(135deg, var(--danger), #f97316); }
+    button.danger:hover { background: linear-gradient(135deg, var(--danger-hover), #ea580c); }
+    label { display: grid; gap: 6px; margin: 10px 0; font-size: 13px; color: var(--text-secondary); font-weight: 650; }
+    input, select, textarea { padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid rgba(255,255,255,.14); background: var(--input-bg); color: white; font-family: inherit; transition: all .15s ease; }
+    input:focus, select:focus, textarea:focus { outline: 2px solid rgba(6,182,212,.8); outline-offset: 2px; border-color: var(--accent-2); }
+    input[type="range"] { width: 100%; padding: 0; accent-color: var(--accent-2); }
+    input[type="number"] { width: 86px; }
     select { min-width: 160px; }
     .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-    .swatch {
-      width: 40px;
-      height: 40px;
-      border-radius: var(--radius-md);
-      border: 1px solid #555;
-      padding: 0;
-      cursor: pointer;
-      transition: transform 0.15s ease;
-    }
-    .swatch:hover { transform: scale(1.08); }
+    .swatch { width: 44px; height: 44px; border-radius: 16px; border: 1px solid rgba(255,255,255,.28); padding: 0; cursor: pointer; transition: transform .15s ease; box-shadow: 0 0 26px currentColor; }
+    .swatch:hover { transform: scale(1.08) rotate(-2deg); }
 
     .meter-row { display: grid; grid-template-columns: 40px 1fr 40px; gap: 10px; align-items: center; margin-top: 10px; }
     .meter { position: relative; height: 16px; border-radius: var(--radius-sm); overflow: hidden; background: #0b0b0b; border: 1px solid #444; }
@@ -519,9 +464,10 @@ HTML_TEMPLATE = """<!doctype html>
       <p style="font-size:13px;color:var(--text-secondary);margin:0 0 12px;">Let the AI choose lights for the current song. No prompts, no choices.</p>
       <button class="big-button" id="autoMatchBtn" onclick="autoMatchSong()">Match lights to current song</button>
       <div class="auto-status" id="autoStatus"></div>
-      <div style="margin-top:12px;border-top:1px solid #2a3a4a;padding-top:12px;">
+      <div style="margin-top:12px;border-top:1px solid rgba(255,255,255,.14);padding-top:12px;">
         <button class="big-button secondary" id="autoToggleBtn" onclick="toggleAutonomous()">▶ Start autonomous show</button>
       </div>
+      <div class="smart-grid" id="smartSuggestions" aria-live="polite"></div>
     </div>
 
     <!-- Beautiful full-width LED strip visualization -->
@@ -1005,6 +951,28 @@ HTML_TEMPLATE = """<!doctype html>
       } catch (err) {
         status.textContent = 'Match lights error: ' + err.message;
         musicTitle.textContent = 'Error matching lights.';
+      }
+    }
+
+    async function refreshSmartSuggestions() {
+      const box = document.getElementById('smartSuggestions');
+      if (!box) return;
+      try {
+        const res = await fetch('/api/suggestions');
+        const data = await res.json();
+        const suggestions = data.suggestions || [];
+        box.innerHTML = suggestions.map((item) => {
+          const click = item.action === 'music_match'
+            ? 'matchLightsToSong()'
+            : `send('${item.action}', ${JSON.stringify(item.payload || {}).replace(/"/g, '&quot;')})`;
+          return `
+            <button class="smart-chip" onclick="${click}">
+              <b>${item.title}</b><span>${item.reason}</span>
+            </button>
+          `;
+        }).join('');
+      } catch (err) {
+        box.innerHTML = '<div class="smart-chip"><b>Smart picks offline</b><span>Suggestions will appear when the controller responds.</span></div>';
       }
     }
 
@@ -1515,6 +1483,8 @@ HTML_TEMPLATE = """<!doctype html>
     initLedStrip();
     stripRafId = requestAnimationFrame(updateStripFrame);
     loadChatHistory();
+    refreshSmartSuggestions();
+    setInterval(refreshSmartSuggestions, 30000);
     listSchedule();
   </script>
 </body>
@@ -2609,6 +2579,42 @@ class GuiState:
         return "Sunrise is not running."
 
 
+def smart_suggestions(state_data: dict | None = None, now_playing: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    """Return context-aware one-tap lighting suggestions for the GUI."""
+    hour = int(time.strftime("%H"))
+    seg = {}
+    if state_data and isinstance(state_data.get("seg"), list) and state_data["seg"]:
+        seg = state_data["seg"][0] if isinstance(state_data["seg"][0], dict) else {}
+    is_on = bool(state_data.get("on")) if state_data else False
+    bri = int(state_data.get("bri", 0)) if state_data else 0
+    suggestions: list[dict[str, Any]] = []
+
+    if not is_on:
+        suggestions.append({"title": "Wake the room", "reason": "Lights are off — start warm with a gentle fade.", "action": "scene", "payload": {"name": "warm"}})
+    elif bri > 210 and hour >= 21:
+        suggestions.append({"title": "Wind down", "reason": "It is late and bright — switch to a warmer low scene.", "action": "scene", "payload": {"name": "night"}})
+    elif 6 <= hour < 11:
+        suggestions.append({"title": "Morning focus", "reason": "Bright daylight tones help the room feel awake.", "action": "temp", "payload": {"kelvin": 5000, "transition": 700}})
+    elif 17 <= hour < 22:
+        suggestions.append({"title": "Evening ocean", "reason": "A calm blue flow fits the end of the day.", "action": "scene", "payload": {"name": "ocean"}})
+    else:
+        suggestions.append({"title": "Balanced focus", "reason": "Clean, bright, neutral light for everyday use.", "action": "scene", "payload": {"name": "focus"}})
+
+    if now_playing and (now_playing.get("title") or now_playing.get("artist")):
+        suggestions.append({"title": "Match the music", "reason": now_playing_text(now_playing), "action": "music_match", "payload": {}})
+    else:
+        suggestions.append({"title": "Listen + match", "reason": "Identify the song, then let AI build a show.", "action": "music_match", "payload": {}})
+
+    current_fx = int(seg.get("fx", 0) or 0)
+    if current_fx == 0:
+        suggestions.append({"title": "Add motion", "reason": "Current output looks static — add smooth Colorwaves.", "action": "fx", "payload": {"effect": 67, "speed": 120, "transition": 500}})
+    else:
+        suggestions.append({"title": "Soften motion", "reason": "Use a slower, safer flow with gentle transitions.", "action": "fx", "payload": {"effect": 108, "speed": 78, "transition": 800}})
+
+    suggestions.append({"title": "Surprise me", "reason": "Choose a random safe built-in scene.", "action": "random", "payload": {"transition": 600}})
+    return suggestions[:4]
+
+
 def make_handler(state: GuiState):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -2693,6 +2699,13 @@ def make_handler(state: GuiState):
                     logger.exception("Error reading state")
                     self.respond_json({"ok": False, "error": str(exc)}, status=500)
                 return
+            if path == "/api/suggestions":
+                try:
+                    st = state.client.get_state()
+                except Exception:
+                    st = None
+                self.respond_json({"ok": True, "suggestions": smart_suggestions(st, get_now_playing())})
+                return
             if path == "/api/events":
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
@@ -2726,10 +2739,10 @@ def make_handler(state: GuiState):
 
         def do_HEAD(self) -> None:
             path = urllib.parse.urlparse(self.path).path
-            if path not in ("/", "/api/now-playing", "/api/recognize", "/api/match-lights", "/api/state"):
+            if path not in ("/", "/api/now-playing", "/api/recognize", "/api/match-lights", "/api/state", "/api/suggestions"):
                 self.send_error(404)
                 return
-            if path in ("/api/now-playing", "/api/recognize", "/api/match-lights", "/api/state"):
+            if path in ("/api/now-playing", "/api/recognize", "/api/match-lights", "/api/state", "/api/suggestions"):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
