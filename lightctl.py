@@ -21,14 +21,15 @@ logger = logging.getLogger("lightctl")
 DEFAULT_HOST = "http://10.27.27.110"
 JSON_PATH = "/json"
 STATE_PATH = "/json/state"
-EFFECTS_PATH = "/json/effects"
-PALETTES_PATH = "/json/palettes"
+EFFECTS_PATH = "/json/eff"      # individual effects list (main /json also returns "effects")
+PALETTES_PATH = "/json/pal"      # individual palettes list (main /json also returns "palettes")
 NODES_PATH = "/json/nodes"
-LIVE_PATH = "/json/live"
+LIVE_PATH = "/json/live"       # optional; many builds return 501. Use E1.31/Art-Net/DDP for realtime per https://kno.wled.ge/interfaces/e1.31-dmx/
 CONFIG_PATH = "/json/cfg"
-FXDATA_PATH = "/json/fxdata"
+FXDATA_PATH = "/json/fxdata"     # effect metadata (v0.14+)
 NETWORKS_PATH = "/json/net"
-PRESETS_PATH = "/json/presets"
+PRESETS_PATH = "/json/presets"   # optional; not present on all versions
+PRESETS_JSON_PATH = "/presets.json"  # common way to get full preset list (may require no password)
 SAFE_EFFECTS = {
     2: "Breathe",
     8: "Colorloop",
@@ -610,20 +611,48 @@ def get_mic_device() -> str | int | None:
     """Return the preferred microphone device for sounddevice.
 
     Priority: LIGHT_MIC_DEVICE env var → config mic_device key →
-    auto-detect first USB audio input → None (sounddevice default).
+    auto-detect first USB (preferred) or any input device → None (sounddevice default).
+    Validates that the chosen device actually exists and has input channels.
     """
+    import sounddevice as sd  # type: ignore[import-untyped]
+
+    def _is_valid_input(dev_id: str | int | None) -> bool:
+        if dev_id is None:
+            return False
+        try:
+            info = sd.query_devices(device=dev_id, kind="input")
+            return bool(info.get("max_input_channels", 0) > 0)
+        except Exception:
+            return False
+
     env = os.environ.get("LIGHT_MIC_DEVICE", "").strip()
     if env:
-        return int(env) if env.isdigit() else env
+        candidate = int(env) if env.isdigit() else env
+        if _is_valid_input(candidate):
+            return candidate
+
     cfg_val = load_config().get("mic_device", "")
     if cfg_val:
-        return int(cfg_val) if str(cfg_val).isdigit() else str(cfg_val)
-    # Auto-detect: prefer USB audio input devices over built-in
+        candidate = int(cfg_val) if str(cfg_val).isdigit() else str(cfg_val)
+        if _is_valid_input(candidate):
+            return candidate
+
+    # Auto-detect: prefer USB audio input, fall back to first available input device
     try:
-        import sounddevice as sd  # type: ignore[import-untyped]
-        for dev in sd.query_devices():
-            if dev.get("max_input_channels", 0) > 0 and "USB" in dev.get("name", ""):
-                return dev["index"]
+        devices = sd.query_devices()
+        usb_dev = None
+        first_input = None
+        for i, dev in enumerate(devices):
+            if dev.get("max_input_channels", 0) > 0:
+                if first_input is None:
+                    first_input = i
+                if "USB" in dev.get("name", ""):
+                    usb_dev = i
+                    break
+        if usb_dev is not None:
+            return usb_dev
+        if first_input is not None:
+            return first_input
     except Exception:
         pass
     return None
@@ -691,6 +720,10 @@ class LightClient:
     def presets_url(self) -> str:
         return f"{self.host}{PRESETS_PATH}"
 
+    @property
+    def presets_json_url(self) -> str:
+        return f"{self.host}{PRESETS_JSON_PATH}"
+
     def _get_json_url(self, url: str) -> dict | list:
         request = urllib.request.Request(url, method="GET")
         with self._request_with_retry(request) as response:
@@ -705,42 +738,76 @@ class LightClient:
         return data if isinstance(data, dict) else {}
 
     def get_effects(self) -> list[str]:
-        data = self._get_json_url(self.effects_url)
-        return [str(item) for item in data] if isinstance(data, list) else []
+        try:
+            data = self._get_json_url(self.effects_url)
+            return [str(item) for item in data] if isinstance(data, list) else []
+        except Exception:
+            return []
 
     def get_palettes(self) -> list[str]:
-        data = self._get_json_url(self.palettes_url)
-        return [str(item) for item in data] if isinstance(data, list) else []
+        try:
+            data = self._get_json_url(self.palettes_url)
+            return [str(item) for item in data] if isinstance(data, list) else []
+        except Exception:
+            return []
 
     def get_nodes(self) -> dict:
-        data = self._get_json_url(self.nodes_url)
-        return data if isinstance(data, dict) else {}
+        try:
+            data = self._get_json_url(self.nodes_url)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
 
     def get_live(self) -> dict:
-        data = self._get_json_url(self.live_url)
-        return data if isinstance(data, dict) else {}
+        """Live/realtime data. Returns 501 on many WLED builds (not implemented or disabled).
+        Realtime LED data should use E1.31 (sACN), Art-Net or DDP instead (see https://kno.wled.ge/interfaces/e1.31-dmx/).
+        """
+        try:
+            data = self._get_json_url(self.live_url)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
 
     def get_config(self) -> dict:
         data = self._get_json_url(self.config_url)
         return data if isinstance(data, dict) else {}
 
     def get_fxdata(self) -> list[str]:
-        data = self._get_json_url(self.fxdata_url)
-        return [str(item) for item in data] if isinstance(data, list) else []
+        try:
+            data = self._get_json_url(self.fxdata_url)
+            return [str(item) for item in data] if isinstance(data, list) else []
+        except Exception:
+            return []
 
     def get_networks(self) -> dict:
         data = self._get_json_url(self.networks_url)
         return data if isinstance(data, dict) else {}
 
     def get_presets(self) -> dict:
-        data = self._get_json_url(self.presets_url)
-        return data if isinstance(data, dict) else {}
+        """List of presets.
+        Tries /json/presets first (some builds), then falls back to /presets.json .
+        Many devices return 501 for /json/presets; /presets.json may work if accessible.
+        Use 'ps'/'PL' to load, 'psave'/'PS' to save.
+        """
+        for url in (self.presets_url, self.presets_json_url):
+            try:
+                data = self._get_json_url(url)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
+        return {}
 
     def _snapshot_part(self, name: str, loader: Callable[[], dict | list]) -> dict | list:
         try:
             return loader()
         except Exception as exc:
-            logger.warning("Could not read WLED %s snapshot: %s", name, exc)
+            # Some endpoints (live, nodes, sometimes presets) return 501 on stock WLED
+            # (see JSON API and HTTP API docs). Presets getter now falls back to /presets.json.
+            if name in ("live", "presets", "nodes"):
+                logger.debug("Could not read WLED %s snapshot: %s", name, exc)
+            else:
+                logger.warning("Could not read WLED %s snapshot: %s", name, exc)
             return {"error": str(exc)}
 
     def get_device_snapshot(self) -> dict:
@@ -754,10 +821,9 @@ class LightClient:
             "palettes": combined.get("palettes") or self._snapshot_part("palettes", self.get_palettes),
             "config": self._snapshot_part("config", self.get_config),
             "fxdata": self._snapshot_part("fxdata", self.get_fxdata),
-            "nodes": self._snapshot_part("nodes", self.get_nodes),
-            "live": self._snapshot_part("live", self.get_live),
             "networks": self._snapshot_part("networks", self.get_networks),
             "presets": self._snapshot_part("presets", self.get_presets),
+            # live and nodes omitted (often return 501; realtime data uses E1.31/Art-Net per docs)
         }
 
     def _request_with_retry(
@@ -767,11 +833,27 @@ class LightClient:
         for attempt in range(retries):
             try:
                 return urllib.request.urlopen(request, timeout=self.timeout)
+            except urllib.error.HTTPError as exc:
+                # 501 Not Implemented (e.g. /json/live, /json/presets; see E1.31 docs for realtime)
+                # and other 4xx/5xx mean the endpoint doesn't exist or is unsupported;
+                # fail fast without spamming retries.
+                if exc.code in (501, 404, 405):
+                    raise
+                last_exc = exc
+                if attempt < retries - 1:
+                    wait = 0.2 * (2 ** attempt)
+                    logger.warning("Request failed (attempt %d/%d), retrying in %.1fs: %s", attempt + 1, retries, wait, exc)
+                    time.sleep(wait)
+                else:
+                    raise
             except urllib.error.URLError as exc:
                 last_exc = exc
-                wait = 0.2 * (2 ** attempt)
-                logger.warning("Request failed (attempt %d/%d), retrying in %.1fs: %s", attempt + 1, retries, wait, exc)
-                time.sleep(wait)
+                if attempt < retries - 1:
+                    wait = 0.2 * (2 ** attempt)
+                    logger.warning("Request failed (attempt %d/%d), retrying in %.1fs: %s", attempt + 1, retries, wait, exc)
+                    time.sleep(wait)
+                else:
+                    raise
         raise RuntimeError(f"Could not reach light controller at {request.full_url}: {last_exc}") from last_exc
 
     def get_state(self) -> dict:
@@ -894,6 +976,8 @@ class ReactiveThread:
 
     def stop(self) -> str:
         self._stop.set()
+        if self._thread and self._thread is not threading.current_thread():
+            self._thread.join(timeout=1.0)
         return "Audio-reactive mode stopped."
 
     def is_alive(self) -> bool:

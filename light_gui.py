@@ -202,12 +202,6 @@ def device_snapshot_text(snapshot: dict | None) -> str:
                 "Saved WLED presets: "
                 + ", ".join(f"{pid}={p['n']}" for pid, p in preset_entries)
             )
-    live = snapshot.get("live")
-    if live:
-        lines.append(f"Live endpoint status: {live}")
-    nodes = snapshot.get("nodes")
-    if nodes:
-        lines.append(f"Nodes endpoint status: {nodes}")
     return "\n".join(lines)
 
 HTML_TEMPLATE = """<!doctype html>
@@ -277,6 +271,139 @@ HTML_TEMPLATE = """<!doctype html>
       margin-bottom: 16px;
     }
     .card:last-child { margin-bottom: 0; }
+    .auto-card {
+      background: linear-gradient(135deg, #1a2a3a 0%, #161616 100%);
+      border-color: #2d4a66;
+    }
+    .auto-card h2 { color: #a8d6ff; }
+    .tab-bar {
+      display: flex;
+      gap: 4px;
+      margin: 8px 0 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .tab-btn {
+      background: transparent;
+      color: var(--text-secondary);
+      border: none;
+      padding: 8px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      border-bottom: 3px solid transparent;
+      margin-bottom: -1px;
+      cursor: pointer;
+    }
+    .tab-btn.active {
+      color: var(--text);
+      border-bottom-color: var(--accent);
+    }
+    .tab-btn:hover:not(.active) {
+      color: var(--text);
+      background: #1a1a1a;
+    }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .full-bleed-preview {
+      width: 100vw;
+      margin-left: calc(-50vw + 50%);
+      margin-right: calc(-50vw + 50%);
+      background: #0a0a0a;
+      padding: 12px 0 8px;
+      border-bottom: 1px solid #1f1f1f;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.7);
+      position: relative;
+      z-index: 10;
+    }
+    .strip-wrapper {
+      width: 100%;
+      max-width: none;
+      padding: 0 8px;
+      box-sizing: border-box;
+    }
+    .led-strip {
+      display: flex;
+      gap: 0.8px;
+      justify-content: flex-start;
+      align-items: stretch;
+      height: 130px;
+      padding: 6px 4px;
+      border-radius: 4px;
+      background: linear-gradient(180deg, #111 0%, #0a0a0a 50%, #050505 100%);
+      border: 8px solid #222;
+      box-shadow: 
+        inset 0 0 40px rgba(0,0,0,0.9),
+        0 0 0 1px #333,
+        0 6px 20px rgba(0,0,0,0.8);
+      position: relative;
+      overflow: hidden;
+    }
+    .led-strip::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 30%;
+      background: linear-gradient(180deg, rgba(255,255,255,0.06) 0%, transparent 100%);
+      pointer-events: none;
+      z-index: 2;
+    }
+    .led-segment {
+      flex: 1;
+      min-width: 1px;
+      background: #0d0d0d;
+      border-radius: 2px;
+      box-shadow: 
+        0 0 6px currentColor,
+        0 0 2px currentColor,
+        inset 0 0 3px rgba(255,255,255,0.15),
+        inset 0 -2px 3px rgba(0,0,0,0.6);
+      transition: background-color 16ms linear, box-shadow 16ms linear;
+      position: relative;
+      z-index: 1;
+    }
+    .led-strip.off .led-segment {
+      background: #111 !important;
+      box-shadow: inset 0 0 2px rgba(0,0,0,0.8) !important;
+    }
+    .preview-meta {
+      max-width: 1200px;
+      margin: 6px auto 0;
+      padding: 0 16px;
+      text-align: center;
+    }
+    .light-info {
+      font-size: 12px;
+      color: var(--text-secondary);
+      text-align: center;
+      line-height: 1.4;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .light-info .label {
+      display: inline-block;
+      background: #1a1a1a;
+      padding: 1px 6px;
+      border-radius: 8px;
+      margin: 1px;
+      border: 1px solid #333;
+      font-size: 11px;
+    }
+    .big-button {
+      width: 100%;
+      padding: 16px 20px;
+      font-size: 16px;
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+    }
+    .big-button.secondary { background: #2a4a6a; }
+    .big-button.secondary:hover { background: #335980; }
+    .auto-status {
+      text-align: center;
+      font-size: 13px;
+      color: var(--text-secondary);
+      min-height: 20px;
+    }
     button {
       border: 0;
       border-radius: var(--radius-md);
@@ -323,6 +450,7 @@ HTML_TEMPLATE = """<!doctype html>
       transition: transform 0.15s ease;
     }
     .swatch:hover { transform: scale(1.08); }
+
     .meter-row { display: grid; grid-template-columns: 40px 1fr 40px; gap: 10px; align-items: center; margin-top: 10px; }
     .meter { position: relative; height: 16px; border-radius: var(--radius-sm); overflow: hidden; background: #0b0b0b; border: 1px solid #444; }
     .meter-fill { width: 0%; height: 100%; background: linear-gradient(90deg, #20c997, #ffd43b 65%, #ff6b6b); transition: width 65ms linear; }
@@ -386,8 +514,34 @@ HTML_TEMPLATE = """<!doctype html>
 <body>
   <main>
     <h1>💡 Bedroom LED Controller</h1>
-    <div class="grid">
-      <div class="left-col">
+    <div class="card auto-card">
+      <h2>✨ Auto</h2>
+      <p style="font-size:13px;color:var(--text-secondary);margin:0 0 12px;">Let the AI choose lights for the current song. No prompts, no choices.</p>
+      <button class="big-button" id="autoMatchBtn" onclick="autoMatchSong()">Match lights to current song</button>
+      <div class="auto-status" id="autoStatus"></div>
+      <div style="margin-top:12px;border-top:1px solid #2a3a4a;padding-top:12px;">
+        <button class="big-button secondary" id="autoToggleBtn" onclick="toggleAutonomous()">▶ Start autonomous show</button>
+      </div>
+    </div>
+
+    <!-- Beautiful full-width LED strip visualization -->
+    <div class="full-bleed-preview">
+      <div class="strip-wrapper">
+        <div class="led-strip off" id="ledStrip"></div>
+      </div>
+      <div class="preview-meta">
+        <div class="light-info" id="lightInfo">Waiting for state...</div>
+      </div>
+    </div>
+
+    <div class="tab-bar">
+      <button class="tab-btn active" data-tab="live" onclick="switchTab('live')">Live View</button>
+      <button class="tab-btn" data-tab="manual" onclick="switchTab('manual')">Manual Controls</button>
+    </div>
+
+    <div id="tab-live" class="tab-content active">
+      <div class="grid">
+        <div class="left-col">
         <div class="card">
           <h2>🤖 AI Chat</h2>
           <div class="chat-controls">
@@ -449,122 +603,124 @@ HTML_TEMPLATE = """<!doctype html>
           <span class="now-playing" id="nowPlaying"></span>
         </div>
       </div>
-      <div class="right-col">
-        <div class="card">
-          <h2>🎨 Color</h2>
-          <div class="row">
-            <button class="swatch" style="background:#f00" onclick="setColor(255,0,0,0)" title="Red (255,0,0,0)"></button>
-            <button class="swatch" style="background:#00f" onclick="setColor(0,0,255,0)" title="Blue (0,0,255,0)"></button>
-            <button class="swatch" style="background:#ff66bf" onclick="setColor(255,100,0,255)" title="Pink white (255,100,0,255)"></button>
-            <button class="swatch" style="background:#00ff80" onclick="setColor(0,255,120,0)" title="Green (0,255,120,0)"></button>
-          </div>
-          <div class="row">
-            <label>R <input id="r" type="number" min="0" max="255" value="255"></label>
-            <label>G <input id="g" type="number" min="0" max="255" value="100"></label>
-            <label>B <input id="b" type="number" min="0" max="255" value="0"></label>
-            <label>W <input id="w" type="number" min="0" max="255" value="255"></label>
-            <button onclick="setCustom()" title="Apply custom RGBW color">Set Color</button>
-          </div>
-          <div class="row" style="margin-top:12px;">
-            <input id="hexColor" type="text" placeholder="#ff6600" maxlength="9" style="flex:1;">
-            <button onclick="send('hex', {color: hexColor.value, transition: Number(transition.value)})" title="Set color from hex value">Set Hex</button>
-          </div>
-        </div>
-        <div class="card">
-          <h2>🌡️ Temperature</h2>
-          <div class="row">
-            <button class="secondary" onclick="send('temp', {kelvin: 2700, transition: Number(transition.value)})" title="Set warm 2700K temperature">Warm 2700K</button>
-            <button class="secondary" onclick="send('temp', {kelvin: 5000, transition: Number(transition.value)})" title="Set daylight 5000K temperature">Daylight 5000K</button>
-            <button class="secondary" onclick="send('temp', {kelvin: 6500, transition: Number(transition.value)})" title="Set cool 6500K temperature">Cool 6500K</button>
-          </div>
-          <label style="margin-top:12px;">Kelvin <span id="kelvinText">4000</span>K
-            <input id="kelvin" type="range" min="2000" max="6500" value="4000" oninput="kelvinText.textContent=this.value" onchange="send('temp', {kelvin: Number(this.value), transition: Number(transition.value)})">
-          </label>
-        </div>
-        <div class="card">
-          <h2>✨ Effects</h2>
-          <div class="row">
-            <label>Effect
-              <select id="fx">
-                __SAFE_EFFECT_OPTIONS__
-              </select>
-            </label>
-            <label>Speed <input id="speed" type="number" min="0" max="255" value="128"></label>
-            <button onclick="send('fx', {effect: Number(fx.value), speed: Number(speed.value), transition: Number(transition.value)})" title="Apply selected effect and speed">Set Effect</button>
-          </div>
-          <label style="margin-top:10px;">Brightness <span id="briText">200</span>
-            <input id="bri" type="range" min="0" max="255" value="200" oninput="briText.textContent=this.value" onchange="send('bri', {value: Number(this.value), transition: Number(transition.value)})">
-          </label>
-          <label>Transition <span id="transText">0</span>ms
-            <input id="transition" type="range" min="0" max="2000" value="0" oninput="transText.textContent=this.value">
-          </label>
-        </div>
-        <div class="card">
-          <h2>🎬 Scenes</h2>
-          <div class="row">
-            <button onclick="send('scene', {name: 'warm'})" title="Apply warm scene">Warm</button>
-            <button onclick="send('scene', {name: 'night'})" title="Apply night scene">Night</button>
-            <button onclick="send('scene', {name: 'focus'})" title="Apply focus scene">Focus</button>
-            <button onclick="send('scene', {name: 'ocean'})" title="Apply ocean scene">Ocean</button>
-            <button onclick="send('scene', {name: 'party'})" title="Apply party scene">Party</button>
-            <button class="secondary" onclick="send('random')" title="Apply random scene">Random</button>
-          </div>
-          <div class="row" style="margin-top:12px;">
-            <input id="saveSceneName" type="text" placeholder="Scene name" style="flex:1;">
-            <button class="secondary" onclick="send('save_scene', {name: saveSceneName.value})" title="Save current state as named scene">Save Scene</button>
-            <button class="danger" onclick="send('delete_scene', {name: saveSceneName.value})" title="Delete named scene">Delete</button>
-          </div>
-        </div>
-        <div class="card">
-          <h2>⏱️ Timers & Simulations</h2>
-          <div class="row" style="margin-bottom:8px;">
-            <label style="margin:0;">Preset ID (1-250)
-              <input id="presetId" type="number" min="1" max="250" value="1" style="width:90px;">
-            </label>
-            <button onclick="send('preset', {id: Number(presetId.value), transition: Number(transition.value)})" title="Load WLED preset by ID">Load Preset</button>
-          </div>
-          <div class="row" style="margin-bottom:8px;">
-            <label style="margin:0;">Interval (s)
-              <input id="cycleInterval" type="number" min="5" max="3600" value="60" style="width:90px;">
-            </label>
-            <button onclick="send('cycle_start', {interval: Number(cycleInterval.value)})" title="Start automatic scene cycling">Start Cycle</button>
-            <button class="secondary" onclick="send('cycle_stop')" title="Stop scene cycling">Stop Cycle</button>
-          </div>
-          <div class="row" style="margin-bottom:8px;">
-            <label style="margin:0;">Sunrise (min)
-              <input id="sunriseMinutes" type="number" min="1" max="120" value="30" style="width:90px;">
-            </label>
-            <button onclick="send('sunrise_start', {minutes: Number(sunriseMinutes.value)})" title="Start sunrise wake-up simulation">Start Sunrise</button>
-            <button class="secondary" onclick="send('sunrise_stop')" title="Stop sunrise simulation">Stop</button>
-          </div>
-          <div class="row">
-            <label style="margin:0;">Fade (min)
-              <input id="fadeMinutes" type="number" min="1" max="120" value="30" style="width:90px;">
-            </label>
-            <button onclick="send('fade_off', {minutes: Number(fadeMinutes.value)})" title="Start gradual fade-off timer">Start Fade</button>
-          </div>
-        </div>
-        <div class="card">
-          <h2>📅 Schedule</h2>
-          <div class="row">
-            <label style="margin:0;">Time
-              <input id="schedTime" type="time" style="padding:8px;">
-            </label>
-            <label style="margin:0;">Action
-              <select id="schedAction">
-                <option value="on">On</option>
-                <option value="off">Off</option>
-                <option value="scene">Scene</option>
-              </select>
-            </label>
-            <input id="schedScene" type="text" placeholder="Scene name (if scene)" style="flex:1;">
-            <button onclick="addSchedule()" title="Add schedule entry">Add</button>
-          </div>
-          <div class="schedule-list" id="scheduleList" style="margin-top:10px;">No schedules.</div>
-          <button class="secondary" style="margin-top:8px;" onclick="listSchedule()" title="Refresh schedule list">Refresh List</button>
-        </div>
+    </div>
+  </div>
+
+  <div id="tab-manual" class="tab-content">
+    <div class="card">
+      <h2>🎨 Color</h2>
+      <div class="row">
+        <button class="swatch" style="background:#f00" onclick="setColor(255,0,0,0)" title="Red (255,0,0,0)"></button>
+        <button class="swatch" style="background:#00f" onclick="setColor(0,0,255,0)" title="Blue (0,0,255,0)"></button>
+        <button class="swatch" style="background:#ff66bf" onclick="setColor(255,100,0,255)" title="Pink white (255,100,0,255)"></button>
+        <button class="swatch" style="background:#00ff80" onclick="setColor(0,255,120,0)" title="Green (0,255,120,0)"></button>
+      </div>
+      <div class="row">
+        <label>R <input id="r" type="number" min="0" max="255" value="255"></label>
+        <label>G <input id="g" type="number" min="0" max="255" value="100"></label>
+        <label>B <input id="b" type="number" min="0" max="255" value="0"></label>
+        <label>W <input id="w" type="number" min="0" max="255" value="255"></label>
+        <button onclick="setCustom()" title="Apply custom RGBW color">Set Color</button>
+      </div>
+      <div class="row" style="margin-top:12px;">
+        <input id="hexColor" type="text" placeholder="#ff6600" maxlength="9" style="flex:1;">
+        <button onclick="send('hex', {color: hexColor.value, transition: Number(transition.value)})" title="Set color from hex value">Set Hex</button>
       </div>
     </div>
+    <div class="card">
+      <h2>🌡️ Temperature</h2>
+      <div class="row">
+        <button class="secondary" onclick="send('temp', {kelvin: 2700, transition: Number(transition.value)})" title="Set warm 2700K temperature">Warm 2700K</button>
+        <button class="secondary" onclick="send('temp', {kelvin: 5000, transition: Number(transition.value)})" title="Set daylight 5000K temperature">Daylight 5000K</button>
+        <button class="secondary" onclick="send('temp', {kelvin: 6500, transition: Number(transition.value)})" title="Set cool 6500K temperature">Cool 6500K</button>
+      </div>
+      <label style="margin-top:12px;">Kelvin <span id="kelvinText">4000</span>K
+        <input id="kelvin" type="range" min="2000" max="6500" value="4000" oninput="kelvinText.textContent=this.value" onchange="send('temp', {kelvin: Number(this.value), transition: Number(transition.value)})">
+      </label>
+    </div>
+    <div class="card">
+      <h2>✨ Effects</h2>
+      <div class="row">
+        <label>Effect
+          <select id="fx">
+            __SAFE_EFFECT_OPTIONS__
+          </select>
+        </label>
+        <label>Speed <input id="speed" type="number" min="0" max="255" value="128"></label>
+        <button onclick="send('fx', {effect: Number(fx.value), speed: Number(speed.value), transition: Number(transition.value)})" title="Apply selected effect and speed">Set Effect</button>
+      </div>
+      <label style="margin-top:10px;">Brightness <span id="briText">200</span>
+        <input id="bri" type="range" min="0" max="255" value="200" oninput="briText.textContent=this.value" onchange="send('bri', {value: Number(this.value), transition: Number(transition.value)})">
+      </label>
+      <label>Transition <span id="transText">0</span>ms
+        <input id="transition" type="range" min="0" max="2000" value="0" oninput="transText.textContent=this.value">
+      </label>
+    </div>
+    <div class="card">
+      <h2>🎬 Scenes</h2>
+      <div class="row">
+        <button onclick="send('scene', {name: 'warm'})" title="Apply warm scene">Warm</button>
+        <button onclick="send('scene', {name: 'night'})" title="Apply night scene">Night</button>
+        <button onclick="send('scene', {name: 'focus'})" title="Apply focus scene">Focus</button>
+        <button onclick="send('scene', {name: 'ocean'})" title="Apply ocean scene">Ocean</button>
+        <button onclick="send('scene', {name: 'party'})" title="Apply party scene">Party</button>
+        <button class="secondary" onclick="send('random')" title="Apply random scene">Random</button>
+      </div>
+      <div class="row" style="margin-top:12px;">
+        <input id="saveSceneName" type="text" placeholder="Scene name" style="flex:1;">
+        <button class="secondary" onclick="send('save_scene', {name: saveSceneName.value})" title="Save current state as named scene">Save Scene</button>
+        <button class="danger" onclick="send('delete_scene', {name: saveSceneName.value})" title="Delete named scene">Delete</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>⏱️ Timers & Simulations</h2>
+      <div class="row" style="margin-bottom:8px;">
+        <label style="margin:0;">Preset ID (1-250)
+          <input id="presetId" type="number" min="1" max="250" value="1" style="width:90px;">
+        </label>
+        <button onclick="send('preset', {id: Number(presetId.value), transition: Number(transition.value)})" title="Load WLED preset by ID">Load Preset</button>
+      </div>
+      <div class="row" style="margin-bottom:8px;">
+        <label style="margin:0;">Interval (s)
+          <input id="cycleInterval" type="number" min="5" max="3600" value="60" style="width:90px;">
+        </label>
+        <button onclick="send('cycle_start', {interval: Number(cycleInterval.value)})" title="Start automatic scene cycling">Start Cycle</button>
+        <button class="secondary" onclick="send('cycle_stop')" title="Stop scene cycling">Stop Cycle</button>
+      </div>
+      <div class="row" style="margin-bottom:8px;">
+        <label style="margin:0;">Sunrise (min)
+          <input id="sunriseMinutes" type="number" min="1" max="120" value="30" style="width:90px;">
+        </label>
+        <button onclick="send('sunrise_start', {minutes: Number(sunriseMinutes.value)})" title="Start sunrise wake-up simulation">Start Sunrise</button>
+        <button class="secondary" onclick="send('sunrise_stop')" title="Stop sunrise simulation">Stop</button>
+      </div>
+      <div class="row">
+        <label style="margin:0;">Fade (min)
+          <input id="fadeMinutes" type="number" min="1" max="120" value="30" style="width:90px;">
+        </label>
+        <button onclick="send('fade_off', {minutes: Number(fadeMinutes.value)})" title="Start gradual fade-off timer">Start Fade</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>📅 Schedule</h2>
+      <div class="row">
+        <label style="margin:0;">Time
+          <input id="schedTime" type="time" style="padding:8px;">
+        </label>
+        <label style="margin:0;">Action
+          <select id="schedAction">
+            <option value="on">On</option>
+            <option value="off">Off</option>
+            <option value="scene">Scene</option>
+          </select>
+        </label>
+        <input id="schedScene" type="text" placeholder="Scene name (if scene)" style="flex:1;">
+        <button onclick="addSchedule()" title="Add schedule entry">Add</button>
+      </div>
+      <div class="schedule-list" id="scheduleList" style="margin-top:10px;">No schedules.</div>
+      <button class="secondary" style="margin-top:8px;" onclick="listSchedule()" title="Refresh schedule list">Refresh List</button>
+    </div>
+  </div>
   </main>
   <div class="status-bar">
     <div class="indicator">
@@ -593,6 +749,16 @@ HTML_TEMPLATE = """<!doctype html>
       [255, 255, 120, 80]
     ];
     const beatEffects = __BEAT_EFFECTS__;
+
+    function switchTab(tab) {
+      document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+      const content = document.getElementById('tab-' + tab);
+      if (content) content.classList.add('active');
+      // activate the corresponding button using data attribute
+      const activeBtn = document.querySelector('.tab-btn[data-tab="' + tab + '"]');
+      if (activeBtn) activeBtn.classList.add('active');
+    }
 
     function addChatMessage(role, text) {
       const div = document.createElement('div');
@@ -730,13 +896,59 @@ HTML_TEMPLATE = """<!doctype html>
       }
     }
 
+    // --- browser webcam/mic song ID support ---
+    function encodeWAV(samples, sampleRate) {
+      const buf = new ArrayBuffer(44 + samples.length * 2);
+      const view = new DataView(buf);
+      function w(s, o) { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); }
+      function ws(o, v) { view.setUint16(o, v, true); }
+      function wi(o, v) { view.setUint32(o, v, true); }
+      w("RIFF", 0); wi(4, 36 + samples.length * 2); w("WAVE", 8);
+      w("fmt ", 12); wi(16, 16); ws(20, 1); ws(22, 1); wi(24, sampleRate);
+      wi(28, sampleRate * 2); ws(32, 2); ws(34, 16);
+      w("data", 36); wi(40, samples.length * 2);
+      let o = 44;
+      for (let i = 0; i < samples.length; i++, o += 2) {
+        let s = Math.max(-1, Math.min(1, samples[i]));
+        view.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+      }
+      return buf;
+    }
+    async function captureMicWav(seconds = 5) {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+      });
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = ctx.createMediaStreamSource(stream);
+      const proc = ctx.createScriptProcessor(4096, 1, 1);
+      const chunks = [];
+      proc.onaudioprocess = (e) => { chunks.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
+      source.connect(proc);
+      proc.connect(ctx.destination);
+      await new Promise(r => setTimeout(r, seconds * 1000));
+      proc.disconnect(); source.disconnect();
+      stream.getTracks().forEach(t => t.stop());
+      let len = 0; for (const c of chunks) len += c.length;
+      const samples = new Float32Array(len);
+      let off = 0; for (const c of chunks) { samples.set(c, off); off += c.length; }
+      const wav = encodeWAV(samples, ctx.sampleRate);
+      const u8 = new Uint8Array(wav);
+      let bin = ""; for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
+      return btoa(bin);
+    }
+
     async function recognizeWithShazam() {
       musicTitle.textContent = '🎤 Listening... (5s)';
       musicArtist.textContent = '';
       musicGenre.style.display = 'none';
       albumArt.classList.remove('visible');
       try {
-        const res = await fetch('/api/recognize');
+        const b64 = await captureMicWav(5);
+        const res = await fetch('/api/recognize', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({audio: b64})
+        });
         const data = await res.json();
         if (data.ok && data.now_playing) {
           const np = data.now_playing;
@@ -763,7 +975,12 @@ HTML_TEMPLATE = """<!doctype html>
       musicGenre.style.display = 'none';
       albumArt.classList.remove('visible');
       try {
-        const res = await fetch('/api/match-lights');
+        const b64 = await captureMicWav(5);
+        const res = await fetch('/api/match-lights', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({audio: b64})
+        });
         const data = await res.json();
         if (data.ok) {
           status.textContent = data.message || 'Lights matched!';
@@ -788,6 +1005,46 @@ HTML_TEMPLATE = """<!doctype html>
       } catch (err) {
         status.textContent = 'Match lights error: ' + err.message;
         musicTitle.textContent = 'Error matching lights.';
+      }
+    }
+
+    async function autoMatchSong() {
+      const btn = document.getElementById('autoMatchBtn');
+      const st = document.getElementById('autoStatus');
+      btn.disabled = true;
+      st.textContent = 'Detecting song and choosing lights…';
+      try {
+        await matchLightsToSong();
+        st.textContent = status.textContent || 'Done';
+      } catch (err) {
+        st.textContent = 'Error: ' + err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    let autonomousRunning = false;
+    async function toggleAutonomous() {
+      const btn = document.getElementById('autoToggleBtn');
+      const st = document.getElementById('autoStatus');
+      btn.disabled = true;
+      try {
+        if (!autonomousRunning) {
+          stopAudioReactive();
+          await send('autonomous_start');
+          autonomousRunning = true;
+          btn.textContent = '■ Stop autonomous show';
+          st.textContent = 'Autonomous show running';
+        } else {
+          await send('autonomous_stop');
+          autonomousRunning = false;
+          btn.textContent = '▶ Start autonomous show';
+          st.textContent = 'Autonomous show stopped';
+        }
+      } catch (err) {
+        st.textContent = 'Error: ' + err.message;
+      } finally {
+        btn.disabled = false;
       }
     }
 
@@ -909,26 +1166,29 @@ HTML_TEMPLATE = """<!doctype html>
 
     function updateAutonomousStatus(auto) {
       const el = document.getElementById('autonomousStatus');
-      if (!el) return;
-      if (!auto || !auto.running) {
-        el.textContent = 'Inactive';
-        el.style.color = 'var(--text-secondary)';
+      const autoSt = document.getElementById('autoStatus');
+      const autoBtn = document.getElementById('autoToggleBtn');
+      const running = !!(auto && auto.running);
+      autonomousRunning = running;
+      if (autoBtn) {
+        autoBtn.textContent = running ? '■ Stop autonomous show' : '▶ Start autonomous show';
+      }
+      if (!running) {
+        if (el) { el.textContent = 'Inactive'; el.style.color = 'var(--text-secondary)'; }
         return;
       }
+      let text = '🔍 Listening for music...';
+      let color = '#ffd43b';
       if (auto.quiet) {
-        el.textContent = '🌙 Ambient — quiet detected';
-        el.style.color = '#aaa';
-        return;
+        text = '🌙 Ambient — quiet detected';
+        color = '#aaa';
+      } else if (auto.song && auto.song.title) {
+        const genre = auto.song.genre ? ` · ${auto.song.genre}` : '';
+        text = `🎵 ${auto.song.title} — ${auto.song.artist || ''}${genre}`;
+        color = 'var(--success)';
       }
-      const song = auto.song;
-      if (song && song.title) {
-        const genre = song.genre ? ` · ${song.genre}` : '';
-        el.textContent = `🎵 ${song.title} — ${song.artist || ''}${genre}`;
-        el.style.color = 'var(--success)';
-      } else {
-        el.textContent = '🔍 Listening for music...';
-        el.style.color = '#ffd43b';
-      }
+      if (el) { el.textContent = text; el.style.color = color; }
+      if (autoSt) { autoSt.textContent = text; }
     }
 
     async function restartController() {
@@ -937,6 +1197,280 @@ HTML_TEMPLATE = """<!doctype html>
       connIndicator.textContent = '🟡';
       connText.textContent = 'Restarting...';
       await send('restart');
+    }
+
+    const effectNameMap = __EFFECT_NAME_MAP__;
+    const STRIP_SEGMENTS = 120;
+    let currentStripState = null;
+    let stripRafId = null;
+
+    function initLedStrip() {
+      ledStrip.innerHTML = '';
+      for (let i = 0; i < STRIP_SEGMENTS; i++) {
+        const seg = document.createElement('div');
+        seg.className = 'led-segment';
+        ledStrip.appendChild(seg);
+      }
+    }
+
+    function rgbToHsl(r, g, b) {
+      r /= 255; g /= 255; b /= 255;
+      const max = Math.max(r, g, b), min = Math.min(r, g, b);
+      let h = 0, s = 0, l = (max + min) / 2;
+      if (max !== min) {
+        const d = max - min;
+        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        switch (max) {
+          case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+          case g: h = (b - r) / d + 2; break;
+          case b: h = (r - g) / d + 4; break;
+        }
+        h /= 6;
+      }
+      return [h, s, l];
+    }
+
+    function hslToRgb(h, s, l) {
+      let r, g, b;
+      if (s === 0) {
+        r = g = b = l;
+      } else {
+        const hue2rgb = (p, q, t) => {
+          if (t < 0) t += 1;
+          if (t > 1) t -= 1;
+          if (t < 1 / 6) return p + (q - p) * 6 * t;
+          if (t < 1 / 2) return q;
+          if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+          return p;
+        };
+        const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+        const p = 2 * l - q;
+        r = hue2rgb(p, q, h + 1 / 3);
+        g = hue2rgb(p, q, h);
+        b = hue2rgb(p, q, h - 1 / 3);
+      }
+      return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+    }
+
+    function interpolateColor(c1, c2, t) {
+      return c1.map((v, i) => Math.round(v + (c2[i] - v) * t));
+    }
+
+    function scaleBrightness(color, factor) {
+      return color.map(v => Math.round(v * factor));
+    }
+
+    function rgbwToCss(r, g, b, w, bri) {
+      const brightness = Math.max(0, Math.min(1, (bri || 0) / 255));
+      // Add neutral white contribution from the W channel (better match to RGBW strip mixing)
+      const ww = Math.max(0, Math.min(255, Math.round(((w || 0) * brightness))));
+      const rr = Math.min(255, Math.round(((r || 0) * brightness) + ww));
+      const gg = Math.min(255, Math.round(((g || 0) * brightness) + ww));
+      const bb = Math.min(255, Math.round(((b || 0) * brightness) + ww));
+      return `rgb(${rr}, ${gg}, ${bb})`;
+    }
+
+    function getSpeedMultiplier(sx) {
+      // sx 0 -> very slow, 128 -> normal, 255 -> fast
+      return 0.15 + (Math.max(0, Math.min(255, sx || 128)) / 255) * 2.85;
+    }
+
+    function renderSegment(i, t, state) {
+      const seg = state.seg;
+      const fx = seg.fx ?? 0;
+      const sx = seg.sx ?? 128;
+      const ix = seg.ix ?? 128;
+      const colors = state.colors;
+      const segments = state.segments;
+      const speed = getSpeedMultiplier(sx);
+      const pos = (t * speed) % 1;
+      const c1 = colors[0] || [0, 0, 0, 0];
+      const c2 = colors[1] || c1;
+      const c3 = colors[2] || c1;
+      const ratio = i / (segments - 1 || 1);
+
+      // Solid
+      if (fx === 0) return c1;
+
+      // Breathe / pulse
+      if (fx === 2) {
+        const pulse = 0.55 + 0.45 * Math.sin(t * speed * 3);
+        return scaleBrightness(c1, pulse);
+      }
+
+      // Colorloop
+      if (fx === 8) {
+        const hue = (t * speed * 0.25 + ratio) % 1;
+        return [...hslToRgb(hue, 0.9, 0.5), 0];
+      }
+
+      // Rainbow
+      if (fx === 9) {
+        const hue = (t * speed * 0.2 + ratio) % 1;
+        return [...hslToRgb(hue, 1, 0.5), 0];
+      }
+
+      // Fade
+      if (fx === 12) {
+        const phase = 0.5 + 0.5 * Math.sin(t * speed * 2);
+        return interpolateColor(c1, c2, phase);
+      }
+
+      // Chase family
+      if ([28, 30, 33, 37, 54].includes(fx)) {
+        const isRainbow = fx === 30 || fx === 33;
+        const dotPos = pos;
+        const dist = Math.abs(ratio - dotPos);
+        const wrappedDist = Math.min(dist, 1 - dist);
+        const tail = Math.max(0, 1 - wrappedDist * segments * 1.2);
+        if (isRainbow) {
+          const hue = (ratio + t * speed * 0.15) % 1;
+          const rainbow = [...hslToRgb(hue, 1, 0.5), 0];
+          return scaleBrightness(rainbow, 0.2 + 0.8 * tail);
+        }
+        return scaleBrightness(c1, 0.15 + 0.85 * tail);
+      }
+
+      // Running Dual
+      if (fx === 52) {
+        const wave = Math.sin((ratio - pos) * Math.PI * 4);
+        return wave > 0 ? c1 : c2;
+      }
+
+      // Oscillate
+      if (fx === 62) {
+        const wave = 0.5 + 0.5 * Math.sin((ratio + t * speed * 0.3) * Math.PI * 3);
+        return scaleBrightness(c1, 0.3 + 0.7 * wave);
+      }
+
+      // Pride 2015-ish rainbow bands
+      if (fx === 63) {
+        const hue = (ratio * 2 + t * speed * 0.12) % 1;
+        return [...hslToRgb(hue, 1, 0.52), 0];
+      }
+
+      // Juggle
+      if (fx === 64) {
+        const beat = Math.sin((ratio - pos * 3) * Math.PI * 5);
+        return beat > 0.7 ? c2 : (beat > 0 ? c3 : c1);
+      }
+
+      // Colorwaves / Flow / Waverly / Wavesins / Flow Stripe
+      if ([67, 108, 163, 183, 179].includes(fx)) {
+        const wave = Math.sin((ratio * 3 - t * speed) * Math.PI * 2);
+        const mix = 0.5 + 0.5 * wave;
+        return interpolateColor(c1, c2, mix);
+      }
+
+      // Lake / Pacifica / Waterfall — cool watery shimmer
+      if ([74, 98, 130].includes(fx)) {
+        const wave = Math.sin((ratio * 4 - t * speed) * Math.PI * 2 + Math.sin(t * speed * 2));
+        const base = fx === 98 ? [0, 80, 160, 10] : [0, 60, 140, 5];
+        return scaleBrightness(base, 0.35 + 0.65 * (0.5 + 0.5 * wave));
+      }
+
+      // Sinelon / Sinelon Rainbow
+      if ([90, 92].includes(fx)) {
+        const bounce = Math.abs(Math.sin((ratio - pos) * Math.PI));
+        const tail = Math.pow(bounce, 4 + (ix / 255) * 4);
+        if (fx === 92) {
+          const hue = (ratio + t * speed * 0.1) % 1;
+          return scaleBrightness([...hslToRgb(hue, 1, 0.5), 0], 0.2 + 0.8 * tail);
+        }
+        return scaleBrightness(c1, 0.2 + 0.8 * tail);
+      }
+
+      // Sine
+      if (fx === 105) {
+        const wave = 0.5 + 0.5 * Math.sin((ratio - t * speed) * Math.PI * 4);
+        return scaleBrightness(c1, 0.3 + 0.7 * wave);
+      }
+
+      // Drift / Drift Rose / Swirl
+      if ([115, 162, 172].includes(fx)) {
+        const angle = ratio * Math.PI * 2 + t * speed;
+        const rFade = 0.5 + 0.5 * Math.sin(angle);
+        const gFade = 0.5 + 0.5 * Math.sin(angle + Math.PI * 2 / 3);
+        const bFade = 0.5 + 0.5 * Math.sin(angle + Math.PI * 4 / 3);
+        return [
+          Math.round((c1[0] * rFade + c2[0] * (1 - rFade)) / 2),
+          Math.round((c1[1] * gFade + c2[1] * (1 - gFade)) / 2),
+          Math.round((c1[2] * bFade + c2[2] * (1 - bFade)) / 2),
+          0
+        ];
+      }
+
+      // Waving Cell / Pixelwave
+      if ([120, 122].includes(fx)) {
+        const quant = fx === 122 ? Math.round(ratio * 8) / 8 : ratio;
+        const wave = Math.sin((quant * 5 - t * speed) * Math.PI * 2);
+        return interpolateColor(c1, c2, 0.5 + 0.5 * wave);
+      }
+
+      // Default shimmer / moving gradient for unknown effects
+      const hue = (ratio + t * speed * 0.08) % 1;
+      const shimmer = 0.6 + 0.4 * Math.sin((ratio * 6 - t * speed * 2) * Math.PI);
+      const gradient = [...hslToRgb(hue, 0.7, 0.45), 0];
+      return scaleBrightness(gradient, shimmer);
+    }
+
+    function updateStripFrame(timestamp) {
+      if (!currentStripState || !currentStripState.on) {
+        ledStrip.classList.add('off');
+        stripRafId = requestAnimationFrame(updateStripFrame);
+        return;
+      }
+
+      ledStrip.classList.remove('off');
+      const t = timestamp / 1000;
+      const children = ledStrip.children;
+      const bri = currentStripState.bri ?? 255;
+      for (let i = 0; i < children.length; i++) {
+        const [r, g, b, w] = renderSegment(i, t, currentStripState);
+        const css = rgbwToCss(r, g, b, w, bri);
+        children[i].style.backgroundColor = css;
+        children[i].style.boxShadow = `0 0 6px ${css}`;
+      }
+      stripRafId = requestAnimationFrame(updateStripFrame);
+    }
+
+    function updateLightPreview(st) {
+      const seg = st.seg && st.seg[0] ? st.seg[0] : {};
+      function normCol(c) {
+        if (!c) return [0, 0, 0, 0];
+        const out = c.slice ? c.slice(0, 4) : [c[0] || 0, c[1] || 0, c[2] || 0, c[3] || 0];
+        while (out.length < 4) out.push(0);
+        return out;
+      }
+      const colors = [
+        normCol(seg.col && seg.col[0]),
+        normCol(seg.col && seg.col[1]),
+        normCol(seg.col && seg.col[2]),
+      ];
+      currentStripState = {
+        on: !!st.on,
+        bri: st.bri ?? 0,
+        fx: seg.fx ?? 0,
+        sx: seg.sx ?? 128,
+        ix: seg.ix ?? 128,
+        seg: seg,
+        colors: colors,
+        segments: STRIP_SEGMENTS,
+      };
+
+      const on = currentStripState.on;
+      const bri = currentStripState.bri;
+      const fx = currentStripState.fx;
+      const sx = currentStripState.sx;
+      const effectName = effectNameMap[String(fx)] || `Effect ${fx}`;
+      const [r, g, b, w] = colors[0];
+
+      lightInfo.innerHTML =
+        `<span class="label">${on ? 'ON' : 'OFF'}</span>` +
+        `<span class="label">Bri ${bri}</span>` +
+        `<span class="label">${fx === 0 ? 'Solid' : effectName}</span>` +
+        (fx !== 0 ? `<span class="label">Spd ${sx}</span>` : '') +
+        `<br><span style="color:#666;font-size:11px;">RGBW(${r},${g},${b},${w})</span>`;
     }
 
     // SSE state updates — polls the device every 2 seconds
@@ -953,11 +1487,15 @@ HTML_TEMPLATE = """<!doctype html>
           const col = seg.col && seg.col[0] ? seg.col[0] : [0,0,0,0];
           stateDisplay.textContent = `Power: ${onOff}\\nBrightness: ${bri}\\nColor: RGBW(${col.join(',')})\\nEffect: ${seg.fx ?? '-'} Speed: ${seg.sx ?? '-'}`;
           stateSummary.textContent = `${onOff} | Bri ${bri} | Fx ${seg.fx ?? '-'} @ ${seg.sx ?? '-'}`;
+          updateLightPreview(st);
           connIndicator.textContent = '🟢';
           connText.textContent = 'Connected';
         } else if (payload.error) {
           stateDisplay.textContent = 'Device offline — reconnecting...';
           stateSummary.textContent = '--';
+          ledStrip.classList.add('off');
+          currentStripState = { on: false, bri: 0, colors: [[0,0,0,0]], segments: STRIP_SEGMENTS, seg: {}, fx: 0, sx: 128, ix: 128 };
+          lightInfo.innerHTML = '<span class="label">Disconnected</span>';
           connIndicator.textContent = '🔴';
           connText.textContent = 'Disconnected';
         }
@@ -974,6 +1512,8 @@ HTML_TEMPLATE = """<!doctype html>
     };
 
     // Init
+    initLedStrip();
+    stripRafId = requestAnimationFrame(updateStripFrame);
     loadChatHistory();
     listSchedule();
   </script>
@@ -987,9 +1527,11 @@ def _render_html_cached() -> str:
     effect_options = "\n            ".join(
         f'<option value="{effect_id}">{name}</option>' for effect_id, name in lightctl.SAFE_EFFECTS.items()
     )
+    effect_name_map = json.dumps({str(k): v for k, v in lightctl.SAFE_EFFECTS.items()})
     return (
         HTML_TEMPLATE.replace("__SAFE_EFFECT_OPTIONS__", effect_options)
         .replace("__BEAT_EFFECTS__", json.dumps(list(lightctl.SAFE_EFFECTS)))
+        .replace("__EFFECT_NAME_MAP__", effect_name_map)
     )
 
 
@@ -1005,7 +1547,7 @@ def system_knowledge_prompt() -> str:
     return (
         "You control a bedroom Wi-Fi LED controller through validated actions. "
         "Hardware endpoint: WLED-compatible /json/state. The live device also exposes /json, "
-        "/json/info, /json/effects, /json/palettes, /json/nodes, and /json/live; normal control "
+        "/json/info, /json/effects (or /eff), /json/palettes (or /pal); realtime input via E1.31/Art-Net/DDP (see https://kno.wled.ge/interfaces/e1.31-dmx/); normal control "
         "is performed by posting validated JSON state payloads. "
         "Available controls: power on/off, global brightness 0-255, full RGBW color channels "
         "red 0-255, green 0-255, blue 0-255, white 0-255, safe WLED effects, effect speed 0-255, "
@@ -1212,8 +1754,12 @@ def get_now_playing_with_shazam_fallback(
         return result
     if not use_shazam:
         return None
-    if not music_recognizer.is_available():
+    if not music_recognizer.can_identify_song():
         logger.warning("Shazam fallback requested but music_recognizer is unavailable")
+        return None
+    if not music_recognizer.is_available():
+        # server mic path needs sounddevice; bytes path does not
+        logger.warning("Shazam mic fallback requires sounddevice (browser mic capture works without)")
         return None
     try:
         shazam_result = music_recognizer.recognize_sync()
@@ -1230,12 +1776,17 @@ def get_now_playing_with_shazam_fallback(
     return None
 
 
-def match_lights_to_song(client: lightctl.LightClient) -> dict[str, Any]:
+# Sentinel so callers can explicitly pass now_playing=None meaning "I already tried to identify via mic and got nothing"
+_NO_SONG = object()
+
+def match_lights_to_song(client: lightctl.LightClient, now_playing: dict[str, str] | None | object = _NO_SONG) -> dict[str, Any]:
     """Detect the currently playing song and ask the AI to create matching lights.
 
-    Returns a dict with keys: ok, message, response, confirmations, client_actions, now_playing.
+    If now_playing is provided (including explicit None from a failed browser mic capture),
+    use it directly. Only auto-detect when the argument was not supplied.
     """
-    now_playing = get_now_playing_with_shazam_fallback(use_shazam=True)
+    if now_playing is _NO_SONG:
+        now_playing = get_now_playing_with_shazam_fallback(use_shazam=True)
     if not now_playing:
         return {
             "ok": False,
@@ -1256,10 +1807,22 @@ def match_lights_to_song(client: lightctl.LightClient) -> dict[str, Any]:
         " is currently playing. Create a light show that matches its mood, energy, and style. "
         "Choose colors, effects, and speed that feel right for this song."
     )
-    plan = call_openai_for_plan(prompt, now_playing, client.get_device_snapshot())
-    result = apply_ai_plan(client, plan)
-    result["now_playing"] = now_playing
-    return result
+    try:
+        plan = call_openai_for_plan(prompt, now_playing, client.get_device_snapshot())
+        result = apply_ai_plan(client, plan)
+        result["ok"] = True
+        result["now_playing"] = now_playing
+        return result
+    except Exception as exc:
+        logger.exception("Match lights failed")
+        return {
+            "ok": False,
+            "message": str(exc),
+            "response": "",
+            "confirmations": "",
+            "client_actions": [],
+            "now_playing": now_playing,
+        }
 
 
 def build_openai_request(
@@ -1855,11 +2418,10 @@ class AutonomousMode:
     def _shazam_identify(self) -> dict | None:
         if not music_recognizer.is_available():
             return None
+        logger.info("Autonomous: Shazam identification attempt")
+        self._stop_beat()
         try:
-            logger.info("Autonomous: Shazam identification attempt")
-            self._stop_beat()
             result = music_recognizer.recognize_sync()
-            self._start_beat()
             if result:
                 return {
                     "title": result.get("title", ""),
@@ -1871,6 +2433,10 @@ class AutonomousMode:
                 }
         except Exception:
             logger.exception("Autonomous: Shazam failed")
+        finally:
+            # Always restart the beat detector; use a delay to let ALSA/PortAudio
+            # fully release the capture device before reopening.
+            time.sleep(0.5)
             self._start_beat()
         return None
 
@@ -2061,13 +2627,19 @@ def make_handler(state: GuiState):
                 )
                 return
             if path == "/api/recognize":
-                if not music_recognizer.is_available():
+                if not music_recognizer.can_identify_song():
                     self.respond_json(
-                        {"ok": False, "error": music_recognizer.available_reason()},
+                        {"ok": False, "error": "Music recognition unavailable (need shazamio + pydub)"},
                         status=503,
                     )
                     return
                 try:
+                    if not music_recognizer.is_available():
+                        self.respond_json(
+                            {"ok": False, "error": music_recognizer.available_reason()},
+                            status=503,
+                        )
+                        return
                     shazam_result = music_recognizer.recognize_sync()
                     if shazam_result:
                         now_playing = {
@@ -2085,14 +2657,19 @@ def make_handler(state: GuiState):
                             }
                         )
                     else:
-                        self.respond_json(
-                            {"ok": False, "error": "No match found."}
-                        )
+                        if not music_recognizer.is_available():
+                            err = music_recognizer.available_reason()
+                        else:
+                            err = "No match found (microphone unavailable or no audible music)."
+                        self.respond_json({"ok": False, "error": err})
                 except Exception as exc:
                     logger.exception("Shazam recognition error")
                     self.respond_json({"ok": False, "error": str(exc)}, status=500)
                 return
             if path == "/api/match-lights":
+                if not music_recognizer.can_identify_song():
+                    self.respond_json({"ok": False, "error": "Music recognition unavailable"}, status=503)
+                    return
                 try:
                     result = match_lights_to_song(state.client)
                     self.respond_json(
@@ -2133,7 +2710,7 @@ def make_handler(state: GuiState):
                             payload = json.dumps({"error": "device_unavailable", "autonomous": auto_status})
                             self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
                         self.wfile.flush()
-                        time.sleep(2)
+                        time.sleep(0.5)
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 return
@@ -2164,13 +2741,88 @@ def make_handler(state: GuiState):
             self.end_headers()
 
         def do_POST(self) -> None:
-            if self.path not in ("/api/action", "/api/ai"):
+            path = self.path
+            if path not in ("/api/action", "/api/ai", "/api/recognize", "/api/match-lights"):
                 self.send_error(404)
                 return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
-                data = json.loads(self.rfile.read(length) or b"{}")
-                if self.path == "/api/ai":
+                raw = self.rfile.read(length) or b"{}"
+                data = json.loads(raw)
+                if path == "/api/recognize":
+                    # Client-provided browser mic audio for song ID
+                    audio_b64 = data.get("audio") or data.get("audio_b64")
+                    shazam_result = None
+                    if audio_b64:
+                        if not music_recognizer.can_identify_song():
+                            self.respond_json({"ok": False, "error": "Music recognition unavailable"}, status=503)
+                            return
+                        import base64
+                        try:
+                            audio_bytes = base64.b64decode(audio_b64)
+                            shazam_result = music_recognizer.recognize_audio_bytes_sync(audio_bytes)
+                        except Exception:
+                            shazam_result = None
+                    else:
+                        if not music_recognizer.is_available():
+                            self.respond_json({"ok": False, "error": music_recognizer.available_reason()}, status=503)
+                            return
+                        shazam_result = music_recognizer.recognize_sync()
+                    if shazam_result:
+                        np = {
+                            "title": shazam_result.get("title", ""),
+                            "artist": shazam_result.get("artist", ""),
+                            "album": shazam_result.get("album", ""),
+                            "status": "Playing",
+                            "source": "shazam",
+                        }
+                        self.respond_json({"ok": True, "now_playing": np, "text": now_playing_text(np)})
+                    else:
+                        msg = "No match found."
+                        if not audio_b64:
+                            # Server-side mic attempt
+                            if not music_recognizer.is_available():
+                                msg = music_recognizer.available_reason()
+                            else:
+                                msg = "No match found (microphone may be unavailable or silent)."
+                        self.respond_json({"ok": False, "error": msg})
+                    return
+                if path == "/api/match-lights":
+                    # Support client mic audio (webcam) for identification before AI match
+                    audio_b64 = data.get("audio") or data.get("audio_b64")
+                    provided_np = None
+                    used_client_mic = bool(audio_b64)
+                    if used_client_mic and music_recognizer.can_identify_song():
+                        import base64
+                        try:
+                            audio_bytes = base64.b64decode(audio_b64)
+                            sh = music_recognizer.recognize_audio_bytes_sync(audio_bytes)
+                            if sh:
+                                provided_np = {
+                                    "title": sh.get("title", ""),
+                                    "artist": sh.get("artist", ""),
+                                    "album": sh.get("album", ""),
+                                    "genre": sh.get("genre", ""),
+                                    "status": "Playing",
+                                    "source": "shazam",
+                                }
+                        except Exception:
+                            pass
+                    if used_client_mic:
+                        # Respect explicit mic capture result (even if None = no song found)
+                        now_playing_for_match = provided_np
+                    else:
+                        now_playing_for_match = get_now_playing_with_shazam_fallback(use_shazam=True)
+                    result = match_lights_to_song(state.client, now_playing=now_playing_for_match)
+                    self.respond_json({
+                        "ok": result["ok"],
+                        "message": result.get("message", ""),
+                        "response": result.get("response", ""),
+                        "confirmations": result.get("confirmations", ""),
+                        "now_playing": result.get("now_playing"),
+                    })
+                    return
+                if path == "/api/ai":
                     prompt = str(data.get("prompt", "")).strip()
                     if not prompt:
                         raise ValueError("Prompt is required.")

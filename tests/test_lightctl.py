@@ -21,8 +21,8 @@ class LightCtlTests(unittest.TestCase):
 
         self.assertEqual(client.json_url, "http://10.27.27.110/json")
         self.assertEqual(client.info_url, "http://10.27.27.110/json/info")
-        self.assertEqual(client.effects_url, "http://10.27.27.110/json/effects")
-        self.assertEqual(client.palettes_url, "http://10.27.27.110/json/palettes")
+        self.assertEqual(client.effects_url, "http://10.27.27.110/json/eff")
+        self.assertEqual(client.palettes_url, "http://10.27.27.110/json/pal")
         self.assertEqual(client.nodes_url, "http://10.27.27.110/json/nodes")
         self.assertEqual(client.live_url, "http://10.27.27.110/json/live")
         self.assertEqual(client.config_url, "http://10.27.27.110/json/cfg")
@@ -45,12 +45,6 @@ class LightCtlTests(unittest.TestCase):
             def get_fxdata(self):
                 return ["", "speed"]
 
-            def get_nodes(self):
-                return {"nodes": []}
-
-            def get_live(self):
-                return {"error": 4}
-
             def get_networks(self):
                 return {"networks": []}
 
@@ -60,7 +54,6 @@ class LightCtlTests(unittest.TestCase):
         self.assertEqual(snapshot["info"]["name"], "WLED-Gledopto")
         self.assertEqual(snapshot["effects"], ["Solid", "Rainbow"])
         self.assertEqual(snapshot["config"]["light"]["nl"]["dur"], 60)
-        self.assertEqual(snapshot["live"], {"error": 4})
 
     def test_color_payload_uses_rgbw_segment_array(self):
         self.assertEqual(

@@ -60,18 +60,38 @@ def _get_device_samplerate(device: str | int | None = None) -> int:
 
 
 def _record_audio(duration: float, sample_rate: int, device: str | int | None = None) -> np.ndarray:
-    """Record audio from the preferred input device."""
+    """Record audio from the preferred input device.
+
+    If the specific device is unavailable, this may raise; callers should treat
+    recording failures as 'no match' rather than fatal errors.
+    """
     if not _sounddevice_available:
         raise RuntimeError("sounddevice is not available")
     if device is None:
         device = lightctl.get_mic_device()
+
+    # If a concrete device was selected but is not currently usable, fall back to default (None)
+    if device is not None:
+        try:
+            info = sd.query_devices(device=device, kind="input")
+            if not info or info.get("max_input_channels", 0) <= 0:
+                logger.warning("Selected mic device %r is not a valid input; falling back to default", device)
+                device = None
+        except Exception:
+            logger.warning("Selected mic device %r unavailable; falling back to default", device)
+            device = None
+
     if sample_rate == 0:
         sample_rate = _get_device_samplerate(device)
     logger.info("Recording %.1fs from microphone @ %d Hz (device=%r)...", duration, sample_rate, device)
     frames = int(duration * sample_rate)
-    # Record as float32, then convert to int16
-    recording = sd.rec(frames, samplerate=sample_rate, channels=1, dtype=np.float32, device=device)
-    sd.wait()
+    try:
+        # Record as float32, then convert to int16
+        recording = sd.rec(frames, samplerate=sample_rate, channels=1, dtype=np.float32, device=device)
+        sd.wait()
+    except Exception as exc:
+        # Let upper layers turn this into "no match" instead of crashing the process
+        raise RuntimeError(f"Failed to open/record from audio device: {exc}") from exc
     # Convert float32 [-1.0, 1.0] to int16
     int16_data = np.clip(recording * 32767, -32768, 32767).astype(np.int16)
     return int16_data
@@ -144,7 +164,8 @@ async def recognize_microphone(
     """Record audio from the microphone and recognize the song via Shazam.
 
     Returns a dict with keys like title, artist, album, genre, shazam_url,
-    spotify_url, youtube_url, cover_url, source — or None if no match.
+    spotify_url, youtube_url, cover_url, source — or None if no match
+    (including when no usable microphone device is available).
     """
     if not _shazam_available:
         raise RuntimeError("shazamio is not available")
@@ -153,24 +174,55 @@ async def recognize_microphone(
     if AudioSegment is None:
         raise RuntimeError("pydub is not available")
 
-    if device is None:
-        device = lightctl.get_mic_device()
-    if sample_rate == 0:
-        sample_rate = _get_device_samplerate(device)
-    audio_data = await asyncio.to_thread(_record_audio, duration, sample_rate, device)
-    segment = _make_audio_segment(audio_data, sample_rate)
+    try:
+        if device is None:
+            device = lightctl.get_mic_device()
+        if sample_rate == 0:
+            sample_rate = _get_device_samplerate(device)
+        audio_data = await asyncio.to_thread(_record_audio, duration, sample_rate, device)
+        segment = _make_audio_segment(audio_data, sample_rate)
 
-    audio_buf = io.BytesIO()
-    segment.export(audio_buf, format="wav")
+        audio_buf = io.BytesIO()
+        segment.export(audio_buf, format="wav")
 
-    shazam = Shazam()
-    result = await shazam.recognize_song(audio_buf.getvalue())
-    parsed = _parse_shazam_result(result)
-    if parsed:
-        logger.info("Recognized: %s — %s", parsed.get("artist"), parsed.get("title"))
-    else:
-        logger.info("No match from Shazam")
-    return parsed
+        shazam = Shazam()
+        result = await shazam.recognize_song(audio_buf.getvalue())
+        parsed = _parse_shazam_result(result)
+        if parsed:
+            logger.info("Recognized: %s — %s", parsed.get("artist"), parsed.get("title"))
+        else:
+            logger.info("No match from Shazam")
+        return parsed
+    except Exception as exc:
+        # Device unavailable, no mic, permission issues, PortAudio errors, etc.
+        # Treat as "could not identify" rather than hard failure.
+        logger.info("Microphone recording/identification failed: %s", exc)
+        return None
+
+
+async def recognize_audio_bytes(audio_bytes: bytes) -> dict[str, Any] | None:
+    """Recognize song from provided audio bytes (WAV or other formats pydub can read).
+
+    This allows using audio captured in the browser (webcam mic) and sent to the server.
+    Returns None on any failure (bad audio, decode error, Shazam API issues, etc).
+    """
+    if not _shazam_available:
+        raise RuntimeError("shazamio is not available")
+    if AudioSegment is None:
+        raise RuntimeError("pydub is not available")
+
+    try:
+        shazam = Shazam()
+        result = await shazam.recognize_song(audio_bytes)
+        parsed = _parse_shazam_result(result)
+        if parsed:
+            logger.info("Recognized: %s — %s", parsed.get("artist"), parsed.get("title"))
+        else:
+            logger.info("No match from Shazam")
+        return parsed
+    except Exception as exc:
+        logger.info("Audio bytes identification failed: %s", exc)
+        return None
 
 
 def recognize_sync(
@@ -202,9 +254,41 @@ def recognize_sync(
     return result
 
 
+def recognize_audio_bytes_sync(audio_bytes: bytes) -> dict[str, Any] | None:
+    """Synchronous wrapper around :func:`recognize_audio_bytes`."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(recognize_audio_bytes(audio_bytes))
+
+    result: dict[str, Any] | None = None
+    error: BaseException | None = None
+
+    def run_in_thread() -> None:
+        nonlocal result, error
+        try:
+            result = asyncio.run(recognize_audio_bytes(audio_bytes))
+        except BaseException as exc:
+            error = exc
+
+    thread = threading.Thread(target=run_in_thread, daemon=True)
+    thread.start()
+    thread.join()
+    if error is not None:
+        raise error
+    return result
+
+
 def is_available() -> bool:
-    """Return True if all required dependencies are present."""
+    """Return True if all required dependencies are present (for mic recording)."""
     return _shazam_available and _sounddevice_available and AudioSegment is not None
+
+
+def can_identify_song() -> bool:
+    """Return True if song identification is possible (from mic bytes or server mic).
+    Only requires shazamio + pydub; sounddevice is only for direct mic recording.
+    """
+    return _shazam_available and AudioSegment is not None
 
 
 def available_reason() -> str:
