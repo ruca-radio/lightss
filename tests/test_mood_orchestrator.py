@@ -46,3 +46,31 @@ class TestSongCache:
             cache = mood_orchestrator.SongCache()
             cache.set("artist||title||album", {"bri": 180, "seg": [{"fx": 9}]})
             assert cache.get("artist||title||album") == {"bri": 180, "seg": [{"fx": 9}]}
+
+
+class TestAudioSampleBuffer:
+    def test_runs_recognizer_on_first_sample(self):
+        calls = []
+
+        def fake_recognize(data: bytes) -> dict:
+            calls.append(data)
+            return {"title": "Song"}
+
+        buf = mood_orchestrator.AudioSampleBuffer(recognize_fn=fake_recognize, cooldown_seconds=0)
+        result = buf.maybe_recognize(b"audio")
+        assert result == {"title": "Song"}
+        assert calls == [b"audio"]
+
+    def test_respects_cooldown(self):
+        calls = []
+
+        def fake_recognize(data: bytes) -> dict:
+            calls.append(data)
+            return {"title": "Song"}
+
+        import time
+
+        buf = mood_orchestrator.AudioSampleBuffer(recognize_fn=fake_recognize, cooldown_seconds=10)
+        assert buf.maybe_recognize(b"audio1") == {"title": "Song"}
+        assert buf.maybe_recognize(b"audio2") is None
+        assert len(calls) == 1

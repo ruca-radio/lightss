@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
+import time
+from typing import Any, Callable
 
 import lightctl
 
@@ -83,3 +84,26 @@ class TransitionSmoother:
             return [intermediate, final]
 
         return [payload]
+
+
+class AudioSampleBuffer:
+    """Throttle incoming audio samples and route them to recognition."""
+
+    def __init__(
+        self,
+        recognize_fn: Callable[[bytes], dict[str, str] | None],
+        cooldown_seconds: float = 20.0,
+    ) -> None:
+        self.recognize_fn = recognize_fn
+        self.cooldown_seconds = cooldown_seconds
+        self._last_attempt: float = 0.0
+
+    def maybe_recognize(self, audio_bytes: bytes) -> dict[str, str] | None:
+        now = time.monotonic()
+        if now - self._last_attempt < self.cooldown_seconds:
+            return None
+        self._last_attempt = now
+        try:
+            return self.recognize_fn(audio_bytes)
+        except Exception:
+            return None
