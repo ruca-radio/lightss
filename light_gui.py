@@ -1795,6 +1795,33 @@ def match_lights_to_song(client: lightctl.LightClient, now_playing: dict[str, st
         }
 
 
+def generate_mood_for_song(
+    client: lightctl.LightClient,
+    song: dict[str, str],
+) -> lightctl.WledPayload:
+    """Ask the AI to create a smooth WLED mood for a recognized song."""
+    title = song.get("title", "Unknown")
+    artist = song.get("artist", "Unknown")
+    genre = song.get("genre", "")
+    prompt = (
+        f"The song '{title}' by {artist}"
+        + (f" (genre: {genre})" if genre else "")
+        + " is playing. Design one smooth, non-jarring WLED mood that matches its energy and style. "
+        "Choose a safe effect, palette by name, primary and secondary colors, speed, intensity, and brightness. "
+        "The transition must feel gentle — avoid sudden brightness jumps or strobe-like effects. "
+        "Do not include mode1_start; beat reaction is handled separately."
+    )
+    snapshot = client.get_device_snapshot()
+    plan = call_openai_for_plan(prompt, song, snapshot)
+    actions = plan.get("actions", [])
+    # Find the first action that actually produces a WLED payload.
+    for action in actions:
+        payload = payload_for_ai_action(action)
+        if payload:
+            return payload
+    raise ValueError("AI did not return a usable WLED payload for mood generation")
+
+
 def build_openai_request(
     prompt: str,
     model: str | None = None,
