@@ -17,9 +17,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, Callable
 
 import lightctl
+import mood_orchestrator
 import music_recognizer
 
 logger = logging.getLogger("light_gui")
@@ -36,6 +37,8 @@ AI_ACTIONS = [
     "temperature",
     "random",
     "preset",
+    "save_preset",
+    "delete_preset",
     "playlist",
     "palette",
     "nightlight",
@@ -54,7 +57,6 @@ AI_ACTIONS = [
     "schedule_add",
     "schedule_remove",
     "music_detect",
-    "music_listen",
     "music_match",
 ]
 
@@ -67,7 +69,6 @@ CLIENT_ACTIONS = {
     "sunrise_start",
     "sunrise_stop",
     "music_detect",
-    "music_listen",
     "music_match",
 }
 
@@ -88,6 +89,7 @@ def ai_action_reference() -> str:
         "- palette: WLED palette id 0-N for the active segment. Choose by name from the palette list.\n"
         "- scene/random/preset/playlist: named scene, random safe scene, WLED preset by id "
         "(choose from 'Saved WLED presets' in snapshot), or playlist id.\n"
+        "- save_preset/delete_preset: save current state as a native WLED preset with preset_id and optional name, or delete a preset by preset_id.\n"
         "- nightlight: WLED nightlight on/off, duration minutes, mode, and target brightness.\n"
         "- udp_sync: WLED UDP send/receive sync toggles.\n"
         "- native_audio_reactive: device AudioReactive usermod on/off when installed.\n"
@@ -96,7 +98,7 @@ def ai_action_reference() -> str:
         "- fade_off/cycle_start/cycle_stop/sunrise_start/sunrise_stop: local timer automations.\n"
         "- save_scene/delete_scene: local custom scene management.\n"
         "- schedule_add/schedule_remove: local schedule management with time HH:MM and action on/off/scene.\n"
-        "- music_detect/music_listen/music_match: now-playing lookup, microphone Shazam listen, or song-matched lighting.\n"
+        "- music_detect/music_match: now-playing media lookup and metadata-matched lighting.\n"
         "One-shot examples:\n"
         "- 'soft ocean for 20 minutes then off' -> scene ocean, nightlight on duration 20 target brightness 0.\n"
         "- 'make it pulse with the song' -> safe color/effect setup plus mode1_start.\n"
@@ -204,1292 +206,7 @@ def device_snapshot_text(snapshot: dict | None) -> str:
             )
     return "\n".join(lines)
 
-HTML_TEMPLATE = """<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Bedroom LED Controller</title>
-  <style>
-    :root {
-      color-scheme: dark;
-      --bg: #060712;
-      --card: rgba(18, 22, 42, 0.72);
-      --card-strong: rgba(25, 31, 58, 0.88);
-      --text: #f7fbff;
-      --text-secondary: #aab7d6;
-      --muted: #7380a4;
-      --accent: #8b5cf6;
-      --accent-2: #06b6d4;
-      --accent-3: #f472b6;
-      --accent-hover: #7c3aed;
-      --danger: #fb4666;
-      --danger-hover: #e11d48;
-      --secondary: rgba(255,255,255,0.10);
-      --secondary-hover: rgba(255,255,255,0.16);
-      --border: rgba(180, 205, 255, 0.16);
-      --input-bg: rgba(4, 8, 20, 0.70);
-      --success: #34d399;
-      --warning: #fbbf24;
-      --user-bubble: linear-gradient(135deg, #2563eb, #7c3aed);
-      --ai-bubble: linear-gradient(135deg, rgba(6,182,212,.22), rgba(52,211,153,.18));
-      --radius-lg: 22px;
-      --radius-md: 14px;
-      --radius-sm: 10px;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: var(--bg);
-      color: var(--text);
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      background:
-        radial-gradient(circle at 10% 0%, rgba(139,92,246,.42), transparent 32rem),
-        radial-gradient(circle at 88% 8%, rgba(6,182,212,.36), transparent 30rem),
-        radial-gradient(circle at 50% 100%, rgba(244,114,182,.20), transparent 34rem),
-        linear-gradient(180deg, #070817 0%, #050712 100%);
-      color: var(--text);
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      display: flex;
-      flex-direction: column;
-    }
-    body::before {
-      content: '';
-      position: fixed;
-      inset: 0;
-      pointer-events: none;
-      background-image: linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px);
-      background-size: 44px 44px;
-      mask-image: linear-gradient(to bottom, rgba(0,0,0,.75), transparent 72%);
-    }
-    main {
-      flex: 1;
-      padding: 24px;
-      max-width: 1280px;
-      margin: 0 auto;
-      width: 100%;
-      position: relative;
-      z-index: 1;
-    }
-    h1 { font-size: clamp(28px, 4vw, 54px); margin: 6px 0 22px; font-weight: 900; letter-spacing: -0.055em; text-shadow: 0 0 32px rgba(139,92,246,.45); }
-    h2 { font-size: 16px; margin: 0 0 14px; font-weight: 800; display: flex; align-items: center; gap: 8px; letter-spacing: .01em; }
-    .grid {
-      display: grid;
-      grid-template-columns: minmax(0, 1.35fr) minmax(300px, .95fr);
-      gap: 18px;
-    }
-    @media (max-width: 820px) {
-      main { padding: 16px; }
-      .grid { grid-template-columns: 1fr; }
-      .status-bar { flex-direction: column; align-items: flex-start; }
-    }
-    .card {
-      background: linear-gradient(145deg, rgba(255,255,255,.10), rgba(255,255,255,.045));
-      border-radius: var(--radius-lg);
-      padding: 18px;
-      border: 1px solid var(--border);
-      box-shadow: 0 24px 80px rgba(0,0,0,.32), inset 0 1px 0 rgba(255,255,255,.12);
-      margin-bottom: 18px;
-      backdrop-filter: blur(18px) saturate(135%);
-      position: relative;
-      overflow: hidden;
-    }
-    .card::after {
-      content: '';
-      position: absolute;
-      inset: 0;
-      background: radial-gradient(circle at 0 0, rgba(255,255,255,.10), transparent 18rem);
-      pointer-events: none;
-    }
-    .card > * { position: relative; z-index: 1; }
-    .card:last-child { margin-bottom: 0; }
-    .auto-card {
-      background: linear-gradient(135deg, rgba(139,92,246,.32), rgba(6,182,212,.16) 48%, rgba(244,114,182,.18));
-      border-color: rgba(255,255,255,.22);
-    }
-    .auto-card h2 { color: #e9d5ff; }
-    .smart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-top: 12px; }
-    .smart-chip { text-align:left; padding: 12px; border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.07); border-radius: 16px; min-height: 76px; }
-    .smart-chip b { display:block; color:#fff; margin-bottom:4px; }
-    .smart-chip span { color: var(--text-secondary); font-size: 12px; line-height: 1.3; }
-    .tab-bar {
-      display: flex;
-      gap: 8px;
-      margin: 18px 0;
-      padding: 6px;
-      border: 1px solid var(--border);
-      background: rgba(255,255,255,.06);
-      border-radius: 999px;
-      width: fit-content;
-    }
-    .tab-btn {
-      background: transparent;
-      color: var(--text-secondary);
-      border: none;
-      padding: 10px 18px;
-      font-size: 13px;
-      font-weight: 800;
-      border-radius: 999px;
-      cursor: pointer;
-    }
-    .tab-btn.active {
-      color: white;
-      background: linear-gradient(135deg, var(--accent), var(--accent-2));
-      box-shadow: 0 10px 30px rgba(6,182,212,.25);
-    }
-    .tab-btn:hover:not(.active) { color: var(--text); background: rgba(255,255,255,.08); }
-    .tab-content { display: none; }
-    .tab-content.active { display: block; }
-    .full-bleed-preview {
-      width: 100vw;
-      margin-left: calc(-50vw + 50%);
-      margin-right: calc(-50vw + 50%);
-      background: linear-gradient(180deg, rgba(5,7,18,.30), rgba(5,7,18,.76));
-      padding: 18px 0 12px;
-      border-block: 1px solid rgba(255,255,255,.10);
-      box-shadow: 0 25px 80px rgba(0, 0, 0, 0.55);
-      position: relative;
-      z-index: 10;
-      backdrop-filter: blur(16px);
-    }
-    .strip-wrapper { width: 100%; max-width: none; padding: 0 14px; box-sizing: border-box; }
-    .led-strip {
-      display: flex;
-      gap: 1px;
-      justify-content: flex-start;
-      align-items: stretch;
-      height: clamp(96px, 14vw, 160px);
-      padding: 8px 6px;
-      border-radius: 24px;
-      background: linear-gradient(180deg, #111827 0%, #050712 54%, #02030a 100%);
-      border: 1px solid rgba(255,255,255,.18);
-      box-shadow: inset 0 0 42px rgba(0,0,0,.92), 0 0 0 8px rgba(255,255,255,.035), 0 20px 70px rgba(6,182,212,.18);
-      position: relative;
-      overflow: hidden;
-    }
-    .led-strip::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 45%; background: linear-gradient(180deg, rgba(255,255,255,.12) 0%, transparent 100%); pointer-events: none; z-index: 2; }
-    .led-segment { flex: 1; min-width: 1px; background: #0d0d0d; border-radius: 999px; box-shadow: 0 0 10px currentColor, inset 0 0 5px rgba(255,255,255,.20), inset 0 -4px 6px rgba(0,0,0,.55); transition: background-color 16ms linear, box-shadow 16ms linear; position: relative; z-index: 1; }
-    .led-strip.off .led-segment { background: #0b1020 !important; box-shadow: inset 0 0 2px rgba(0,0,0,0.8) !important; }
-    .preview-meta { max-width: 1200px; margin: 10px auto 0; padding: 0 16px; text-align: center; }
-    .light-info { font-size: 12px; color: var(--text-secondary); text-align: center; line-height: 1.4; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-    .light-info .label { display: inline-block; background: rgba(255,255,255,.08); padding: 3px 8px; border-radius: 999px; margin: 2px; border: 1px solid rgba(255,255,255,.12); font-size: 11px; }
-    .big-button { width: 100%; padding: 16px 20px; font-size: 16px; border-radius: 18px; display: flex; align-items: center; justify-content: center; gap: 10px; }
-    .big-button.secondary { background: linear-gradient(135deg, rgba(6,182,212,.42), rgba(59,130,246,.30)); }
-    .big-button.secondary:hover { background: linear-gradient(135deg, rgba(6,182,212,.56), rgba(59,130,246,.44)); }
-    .auto-status { text-align: center; font-size: 13px; color: var(--text-secondary); min-height: 20px; margin-top: 10px; }
-    button { border: 0; border-radius: var(--radius-md); padding: 10px 14px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: white; font-weight: 800; cursor: pointer; transition: transform .16s ease, filter .16s ease, box-shadow .16s ease; font-size: 13px; box-shadow: 0 10px 28px rgba(139,92,246,.22); }
-    button:hover { filter: brightness(1.12); transform: translateY(-1px); }
-    button:focus { outline: 2px solid rgba(255,255,255,.7); outline-offset: 2px; }
-    button:disabled { opacity: .6; cursor: wait; transform: none; }
-    button.secondary { background: var(--secondary); box-shadow: none; }
-    button.secondary:hover { background: var(--secondary-hover); }
-    button.danger { background: linear-gradient(135deg, var(--danger), #f97316); }
-    button.danger:hover { background: linear-gradient(135deg, var(--danger-hover), #ea580c); }
-    label { display: grid; gap: 6px; margin: 10px 0; font-size: 13px; color: var(--text-secondary); font-weight: 650; }
-    input, select, textarea { padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid rgba(255,255,255,.14); background: var(--input-bg); color: white; font-family: inherit; transition: all .15s ease; }
-    input:focus, select:focus, textarea:focus { outline: 2px solid rgba(6,182,212,.8); outline-offset: 2px; border-color: var(--accent-2); }
-    input[type="range"] { width: 100%; padding: 0; accent-color: var(--accent-2); }
-    input[type="number"] { width: 86px; }
-    select { min-width: 160px; }
-    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-    .swatch { width: 44px; height: 44px; border-radius: 16px; border: 1px solid rgba(255,255,255,.28); padding: 0; cursor: pointer; transition: transform .15s ease; box-shadow: 0 0 26px currentColor; }
-    .swatch:hover { transform: scale(1.08) rotate(-2deg); }
-
-    .meter-row { display: grid; grid-template-columns: 40px 1fr 40px; gap: 10px; align-items: center; margin-top: 10px; }
-    .meter { position: relative; height: 16px; border-radius: var(--radius-sm); overflow: hidden; background: #0b0b0b; border: 1px solid #444; }
-    .meter-fill { width: 0%; height: 100%; background: linear-gradient(90deg, #20c997, #ffd43b 65%, #ff6b6b); transition: width 65ms linear; }
-    .meter-peak { position: absolute; top: 0; bottom: 0; left: 0%; width: 2px; background: white; opacity: .8; transition: left 120ms linear; }
-    .beat-lamp { width: 16px; height: 16px; border-radius: 50%; background: #333; border: 1px solid #555; transition: background 80ms linear, box-shadow 80ms linear; }
-    .beat-lamp.on { background: #ffe066; box-shadow: 0 0 14px #ffd43b; }
-    .chat-container { display: flex; flex-direction: column; height: 360px; }
-    .chat-history {
-      flex: 1;
-      overflow-y: auto;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      padding: 8px;
-      background: #0f0f0f;
-      border-radius: var(--radius-md);
-      border: 1px solid var(--border);
-      margin-bottom: 10px;
-    }
-    .chat-msg { max-width: 85%; padding: 10px 12px; border-radius: 14px; font-size: 13px; line-height: 1.4; word-wrap: break-word; animation: fadeIn 0.2s ease; }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
-    .chat-msg.user { align-self: flex-end; background: var(--user-bubble); color: #fff; border-bottom-right-radius: 4px; }
-    .chat-msg.ai { align-self: flex-start; background: var(--ai-bubble); color: #d5f5e3; border-bottom-left-radius: 4px; }
-    .chat-msg.system { align-self: center; background: #222; color: #888; font-size: 11px; padding: 4px 10px; border-radius: 10px; }
-    .chat-input-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
-    .chat-input-row input { width: 100%; margin: 0; }
-    .chat-input-row button { padding: 10px 14px; font-size: 16px; }
-    .chat-controls { display: flex; gap: 8px; margin-bottom: 8px; justify-content: flex-end; }
-    .music-display { margin-top: 10px; padding: 12px; background: #0f0f0f; border-radius: var(--radius-md); border: 1px solid var(--border); min-height: 60px; }
-    .music-title { font-size: 16px; font-weight: 600; color: #d6e4ff; margin: 0; }
-    .music-artist { font-size: 13px; color: var(--text-secondary); margin: 4px 0 0; }
-    .music-genre { font-size: 11px; color: #8fa7bd; margin-top: 4px; display: inline-block; background: #1a2a3a; padding: 2px 8px; border-radius: 10px; }
-    .album-art { width: 80px; height: 80px; border-radius: var(--radius-md); background: #222; display: none; object-fit: cover; margin-top: 10px; border: 1px solid var(--border); }
-    .album-art.visible { display: block; }
-    .state-display { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--text-secondary); background: #0b0b0b; padding: 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); white-space: pre-wrap; line-height: 1.5; }
-    .schedule-list { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--text-secondary); background: #0b0b0b; padding: 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); min-height: 30px; white-space: pre-wrap; }
-    .status-bar {
-      position: sticky;
-      bottom: 0;
-      background: rgba(13,13,13,0.95);
-      backdrop-filter: blur(8px);
-      border-top: 1px solid var(--border);
-      padding: 10px 16px;
-      display: flex;
-      gap: 16px;
-      align-items: center;
-      justify-content: space-between;
-      font-size: 13px;
-      z-index: 100;
-    }
-    .status-bar .indicator { display: flex; align-items: center; gap: 6px; }
-    .status-bar .state-summary { color: var(--text-secondary); }
-    .status-bar .last-action { color: #a8d6ff; flex-shrink: 0; }
-    .example { margin-top: 8px; font-size: 12px; color: var(--text-secondary); cursor: pointer; padding: 6px 8px; background: #1a1a1a; border-radius: var(--radius-sm); border: 1px dashed #444; transition: all 0.15s ease; }
-    .example:hover { background: #222; color: #ccc; }
-    .knowledge { margin-top: 10px; color: #8fa7bd; font-size: 12px; line-height: 1.35; }
-    .now-playing { display: none; }
-    #aiReply, #aiConfirmations { display: none; }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>💡 Bedroom LED Controller</h1>
-    <div class="card auto-card">
-      <h2>✨ Auto</h2>
-      <p style="font-size:13px;color:var(--text-secondary);margin:0 0 12px;">Let the AI choose lights for the current song. No prompts, no choices.</p>
-      <button class="big-button" id="autoMatchBtn" onclick="autoMatchSong()">Match lights to current song</button>
-      <div class="auto-status" id="autoStatus"></div>
-      <div style="margin-top:12px;border-top:1px solid rgba(255,255,255,.14);padding-top:12px;">
-        <button class="big-button secondary" id="autoToggleBtn" onclick="toggleAutonomous()">▶ Start autonomous show</button>
-      </div>
-      <div class="smart-grid" id="smartSuggestions" aria-live="polite"></div>
-    </div>
-
-    <!-- Beautiful full-width LED strip visualization -->
-    <div class="full-bleed-preview">
-      <div class="strip-wrapper">
-        <div class="led-strip off" id="ledStrip"></div>
-      </div>
-      <div class="preview-meta">
-        <div class="light-info" id="lightInfo">Waiting for state...</div>
-      </div>
-    </div>
-
-    <div class="tab-bar">
-      <button class="tab-btn active" data-tab="live" onclick="switchTab('live')">Live View</button>
-      <button class="tab-btn" data-tab="manual" onclick="switchTab('manual')">Manual Controls</button>
-    </div>
-
-    <div id="tab-live" class="tab-content active">
-      <div class="grid">
-        <div class="left-col">
-        <div class="card">
-          <h2>🤖 AI Chat</h2>
-          <div class="chat-controls">
-            <button class="secondary" onclick="clearChat()" title="Clear all chat messages">Clear Chat</button>
-          </div>
-          <div class="chat-container">
-            <div id="chatHistory" class="chat-history"></div>
-            <div class="chat-input-row">
-              <input id="aiInput" type="text" placeholder="Try: slow rainbow chase at medium brightness" onkeydown="if(event.key==='Enter')askAI()">
-              <button onclick="askAI()" title="Send message to AI">➤</button>
-            </div>
-          </div>
-          <div class="example" onclick="useExamplePrompt()">Run effects with the beat. Make it interesting without strobes or harsh transitions.</div>
-          <div class="knowledge">AI can control power, brightness, full RGBW color, safe effects, scenes, and browser mic beat mode.</div>
-          <div id="aiReply" class="ai-reply"></div>
-          <div id="aiConfirmations" class="confirmations"></div>
-        </div>
-        <div class="card">
-          <h2>📊 State</h2>
-          <div class="state-display" id="stateDisplay">Connecting...</div>
-          <div class="row" style="margin-top:12px;">
-            <button onclick="send('on')" title="Turn lights on">On</button>
-            <button class="danger" onclick="send('off')" title="Turn lights off">Off</button>
-            <button class="secondary" onclick="startAudioReactive()" title="Start microphone reactive beat mode">Mode 1</button>
-            <button class="secondary" onclick="stopAudioReactive()" title="Stop microphone reactive mode">Stop Mode 1</button>
-            <button class="danger" onclick="restartController()" title="Reboot the WLED controller — device will be offline briefly">Restart Device</button>
-          </div>
-          <div class="meter-row" id="vuMeter" aria-label="Microphone level">
-            <span>Mic</span>
-            <div class="meter">
-              <div class="meter-fill" id="vuFill"></div>
-              <div class="meter-peak" id="vuPeak"></div>
-            </div>
-            <div class="beat-lamp" id="beatLamp"></div>
-          </div>
-        </div>
-        <div class="card" id="autonomousCard">
-          <h2>🌊 Autonomous AI Mode</h2>
-          <p style="font-size:12px;color:var(--text-secondary);margin:0 0 10px;">Continuously identifies songs and generates a unique beatmatched show. Dims to ambient during quiet/conversation.</p>
-          <div class="row">
-            <button onclick="startAutonomous()" title="Start autonomous AI light show">▶ Start</button>
-            <button class="secondary" onclick="send('autonomous_stop')" title="Stop autonomous AI mode">■ Stop</button>
-          </div>
-          <div id="autonomousStatus" style="margin-top:10px;font-size:12px;color:var(--text-secondary);">Inactive</div>
-        </div>
-        <div class="card">
-          <h2>🎵 Music</h2>
-          <div class="row">
-            <button class="secondary" onclick="refreshNowPlaying()" title="Detect currently playing song from media players">Detect Song</button>
-            <button class="secondary" onclick="recognizeWithShazam()" title="Listen with microphone for 5 seconds to identify song">🎤 Listen</button>
-            <button class="secondary" onclick="matchLightsToSong()" title="Auto-match lights to detected song mood">✨ Match Lights</button>
-          </div>
-          <div class="music-display">
-            <p class="music-title" id="musicTitle">No song detected yet.</p>
-            <p class="music-artist" id="musicArtist"></p>
-            <span class="music-genre" id="musicGenre" style="display:none;"></span>
-            <img class="album-art" id="albumArt" alt="Album art">
-          </div>
-          <span class="now-playing" id="nowPlaying"></span>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div id="tab-manual" class="tab-content">
-    <div class="card">
-      <h2>🎨 Color</h2>
-      <div class="row">
-        <button class="swatch" style="background:#f00" onclick="setColor(255,0,0,0)" title="Red (255,0,0,0)"></button>
-        <button class="swatch" style="background:#00f" onclick="setColor(0,0,255,0)" title="Blue (0,0,255,0)"></button>
-        <button class="swatch" style="background:#ff66bf" onclick="setColor(255,100,0,255)" title="Pink white (255,100,0,255)"></button>
-        <button class="swatch" style="background:#00ff80" onclick="setColor(0,255,120,0)" title="Green (0,255,120,0)"></button>
-      </div>
-      <div class="row">
-        <label>R <input id="r" type="number" min="0" max="255" value="255"></label>
-        <label>G <input id="g" type="number" min="0" max="255" value="100"></label>
-        <label>B <input id="b" type="number" min="0" max="255" value="0"></label>
-        <label>W <input id="w" type="number" min="0" max="255" value="255"></label>
-        <button onclick="setCustom()" title="Apply custom RGBW color">Set Color</button>
-      </div>
-      <div class="row" style="margin-top:12px;">
-        <input id="hexColor" type="text" placeholder="#ff6600" maxlength="9" style="flex:1;">
-        <button onclick="send('hex', {color: hexColor.value, transition: Number(transition.value)})" title="Set color from hex value">Set Hex</button>
-      </div>
-    </div>
-    <div class="card">
-      <h2>🌡️ Temperature</h2>
-      <div class="row">
-        <button class="secondary" onclick="send('temp', {kelvin: 2700, transition: Number(transition.value)})" title="Set warm 2700K temperature">Warm 2700K</button>
-        <button class="secondary" onclick="send('temp', {kelvin: 5000, transition: Number(transition.value)})" title="Set daylight 5000K temperature">Daylight 5000K</button>
-        <button class="secondary" onclick="send('temp', {kelvin: 6500, transition: Number(transition.value)})" title="Set cool 6500K temperature">Cool 6500K</button>
-      </div>
-      <label style="margin-top:12px;">Kelvin <span id="kelvinText">4000</span>K
-        <input id="kelvin" type="range" min="2000" max="6500" value="4000" oninput="kelvinText.textContent=this.value" onchange="send('temp', {kelvin: Number(this.value), transition: Number(transition.value)})">
-      </label>
-    </div>
-    <div class="card">
-      <h2>✨ Effects</h2>
-      <div class="row">
-        <label>Effect
-          <select id="fx">
-            __SAFE_EFFECT_OPTIONS__
-          </select>
-        </label>
-        <label>Speed <input id="speed" type="number" min="0" max="255" value="128"></label>
-        <button onclick="send('fx', {effect: Number(fx.value), speed: Number(speed.value), transition: Number(transition.value)})" title="Apply selected effect and speed">Set Effect</button>
-      </div>
-      <label style="margin-top:10px;">Brightness <span id="briText">200</span>
-        <input id="bri" type="range" min="0" max="255" value="200" oninput="briText.textContent=this.value" onchange="send('bri', {value: Number(this.value), transition: Number(transition.value)})">
-      </label>
-      <label>Transition <span id="transText">0</span>ms
-        <input id="transition" type="range" min="0" max="2000" value="0" oninput="transText.textContent=this.value">
-      </label>
-    </div>
-    <div class="card">
-      <h2>🎬 Scenes</h2>
-      <div class="row">
-        <button onclick="send('scene', {name: 'warm'})" title="Apply warm scene">Warm</button>
-        <button onclick="send('scene', {name: 'night'})" title="Apply night scene">Night</button>
-        <button onclick="send('scene', {name: 'focus'})" title="Apply focus scene">Focus</button>
-        <button onclick="send('scene', {name: 'ocean'})" title="Apply ocean scene">Ocean</button>
-        <button onclick="send('scene', {name: 'party'})" title="Apply party scene">Party</button>
-        <button class="secondary" onclick="send('random')" title="Apply random scene">Random</button>
-      </div>
-      <div class="row" style="margin-top:12px;">
-        <input id="saveSceneName" type="text" placeholder="Scene name" style="flex:1;">
-        <button class="secondary" onclick="send('save_scene', {name: saveSceneName.value})" title="Save current state as named scene">Save Scene</button>
-        <button class="danger" onclick="send('delete_scene', {name: saveSceneName.value})" title="Delete named scene">Delete</button>
-      </div>
-    </div>
-    <div class="card">
-      <h2>⏱️ Timers & Simulations</h2>
-      <div class="row" style="margin-bottom:8px;">
-        <label style="margin:0;">Preset ID (1-250)
-          <input id="presetId" type="number" min="1" max="250" value="1" style="width:90px;">
-        </label>
-        <button onclick="send('preset', {id: Number(presetId.value), transition: Number(transition.value)})" title="Load WLED preset by ID">Load Preset</button>
-      </div>
-      <div class="row" style="margin-bottom:8px;">
-        <label style="margin:0;">Interval (s)
-          <input id="cycleInterval" type="number" min="5" max="3600" value="60" style="width:90px;">
-        </label>
-        <button onclick="send('cycle_start', {interval: Number(cycleInterval.value)})" title="Start automatic scene cycling">Start Cycle</button>
-        <button class="secondary" onclick="send('cycle_stop')" title="Stop scene cycling">Stop Cycle</button>
-      </div>
-      <div class="row" style="margin-bottom:8px;">
-        <label style="margin:0;">Sunrise (min)
-          <input id="sunriseMinutes" type="number" min="1" max="120" value="30" style="width:90px;">
-        </label>
-        <button onclick="send('sunrise_start', {minutes: Number(sunriseMinutes.value)})" title="Start sunrise wake-up simulation">Start Sunrise</button>
-        <button class="secondary" onclick="send('sunrise_stop')" title="Stop sunrise simulation">Stop</button>
-      </div>
-      <div class="row">
-        <label style="margin:0;">Fade (min)
-          <input id="fadeMinutes" type="number" min="1" max="120" value="30" style="width:90px;">
-        </label>
-        <button onclick="send('fade_off', {minutes: Number(fadeMinutes.value)})" title="Start gradual fade-off timer">Start Fade</button>
-      </div>
-    </div>
-    <div class="card">
-      <h2>📅 Schedule</h2>
-      <div class="row">
-        <label style="margin:0;">Time
-          <input id="schedTime" type="time" style="padding:8px;">
-        </label>
-        <label style="margin:0;">Action
-          <select id="schedAction">
-            <option value="on">On</option>
-            <option value="off">Off</option>
-            <option value="scene">Scene</option>
-          </select>
-        </label>
-        <input id="schedScene" type="text" placeholder="Scene name (if scene)" style="flex:1;">
-        <button onclick="addSchedule()" title="Add schedule entry">Add</button>
-      </div>
-      <div class="schedule-list" id="scheduleList" style="margin-top:10px;">No schedules.</div>
-      <button class="secondary" style="margin-top:8px;" onclick="listSchedule()" title="Refresh schedule list">Refresh List</button>
-    </div>
-  </div>
-  </main>
-  <div class="status-bar">
-    <div class="indicator">
-      <span id="connIndicator">🔴</span>
-      <span id="connText">Disconnected</span>
-    </div>
-    <div class="state-summary" id="stateSummary">--</div>
-    <div class="last-action" id="status">Ready</div>
-  </div>
-  <script>
-    let audioContext, analyser, micStream, audioData, rafId;
-    let audioReactiveRunning = false;
-    let baseline = 18;
-    let lastBeat = 0;
-    let paletteIndex = 0;
-    let effectIndex = 0;
-    let peakLevel = 0;
-    const palette = [
-      [255, 0, 0, 0],
-      [255, 90, 0, 0],
-      [255, 0, 180, 0],
-      [0, 80, 255, 0],
-      [0, 255, 120, 0],
-      [255, 120, 0, 180],
-      [0, 180, 255, 0],
-      [255, 255, 120, 80]
-    ];
-    const beatEffects = __BEAT_EFFECTS__;
-
-    function switchTab(tab) {
-      document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
-      document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
-      const content = document.getElementById('tab-' + tab);
-      if (content) content.classList.add('active');
-      // activate the corresponding button using data attribute
-      const activeBtn = document.querySelector('.tab-btn[data-tab="' + tab + '"]');
-      if (activeBtn) activeBtn.classList.add('active');
-    }
-
-    function addChatMessage(role, text) {
-      const div = document.createElement('div');
-      div.className = 'chat-msg ' + role;
-      div.textContent = text;
-      chatHistory.appendChild(div);
-      chatHistory.scrollTop = chatHistory.scrollHeight;
-      saveChatHistory();
-    }
-
-    function saveChatHistory() {
-      const messages = [];
-      chatHistory.querySelectorAll('.chat-msg').forEach(el => {
-        const role = el.classList.contains('user') ? 'user' : el.classList.contains('ai') ? 'ai' : 'system';
-        messages.push({ role, text: el.textContent });
-      });
-      sessionStorage.setItem('light_chat_history', JSON.stringify(messages));
-    }
-
-    function loadChatHistory() {
-      try {
-        const raw = sessionStorage.getItem('light_chat_history');
-        if (!raw) return;
-        const messages = JSON.parse(raw);
-        chatHistory.innerHTML = '';
-        for (const m of messages) {
-          const div = document.createElement('div');
-          div.className = 'chat-msg ' + m.role;
-          div.textContent = m.text;
-          chatHistory.appendChild(div);
-        }
-        chatHistory.scrollTop = chatHistory.scrollHeight;
-      } catch (e) { /* ignore */ }
-    }
-
-    function clearChat() {
-      chatHistory.innerHTML = '';
-      sessionStorage.removeItem('light_chat_history');
-    }
-
-    async function send(action, values = {}) {
-      status.textContent = 'Sending...';
-      try {
-        const res = await fetch('/api/action', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({action, ...values})
-        });
-        const data = await res.json();
-        status.textContent = data.ok ? data.message : data.error;
-      } catch (err) {
-        status.textContent = 'Error: ' + err.message;
-      }
-    }
-
-    async function askAI() {
-      const prompt = aiInput.value.trim();
-      if (!prompt) return;
-      addChatMessage('user', prompt);
-      aiInput.value = '';
-      addChatMessage('system', 'Thinking...');
-      const thinkingEls = chatHistory.querySelectorAll('.chat-msg.system');
-      const thinkingEl = thinkingEls[thinkingEls.length - 1];
-      aiReply.textContent = '';
-      aiConfirmations.textContent = '';
-      try {
-        const song = await refreshNowPlaying();
-        const res = await fetch('/api/ai', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({prompt, now_playing: song})
-        });
-        const data = await res.json();
-        if (thinkingEl) thinkingEl.remove();
-        status.textContent = data.ok ? data.message : data.error;
-        if (data.response) {
-          addChatMessage('ai', data.response);
-        }
-        if (data.confirmations && data.confirmations.length) {
-          addChatMessage('ai', data.confirmations.join(' '));
-        }
-        aiReply.textContent = data.response || '';
-        aiConfirmations.textContent = (data.confirmations || []).join(' ');
-        for (const action of data.client_actions || []) {
-          if (action === 'startAudioReactive') await startAudioReactive();
-          if (action === 'stopAudioReactive') stopAudioReactive();
-          if (typeof action === 'object' && action.action === 'fadeOff') await send('fade_off', {minutes: action.minutes || 30});
-          if (typeof action === 'object' && action.action === 'startCycle') await send('cycle_start', {interval: action.interval || 60});
-          if (typeof action === 'object' && action.action === 'stopCycle') await send('cycle_stop');
-          if (typeof action === 'object' && action.action === 'startSunrise') await send('sunrise_start', {minutes: action.minutes || 30, brightness: action.brightness || 255});
-          if (typeof action === 'object' && action.action === 'stopSunrise') await send('sunrise_stop');
-          if (typeof action === 'object' && action.action === 'detectSong') await refreshNowPlaying();
-          if (typeof action === 'object' && action.action === 'listenForSong') await recognizeWithShazam();
-          if (typeof action === 'object' && action.action === 'matchLightsToSong') await matchLightsToSong();
-        }
-      } catch (err) {
-        if (thinkingEl) thinkingEl.remove();
-        status.textContent = 'AI error: ' + err.message;
-        addChatMessage('ai', 'Error: ' + err.message);
-      }
-    }
-
-    function useExamplePrompt() {
-      aiInput.value = 'Run effects with the beat. Make it interesting without strobes or harsh transitions.';
-      aiInput.focus();
-    }
-
-    async function refreshNowPlaying() {
-      try {
-        const res = await fetch('/api/now-playing');
-        const data = await res.json();
-        const np = data.now_playing || null;
-        if (np) {
-          musicTitle.textContent = np.title || 'Unknown';
-          musicArtist.textContent = np.artist || '';
-          if (np.genre) { musicGenre.textContent = np.genre; musicGenre.style.display = 'inline-block'; }
-          else { musicGenre.style.display = 'none'; }
-          if (np.cover_url) { albumArt.src = np.cover_url; albumArt.classList.add('visible'); }
-          else { albumArt.classList.remove('visible'); }
-        } else {
-          musicTitle.textContent = data.text || data.error || 'No song detected.';
-          musicArtist.textContent = '';
-          musicGenre.style.display = 'none';
-          albumArt.classList.remove('visible');
-        }
-        nowPlaying.textContent = data.text || data.error || 'No song detected.';
-        return np;
-      } catch (err) {
-        musicTitle.textContent = 'Error fetching song.';
-        musicArtist.textContent = '';
-        musicGenre.style.display = 'none';
-        albumArt.classList.remove('visible');
-        nowPlaying.textContent = 'Error fetching song.';
-        return null;
-      }
-    }
-
-    // --- browser webcam/mic song ID support ---
-    function encodeWAV(samples, sampleRate) {
-      const buf = new ArrayBuffer(44 + samples.length * 2);
-      const view = new DataView(buf);
-      function w(s, o) { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); }
-      function ws(o, v) { view.setUint16(o, v, true); }
-      function wi(o, v) { view.setUint32(o, v, true); }
-      w("RIFF", 0); wi(4, 36 + samples.length * 2); w("WAVE", 8);
-      w("fmt ", 12); wi(16, 16); ws(20, 1); ws(22, 1); wi(24, sampleRate);
-      wi(28, sampleRate * 2); ws(32, 2); ws(34, 16);
-      w("data", 36); wi(40, samples.length * 2);
-      let o = 44;
-      for (let i = 0; i < samples.length; i++, o += 2) {
-        let s = Math.max(-1, Math.min(1, samples[i]));
-        view.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-      }
-      return buf;
-    }
-    async function captureMicWav(seconds = 5) {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
-      });
-      const ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const source = ctx.createMediaStreamSource(stream);
-      const proc = ctx.createScriptProcessor(4096, 1, 1);
-      const chunks = [];
-      proc.onaudioprocess = (e) => { chunks.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
-      source.connect(proc);
-      proc.connect(ctx.destination);
-      await new Promise(r => setTimeout(r, seconds * 1000));
-      proc.disconnect(); source.disconnect();
-      stream.getTracks().forEach(t => t.stop());
-      let len = 0; for (const c of chunks) len += c.length;
-      const samples = new Float32Array(len);
-      let off = 0; for (const c of chunks) { samples.set(c, off); off += c.length; }
-      const wav = encodeWAV(samples, ctx.sampleRate);
-      const u8 = new Uint8Array(wav);
-      let bin = ""; for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
-      return btoa(bin);
-    }
-
-    async function recognizeWithShazam() {
-      musicTitle.textContent = '🎤 Listening... (5s)';
-      musicArtist.textContent = '';
-      musicGenre.style.display = 'none';
-      albumArt.classList.remove('visible');
-      try {
-        const b64 = await captureMicWav(5);
-        const res = await fetch('/api/recognize', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({audio: b64})
-        });
-        const data = await res.json();
-        if (data.ok && data.now_playing) {
-          const np = data.now_playing;
-          musicTitle.textContent = np.title || 'Song recognized!';
-          musicArtist.textContent = np.artist || '';
-          if (np.genre) { musicGenre.textContent = np.genre; musicGenre.style.display = 'inline-block'; }
-          nowPlaying.textContent = data.text || 'Song recognized!';
-          return np;
-        }
-        musicTitle.textContent = data.error || 'No match found.';
-        nowPlaying.textContent = data.error || 'No match found.';
-        return null;
-      } catch (err) {
-        musicTitle.textContent = 'Recognition error: ' + err.message;
-        nowPlaying.textContent = 'Recognition error: ' + err.message;
-        return null;
-      }
-    }
-
-    async function matchLightsToSong() {
-      status.textContent = 'Detecting song and matching lights...';
-      musicTitle.textContent = 'Listening...';
-      musicArtist.textContent = '';
-      musicGenre.style.display = 'none';
-      albumArt.classList.remove('visible');
-      try {
-        const b64 = await captureMicWav(5);
-        const res = await fetch('/api/match-lights', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({audio: b64})
-        });
-        const data = await res.json();
-        if (data.ok) {
-          status.textContent = data.message || 'Lights matched!';
-          const np = data.now_playing;
-          if (np) {
-            musicTitle.textContent = np.title || 'Unknown';
-            musicArtist.textContent = np.artist || '';
-            if (np.genre) { musicGenre.textContent = np.genre; musicGenre.style.display = 'inline-block'; }
-            if (np.cover_url) { albumArt.src = np.cover_url; albumArt.classList.add('visible'); }
-          } else {
-            musicTitle.textContent = 'Song matched!';
-          }
-          if (data.response) addChatMessage('ai', data.response);
-          const conf = Array.isArray(data.confirmations) ? data.confirmations.join(' ') : (data.confirmations || '');
-          if (conf) addChatMessage('ai', conf);
-          aiReply.textContent = data.response || '';
-          aiConfirmations.textContent = data.confirmations || '';
-        } else {
-          status.textContent = data.error || 'Could not match lights.';
-          musicTitle.textContent = data.error || 'No match found.';
-        }
-      } catch (err) {
-        status.textContent = 'Match lights error: ' + err.message;
-        musicTitle.textContent = 'Error matching lights.';
-      }
-    }
-
-    async function refreshSmartSuggestions() {
-      const box = document.getElementById('smartSuggestions');
-      if (!box) return;
-      try {
-        const res = await fetch('/api/suggestions');
-        const data = await res.json();
-        const suggestions = data.suggestions || [];
-        box.innerHTML = suggestions.map((item) => {
-          const click = item.action === 'music_match'
-            ? 'matchLightsToSong()'
-            : `send('${item.action}', ${JSON.stringify(item.payload || {}).replace(/"/g, '&quot;')})`;
-          return `
-            <button class="smart-chip" onclick="${click}">
-              <b>${item.title}</b><span>${item.reason}</span>
-            </button>
-          `;
-        }).join('');
-      } catch (err) {
-        box.innerHTML = '<div class="smart-chip"><b>Smart picks offline</b><span>Suggestions will appear when the controller responds.</span></div>';
-      }
-    }
-
-    async function autoMatchSong() {
-      const btn = document.getElementById('autoMatchBtn');
-      const st = document.getElementById('autoStatus');
-      btn.disabled = true;
-      st.textContent = 'Detecting song and choosing lights…';
-      try {
-        await matchLightsToSong();
-        st.textContent = status.textContent || 'Done';
-      } catch (err) {
-        st.textContent = 'Error: ' + err.message;
-      } finally {
-        btn.disabled = false;
-      }
-    }
-
-    let autonomousRunning = false;
-    async function toggleAutonomous() {
-      const btn = document.getElementById('autoToggleBtn');
-      const st = document.getElementById('autoStatus');
-      btn.disabled = true;
-      try {
-        if (!autonomousRunning) {
-          stopAudioReactive();
-          await send('autonomous_start');
-          autonomousRunning = true;
-          btn.textContent = '■ Stop autonomous show';
-          st.textContent = 'Autonomous show running';
-        } else {
-          await send('autonomous_stop');
-          autonomousRunning = false;
-          btn.textContent = '▶ Start autonomous show';
-          st.textContent = 'Autonomous show stopped';
-        }
-      } catch (err) {
-        st.textContent = 'Error: ' + err.message;
-      } finally {
-        btn.disabled = false;
-      }
-    }
-
-    async function startAudioReactive() {
-      if (audioReactiveRunning) return;
-      try {
-        micStream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
-        });
-      } catch (err) {
-        status.textContent = 'Mic error: ' + err.name;
-        return;
-      }
-      audioReactiveRunning = true;
-      audioContext = new AudioContext();
-      analyser = audioContext.createAnalyser();
-      analyser.fftSize = 1024;
-      audioData = new Uint8Array(analyser.frequencyBinCount);
-      audioContext.createMediaStreamSource(micStream).connect(analyser);
-      status.textContent = 'Mode 1 listening...';
-      analyzeAudio();
-    }
-
-    function stopAudioReactive() {
-      if (!audioReactiveRunning) return;
-      audioReactiveRunning = false;
-      if (rafId) cancelAnimationFrame(rafId);
-      rafId = null;
-      if (micStream) micStream.getTracks().forEach(track => track.stop());
-      if (audioContext) audioContext.close();
-      peakLevel = 0;
-      updateVu(0, false);
-      status.textContent = 'Mode 1 stopped.';
-    }
-
-    function updateVu(energy, beat) {
-      const level = Math.max(0, Math.min(100, Math.round(energy * 1.35)));
-      peakLevel = Math.max(level, peakLevel * 0.94);
-      if (peakLevel < 0.5) peakLevel = 0;
-      vuFill.style.width = `${level}%`;
-      vuPeak.style.left = `${Math.max(0, Math.min(99, peakLevel))}%`;
-      beatLamp.classList.toggle('on', beat);
-      if (beat) setTimeout(() => beatLamp.classList.remove('on'), 90);
-    }
-
-    function analyzeAudio() {
-      if (!audioReactiveRunning) return;
-      analyser.getByteFrequencyData(audioData);
-      let total = 0;
-      for (const value of audioData) total += value;
-      const energy = total / audioData.length;
-      baseline = baseline * 0.94 + energy * 0.06;
-      const now = performance.now();
-      const beat = energy > 22 && energy > baseline * 1.45 && now - lastBeat > 140;
-      updateVu(energy, beat);
-      if (beat) {
-        lastBeat = now;
-        const color = palette[paletteIndex++ % palette.length];
-        const effect = beatEffects[effectIndex++ % beatEffects.length];
-        const brightness = Math.max(90, Math.min(255, Math.round(energy * 3.2)));
-        const speed = Math.max(100, Math.min(255, Math.round(80 + energy * 3.9)));
-        send('beat', {red: color[0], green: color[1], blue: color[2], white: color[3], brightness, effect, speed});
-      }
-      rafId = requestAnimationFrame(analyzeAudio);
-    }
-
-    document.addEventListener('visibilitychange', () => {
-      if (document.hidden && audioReactiveRunning) {
-        if (rafId) cancelAnimationFrame(rafId);
-        rafId = null;
-        if (audioContext && audioContext.state === 'running') audioContext.suspend();
-      } else if (!document.hidden && audioReactiveRunning && !rafId) {
-        if (audioContext && audioContext.state === 'suspended') audioContext.resume();
-        analyzeAudio();
-      }
-    });
-
-    function setColor(red, green, blue, white) {
-      r.value = red; g.value = green; b.value = blue; w.value = white;
-      send('color', {red, green, blue, white, transition: Number(transition.value)});
-    }
-
-    function setCustom() {
-      setColor(Number(r.value), Number(g.value), Number(b.value), Number(w.value));
-    }
-
-    async function addSchedule() {
-      const timeStr = schedTime.value;
-      const action = schedAction.value;
-      const sceneName = schedScene.value;
-      if (!timeStr) { status.textContent = 'Please select a time.'; return; }
-      await send('schedule', {subaction: 'add', time: timeStr, action, scene_name: sceneName});
-      listSchedule();
-    }
-
-    async function listSchedule() {
-      try {
-        const res = await fetch('/api/action', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({action: 'schedule', subaction: 'list'})
-        });
-        const data = await res.json();
-        if (data.ok && data.entries) {
-          scheduleList.textContent = data.entries.length ? data.entries.map((e,i) => `${i}: ${e.time} -> ${e.action} ${e.data.scene||''}`).join('\\n') : 'No schedules.';
-        } else {
-          scheduleList.textContent = data.error || 'No schedules.';
-        }
-      } catch (err) {
-        scheduleList.textContent = 'Error loading schedules.';
-      }
-    }
-
-    async function startAutonomous() {
-      // Stop browser Mode 1 first — autonomous has its own beat thread
-      stopAudioReactive();
-      await send('autonomous_start');
-    }
-
-    function updateAutonomousStatus(auto) {
-      const el = document.getElementById('autonomousStatus');
-      const autoSt = document.getElementById('autoStatus');
-      const autoBtn = document.getElementById('autoToggleBtn');
-      const running = !!(auto && auto.running);
-      autonomousRunning = running;
-      if (autoBtn) {
-        autoBtn.textContent = running ? '■ Stop autonomous show' : '▶ Start autonomous show';
-      }
-      if (!running) {
-        if (el) { el.textContent = 'Inactive'; el.style.color = 'var(--text-secondary)'; }
-        return;
-      }
-      let text = '🔍 Listening for music...';
-      let color = '#ffd43b';
-      if (auto.quiet) {
-        text = '🌙 Ambient — quiet detected';
-        color = '#aaa';
-      } else if (auto.song && auto.song.title) {
-        const genre = auto.song.genre ? ` · ${auto.song.genre}` : '';
-        text = `🎵 ${auto.song.title} — ${auto.song.artist || ''}${genre}`;
-        color = 'var(--success)';
-      }
-      if (el) { el.textContent = text; el.style.color = color; }
-      if (autoSt) { autoSt.textContent = text; }
-    }
-
-    async function restartController() {
-      if (!confirm('Reboot the WLED controller? It will be offline for a few seconds.')) return;
-      status.textContent = 'Restarting controller...';
-      connIndicator.textContent = '🟡';
-      connText.textContent = 'Restarting...';
-      await send('restart');
-    }
-
-    const effectNameMap = __EFFECT_NAME_MAP__;
-    const STRIP_SEGMENTS = 120;
-    let currentStripState = null;
-    let stripRafId = null;
-
-    function initLedStrip() {
-      ledStrip.innerHTML = '';
-      for (let i = 0; i < STRIP_SEGMENTS; i++) {
-        const seg = document.createElement('div');
-        seg.className = 'led-segment';
-        ledStrip.appendChild(seg);
-      }
-    }
-
-    function rgbToHsl(r, g, b) {
-      r /= 255; g /= 255; b /= 255;
-      const max = Math.max(r, g, b), min = Math.min(r, g, b);
-      let h = 0, s = 0, l = (max + min) / 2;
-      if (max !== min) {
-        const d = max - min;
-        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-        switch (max) {
-          case r: h = (g - b) / d + (g < b ? 6 : 0); break;
-          case g: h = (b - r) / d + 2; break;
-          case b: h = (r - g) / d + 4; break;
-        }
-        h /= 6;
-      }
-      return [h, s, l];
-    }
-
-    function hslToRgb(h, s, l) {
-      let r, g, b;
-      if (s === 0) {
-        r = g = b = l;
-      } else {
-        const hue2rgb = (p, q, t) => {
-          if (t < 0) t += 1;
-          if (t > 1) t -= 1;
-          if (t < 1 / 6) return p + (q - p) * 6 * t;
-          if (t < 1 / 2) return q;
-          if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
-          return p;
-        };
-        const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-        const p = 2 * l - q;
-        r = hue2rgb(p, q, h + 1 / 3);
-        g = hue2rgb(p, q, h);
-        b = hue2rgb(p, q, h - 1 / 3);
-      }
-      return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
-    }
-
-    function interpolateColor(c1, c2, t) {
-      return c1.map((v, i) => Math.round(v + (c2[i] - v) * t));
-    }
-
-    function scaleBrightness(color, factor) {
-      return color.map(v => Math.round(v * factor));
-    }
-
-    function rgbwToCss(r, g, b, w, bri) {
-      const brightness = Math.max(0, Math.min(1, (bri || 0) / 255));
-      // Add neutral white contribution from the W channel (better match to RGBW strip mixing)
-      const ww = Math.max(0, Math.min(255, Math.round(((w || 0) * brightness))));
-      const rr = Math.min(255, Math.round(((r || 0) * brightness) + ww));
-      const gg = Math.min(255, Math.round(((g || 0) * brightness) + ww));
-      const bb = Math.min(255, Math.round(((b || 0) * brightness) + ww));
-      return `rgb(${rr}, ${gg}, ${bb})`;
-    }
-
-    function getSpeedMultiplier(sx) {
-      // sx 0 -> very slow, 128 -> normal, 255 -> fast
-      return 0.15 + (Math.max(0, Math.min(255, sx || 128)) / 255) * 2.85;
-    }
-
-    function renderSegment(i, t, state) {
-      const seg = state.seg;
-      const fx = seg.fx ?? 0;
-      const sx = seg.sx ?? 128;
-      const ix = seg.ix ?? 128;
-      const colors = state.colors;
-      const segments = state.segments;
-      const speed = getSpeedMultiplier(sx);
-      const pos = (t * speed) % 1;
-      const c1 = colors[0] || [0, 0, 0, 0];
-      const c2 = colors[1] || c1;
-      const c3 = colors[2] || c1;
-      const ratio = i / (segments - 1 || 1);
-
-      // Solid
-      if (fx === 0) return c1;
-
-      // Breathe / pulse
-      if (fx === 2) {
-        const pulse = 0.55 + 0.45 * Math.sin(t * speed * 3);
-        return scaleBrightness(c1, pulse);
-      }
-
-      // Colorloop
-      if (fx === 8) {
-        const hue = (t * speed * 0.25 + ratio) % 1;
-        return [...hslToRgb(hue, 0.9, 0.5), 0];
-      }
-
-      // Rainbow
-      if (fx === 9) {
-        const hue = (t * speed * 0.2 + ratio) % 1;
-        return [...hslToRgb(hue, 1, 0.5), 0];
-      }
-
-      // Fade
-      if (fx === 12) {
-        const phase = 0.5 + 0.5 * Math.sin(t * speed * 2);
-        return interpolateColor(c1, c2, phase);
-      }
-
-      // Chase family
-      if ([28, 30, 33, 37, 54].includes(fx)) {
-        const isRainbow = fx === 30 || fx === 33;
-        const dotPos = pos;
-        const dist = Math.abs(ratio - dotPos);
-        const wrappedDist = Math.min(dist, 1 - dist);
-        const tail = Math.max(0, 1 - wrappedDist * segments * 1.2);
-        if (isRainbow) {
-          const hue = (ratio + t * speed * 0.15) % 1;
-          const rainbow = [...hslToRgb(hue, 1, 0.5), 0];
-          return scaleBrightness(rainbow, 0.2 + 0.8 * tail);
-        }
-        return scaleBrightness(c1, 0.15 + 0.85 * tail);
-      }
-
-      // Running Dual
-      if (fx === 52) {
-        const wave = Math.sin((ratio - pos) * Math.PI * 4);
-        return wave > 0 ? c1 : c2;
-      }
-
-      // Oscillate
-      if (fx === 62) {
-        const wave = 0.5 + 0.5 * Math.sin((ratio + t * speed * 0.3) * Math.PI * 3);
-        return scaleBrightness(c1, 0.3 + 0.7 * wave);
-      }
-
-      // Pride 2015-ish rainbow bands
-      if (fx === 63) {
-        const hue = (ratio * 2 + t * speed * 0.12) % 1;
-        return [...hslToRgb(hue, 1, 0.52), 0];
-      }
-
-      // Juggle
-      if (fx === 64) {
-        const beat = Math.sin((ratio - pos * 3) * Math.PI * 5);
-        return beat > 0.7 ? c2 : (beat > 0 ? c3 : c1);
-      }
-
-      // Colorwaves / Flow / Waverly / Wavesins / Flow Stripe
-      if ([67, 108, 163, 183, 179].includes(fx)) {
-        const wave = Math.sin((ratio * 3 - t * speed) * Math.PI * 2);
-        const mix = 0.5 + 0.5 * wave;
-        return interpolateColor(c1, c2, mix);
-      }
-
-      // Lake / Pacifica / Waterfall — cool watery shimmer
-      if ([74, 98, 130].includes(fx)) {
-        const wave = Math.sin((ratio * 4 - t * speed) * Math.PI * 2 + Math.sin(t * speed * 2));
-        const base = fx === 98 ? [0, 80, 160, 10] : [0, 60, 140, 5];
-        return scaleBrightness(base, 0.35 + 0.65 * (0.5 + 0.5 * wave));
-      }
-
-      // Sinelon / Sinelon Rainbow
-      if ([90, 92].includes(fx)) {
-        const bounce = Math.abs(Math.sin((ratio - pos) * Math.PI));
-        const tail = Math.pow(bounce, 4 + (ix / 255) * 4);
-        if (fx === 92) {
-          const hue = (ratio + t * speed * 0.1) % 1;
-          return scaleBrightness([...hslToRgb(hue, 1, 0.5), 0], 0.2 + 0.8 * tail);
-        }
-        return scaleBrightness(c1, 0.2 + 0.8 * tail);
-      }
-
-      // Sine
-      if (fx === 105) {
-        const wave = 0.5 + 0.5 * Math.sin((ratio - t * speed) * Math.PI * 4);
-        return scaleBrightness(c1, 0.3 + 0.7 * wave);
-      }
-
-      // Drift / Drift Rose / Swirl
-      if ([115, 162, 172].includes(fx)) {
-        const angle = ratio * Math.PI * 2 + t * speed;
-        const rFade = 0.5 + 0.5 * Math.sin(angle);
-        const gFade = 0.5 + 0.5 * Math.sin(angle + Math.PI * 2 / 3);
-        const bFade = 0.5 + 0.5 * Math.sin(angle + Math.PI * 4 / 3);
-        return [
-          Math.round((c1[0] * rFade + c2[0] * (1 - rFade)) / 2),
-          Math.round((c1[1] * gFade + c2[1] * (1 - gFade)) / 2),
-          Math.round((c1[2] * bFade + c2[2] * (1 - bFade)) / 2),
-          0
-        ];
-      }
-
-      // Waving Cell / Pixelwave
-      if ([120, 122].includes(fx)) {
-        const quant = fx === 122 ? Math.round(ratio * 8) / 8 : ratio;
-        const wave = Math.sin((quant * 5 - t * speed) * Math.PI * 2);
-        return interpolateColor(c1, c2, 0.5 + 0.5 * wave);
-      }
-
-      // Default shimmer / moving gradient for unknown effects
-      const hue = (ratio + t * speed * 0.08) % 1;
-      const shimmer = 0.6 + 0.4 * Math.sin((ratio * 6 - t * speed * 2) * Math.PI);
-      const gradient = [...hslToRgb(hue, 0.7, 0.45), 0];
-      return scaleBrightness(gradient, shimmer);
-    }
-
-    function updateStripFrame(timestamp) {
-      if (!currentStripState || !currentStripState.on) {
-        ledStrip.classList.add('off');
-        stripRafId = requestAnimationFrame(updateStripFrame);
-        return;
-      }
-
-      ledStrip.classList.remove('off');
-      const t = timestamp / 1000;
-      const children = ledStrip.children;
-      const bri = currentStripState.bri ?? 255;
-      for (let i = 0; i < children.length; i++) {
-        const [r, g, b, w] = renderSegment(i, t, currentStripState);
-        const css = rgbwToCss(r, g, b, w, bri);
-        children[i].style.backgroundColor = css;
-        children[i].style.boxShadow = `0 0 6px ${css}`;
-      }
-      stripRafId = requestAnimationFrame(updateStripFrame);
-    }
-
-    function updateLightPreview(st) {
-      const seg = st.seg && st.seg[0] ? st.seg[0] : {};
-      function normCol(c) {
-        if (!c) return [0, 0, 0, 0];
-        const out = c.slice ? c.slice(0, 4) : [c[0] || 0, c[1] || 0, c[2] || 0, c[3] || 0];
-        while (out.length < 4) out.push(0);
-        return out;
-      }
-      const colors = [
-        normCol(seg.col && seg.col[0]),
-        normCol(seg.col && seg.col[1]),
-        normCol(seg.col && seg.col[2]),
-      ];
-      currentStripState = {
-        on: !!st.on,
-        bri: st.bri ?? 0,
-        fx: seg.fx ?? 0,
-        sx: seg.sx ?? 128,
-        ix: seg.ix ?? 128,
-        seg: seg,
-        colors: colors,
-        segments: STRIP_SEGMENTS,
-      };
-
-      const on = currentStripState.on;
-      const bri = currentStripState.bri;
-      const fx = currentStripState.fx;
-      const sx = currentStripState.sx;
-      const effectName = effectNameMap[String(fx)] || `Effect ${fx}`;
-      const [r, g, b, w] = colors[0];
-
-      lightInfo.innerHTML =
-        `<span class="label">${on ? 'ON' : 'OFF'}</span>` +
-        `<span class="label">Bri ${bri}</span>` +
-        `<span class="label">${fx === 0 ? 'Solid' : effectName}</span>` +
-        (fx !== 0 ? `<span class="label">Spd ${sx}</span>` : '') +
-        `<br><span style="color:#666;font-size:11px;">RGBW(${r},${g},${b},${w})</span>`;
-    }
-
-    // SSE state updates — polls the device every 2 seconds
-    const evtSource = new EventSource('/api/events');
-    evtSource.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data);
-        updateAutonomousStatus(payload.autonomous || null);
-        if (payload.state) {
-          const st = payload.state;
-          const onOff = st.on ? 'ON' : 'OFF';
-          const bri = st.bri ?? '?';
-          const seg = st.seg && st.seg[0] ? st.seg[0] : {};
-          const col = seg.col && seg.col[0] ? seg.col[0] : [0,0,0,0];
-          stateDisplay.textContent = `Power: ${onOff}\\nBrightness: ${bri}\\nColor: RGBW(${col.join(',')})\\nEffect: ${seg.fx ?? '-'} Speed: ${seg.sx ?? '-'}`;
-          stateSummary.textContent = `${onOff} | Bri ${bri} | Fx ${seg.fx ?? '-'} @ ${seg.sx ?? '-'}`;
-          updateLightPreview(st);
-          connIndicator.textContent = '🟢';
-          connText.textContent = 'Connected';
-        } else if (payload.error) {
-          stateDisplay.textContent = 'Device offline — reconnecting...';
-          stateSummary.textContent = '--';
-          ledStrip.classList.add('off');
-          currentStripState = { on: false, bri: 0, colors: [[0,0,0,0]], segments: STRIP_SEGMENTS, seg: {}, fx: 0, sx: 128, ix: 128 };
-          lightInfo.innerHTML = '<span class="label">Disconnected</span>';
-          connIndicator.textContent = '🔴';
-          connText.textContent = 'Disconnected';
-        }
-      } catch (e) {
-        stateDisplay.textContent = 'State update error';
-        connIndicator.textContent = '🔴';
-        connText.textContent = 'Disconnected';
-      }
-    };
-    evtSource.onerror = () => {
-      stateDisplay.textContent = 'State connection lost. Retrying...';
-      connIndicator.textContent = '🔴';
-      connText.textContent = 'Disconnected';
-    };
-
-    // Init
-    initLedStrip();
-    stripRafId = requestAnimationFrame(updateStripFrame);
-    loadChatHistory();
-    refreshSmartSuggestions();
-    setInterval(refreshSmartSuggestions, 30000);
-    listSchedule();
-  </script>
-</body>
-</html>
-"""
+from light_gui_html import HTML_TEMPLATE
 
 
 @functools.lru_cache(maxsize=1)
@@ -1514,49 +231,108 @@ def safe_effect_prompt() -> str:
 
 
 def system_knowledge_prompt() -> str:
-    return (
-        "You control a bedroom Wi-Fi LED controller through validated actions. "
-        "Hardware endpoint: WLED-compatible /json/state. The live device also exposes /json, "
-        "/json/info, /json/effects (or /eff), /json/palettes (or /pal); realtime input via E1.31/Art-Net/DDP (see https://kno.wled.ge/interfaces/e1.31-dmx/); normal control "
-        "is performed by posting validated JSON state payloads. "
-        "Available controls: power on/off, global brightness 0-255, full RGBW color channels "
-        "red 0-255, green 0-255, blue 0-255, white 0-255, safe WLED effects, effect speed 0-255, "
-        "effect intensity 0-255, palettes, segment options, named scenes warm/night/focus/ocean/party "
-        "plus any saved custom scenes, color temperature 2000K-6500K, transition time 0-2000ms, "
-        "nightlight, UDP sync, playlists, presets, native AudioReactive usermod control, and "
-        "browser/desktop microphone Mode 1 start/stop. "
-        "All colors the LEDs can produce are represented by RGBW values, so you may choose any "
-        "combination from [0,0,0,0] through [255,255,255,255]. Named colors should be translated "
-        "to RGBW values; use the white channel for softer pastel, warm, or room-light looks. "
-        "Hex colors like #ff6600 are also accepted. "
-        "Many WLED effects use two or three color slots. When the device snapshot shows "
-        "'colors 1+2' or 'colors 1+2+3' for an effect, always set secondary (red2/green2/blue2/white2) "
-        "and tertiary (red3/green3/blue3/white3) colors — this makes the effect look dramatically better. "
-        "The device has 70+ named palettes (Ocean, Forest, Party, Rainbow, Sunset, etc.). Choose palettes "
-        "by their id number from the 'All palettes' list in the device snapshot — match the palette name "
-        "to the mood. Effects with palette support will ignore the color slots and use the palette instead. "
-        "You can set random scenes, load WLED presets by ID from the 'Saved WLED presets' list, "
-        "start a sunrise wake-up simulation, or begin a scene cycle that rotates through favorites automatically. "
-        "Mode 1 uses the browser webcam microphone, a VU meter, beat detection, and beat-synced "
-        "effect cycling. If the user asks to run effects with the beat, include mode1_start plus "
-        "safe effect/brightness/color setup. "
-        "When a Now playing song is provided, use the title, artist, album, genre, and playback status to infer "
-        "mood, energy, palette, speed, and effect style. Genre is especially important: for example, use "
-        "chill/warm colors and slow flow effects for jazz or acoustic; vibrant rainbows and fast chase for "
-        "EDM or pop; deep reds and purples with slow pulse for metal or dark ambient; bright warm tones "
-        "for reggae or funk. Match the color palette and effect tempo to the song's emotional feel. "
-        "Mention the song in your response when relevant. "
-        "When the user specifies an explicit numeric value — 'set brightness to 241', "
-        "'set RGBW to 255 0 0 0', 'temperature 5000K', 'effect 28 speed 200' — use that exact "
-        "value in the action. Do not substitute, approximate, or override explicit user values "
-        "with your own aesthetic judgement. Explicit commands are instructions, not suggestions. "
-        "Never use blink, strobe, flash, lightning, sparkle, fireworks, or seizure-like effects. "
-        f"Allowed effect ids are: {safe_effect_prompt()}. "
-        "Use chase/rainbow/flow effects when the user asks for motion. "
-        "Always include a concise response and confirmations describing the operations.\n\n"
-        f"{ai_action_reference()}"
-    )
+    return '''### ROLE
+You are the AI lighting director for a bedroom Wi-Fi LED controller. You convert
+natural-language requests into validated WLED JSON state payloads. You are decisive,
+safety-aware, and never override what the user explicitly asks for.
 
+### CONTEXT — DEVICE & API
+- Hardware: WLED-compatible controller. Control is performed by POSTing a validated
+  JSON state payload to /json/state (full JSON API: https://kno.wled.ge/interfaces/json-api/).
+- The live device also exposes /json, /json/info, /json/effects (or /eff),
+  /json/palettes (or /pal). Realtime input via E1.31/Art-Net/DDP
+  (https://kno.wled.ge/interfaces/e1.31-dmx/). Normal control = JSON state posts.
+- A "device snapshot" may be provided with each request. Read it before acting:
+  power, brightness, active segment (fx/sx/ix/pal/cct/colors), nightlight, UDP sync,
+  AudioReactive state, all palettes by id, "Safe effect parameter hints" (color-slot +
+  c1/c2/c3/sx/ix meanings per effect), and "Saved WLED presets".
+
+### ACTION SCHEMA
+Emit exactly one action object. The full WLED JSON API surface is available — power
+(on/off or toggle 't'), global/segment brightness 0-255, RGBW color channels
+(red/green/blue/white + red2/green2/blue2/white2 + red3/...), safe effects (fx),
+speed (sx), intensity (ix), custom params (c1/c2/c3, o1/o2/o3), palettes (pal),
+segment options (id/start/stop/len/grp/spc/of/sel/rev/mi/rY/mY/tp/on/frz/cct/m12/si/
+fxdef/set/rpt), individual LEDs (i array), mainseg, cct (0-255 or Kelvin), one-shot
+transition (tt), live/lor, nightlight (nl.on/dur/mode/tbri), udpn sync, playlists
+(pl or full object), presets (ps/psave/pdel), ledmap, rmcpal, np, time, rb (reboot).
+
+Higher-level actions you may select (one per response):
+- on/off, brightness, color, temperature(Kelvin→RGBW), effect, palette, scene,
+  random, preset(by id from snapshot), playlist.
+- save_preset/delete_preset, nightlight, udp_sync, native_audio_reactive,
+  segment_options.
+- mode1_start/mode1_stop (desktop/browser-mic beat-synced cycling).
+- fade_off, cycle_start/cycle_stop, sunrise_start/sunrise_stop, save_scene,
+  delete_scene, schedule_add/schedule_remove, music_detect/music_match.
+
+One-shot examples (intent → action):
+- "soft ocean for 20 minutes then off" → scene ocean + nightlight on, duration 20, target brightness 0.
+- "make it pulse with the song" → safe color/effect setup + mode1_start.
+- "use the device audio reactive mode" → native_audio_reactive enabled true.
+- "wake me up over 30 minutes" → sunrise_start minutes 30.
+- "sync this WLED to the room group" → udp_sync send true recv true.
+- "ocean chase two-tone blue and teal" → effect Chase, blue primary, teal secondary.
+
+### COLOR HANDLING
+- Every LED color is RGBW: any value in [0,0,0,0]..[255,255,255,255]. Named colors →
+  translate to RGBW. Hex (#ff6600) accepted. Use the white channel for soft pastel,
+  warm, or room-light looks.
+- Multi-slot effects: when the snapshot hint shows "colors 1+2" or "colors 1+2+3",
+  ALWAYS set secondary (col1) and tertiary (col2) colors — effects look dramatically
+  better with all slots filled.
+- Palettes: 70+ named (Ocean, Forest, Party, Rainbow, Sunset...). Choose by id from
+  the snapshot list, matching the name to the mood. Effects with palette support
+  ignore color slots and use the palette instead.
+
+### NOW-PLAYING MUSIC (when a Now-playing object is provided)
+Use title, artist, album, genre, and playback status to infer mood, energy, palette,
+speed, and effect style. Genre is the strongest signal:
+- jazz/acoustic → chill warm colors, slow flow effects.
+- EDM/pop → vibrant rainbows, fast chase.
+- metal/dark ambient → deep reds/purples, slow pulse.
+- reggae/funk → bright warm tones.
+Mention the song in your response when it fits.
+
+### CONSTRAINTS (hard rules — never violate)
+1. SAFETY: Never use blink, strobe, flash, lightning, sparkle, fireworks, or any
+   seizure-like effect. Motion requests → use chase / rainbow / flow effects only.
+   Allowed effect ids: __SAFE_EFFECTS__.
+2. EXPLICIT VALUES ARE INSTRUCTIONS, NOT SUGGESTIONS. When the user gives an exact
+   number — "brightness 241", "RGBW 255 0 0 0", "5000K", "effect 28 speed 200" — use
+   that exact value. Do not substitute, approximate, round, or override it with your
+   own aesthetic judgment.
+3. One action object per response. Every emitted color/effect/palette/preset id must
+   exist in the snapshot or the allowed lists above. If unsure an id is valid, do not
+   guess — omit it or pick a known-safe default.
+
+### OUTPUT FORMAT (strict)
+Respond ONLY with a single JSON object, no prose outside it:
+{
+  "action": { /* validated WLED state payload or higher-level action */ },
+  "response": "<100-250 char marquee string>"
+}
+
+"response" field — this text scrolls right-to-left in the top UI box (above the Music
+Mode card). Make it fun, varied, and scroll-friendly. It MAY describe the lighting
+plan, but PREFER (or mix in) music trivia, artist facts, song stories, jokes, hype,
+memes — anything engaging tied to the song/request/mood. Vary it; do not always give
+straight lighting instructions. Keep it punchy (100-250 chars so it scrolls cleanly).
+Mention the song/artist when it fits. Be creative and entertaining.
+
+Always include a confirmation of the operation(s) inside or alongside the response text.
+
+### SELF-CHECK (internal, before emitting — do not print)
+- Did I honor every explicit numeric value the user gave? (highest priority)
+- Is the effect on the allowed list and not a strobe/flash/seizure type?
+- For a multi-slot effect, did I set secondary/tertiary colors when the hint said so?
+- Is "response" 100-250 chars, varied, and not a boilerplate lighting recap?
+If any check fails, fix it silently, then emit the final JSON.
+
+### NOW EXECUTE
+Translate the user's request (given in the next message, along with the device snapshot
+and now-playing info when available) into one validated action + marquee response.
+'''.replace("__SAFE_EFFECTS__", safe_effect_prompt())
 
 def parse_playerctl_metadata(output: str) -> dict[str, str]:
     lines = [line.strip() for line in output.splitlines()]
@@ -1775,7 +551,8 @@ def match_lights_to_song(client: lightctl.LightClient, now_playing: dict[str, st
         prompt += f" (genre: {genre})"
     prompt += (
         " is currently playing. Create a light show that matches its mood, energy, and style. "
-        "Choose colors, effects, and speed that feel right for this song."
+        "Choose colors, effects, and speed that feel right for this song. "
+        "For the response field, make it fun and varied for the top scrolling marquee: include music trivia, artist trivia, song facts, jokes, or hype in addition to the lighting plan."
     )
     try:
         plan = call_openai_for_plan(prompt, now_playing, client.get_device_snapshot())
@@ -1856,7 +633,7 @@ def build_openai_request(
                     "properties": {
                         "response": {
                             "type": "string",
-                            "description": "A short user-facing response explaining what will happen.",
+                            "description": "Fun, engaging text (100-300 chars) for the top scrolling marquee: lighting vibe + music/artist trivia, fun facts, jokes, hype, stories, or any entertaining content related to the song/request. Vary it and make it scroll-worthy.",
                         },
                         "confirmations": {
                             "type": "array",
@@ -1904,6 +681,7 @@ def build_openai_request(
                                     "transition": {"type": ["integer", "null"], "minimum": 0, "maximum": 2000},
                                     "preset_id": {"type": ["integer", "null"], "minimum": 1, "maximum": 250},
                                     "playlist_id": {"type": ["integer", "null"], "minimum": 1, "maximum": 250},
+                                    "name": {"type": ["string", "null"], "description": "Custom name for saved preset or scene"},
                                     "minutes": {"type": ["number", "null"], "minimum": 0.5, "maximum": 120},
                                     "interval": {"type": ["number", "null"], "minimum": 5, "maximum": 3600},
                                     "enabled": {"type": ["boolean", "null"]},
@@ -1949,6 +727,7 @@ def build_openai_request(
                                     "transition",
                                     "preset_id",
                                     "playlist_id",
+                                    "name",
                                     "minutes",
                                     "interval",
                                     "enabled",
@@ -2012,21 +791,20 @@ def parse_ai_plan(text: str) -> dict[str, Any]:
         elif kind == "cycle_stop":
             client_actions.append({"action": "stopCycle"})
         elif kind == "sunrise_start":
+            target_brightness = action.get("target_brightness")
             client_actions.append(
                 {
                     "action": "startSunrise",
                     "minutes": float(action.get("minutes") or 30),
-                    "brightness": int(action.get("target_brightness") or 255),
+                    "brightness": int(target_brightness) if target_brightness is not None else 255,
                 }
             )
         elif kind == "sunrise_stop":
             client_actions.append({"action": "stopSunrise"})
         elif kind == "music_detect":
             client_actions.append({"action": "detectSong"})
-        elif kind == "music_listen":
-            client_actions.append({"action": "listenForSong"})
         elif kind == "music_match":
-            client_actions.append({"action": "matchLightsToSong"})
+            client_actions.append({"action": "matchLightsFromNowPlaying"})
     return {
         "response": response.strip(),
         "confirmations": [str(item) for item in confirmations if str(item).strip()],
@@ -2061,6 +839,31 @@ def call_openai_for_plan(
     except urllib.error.URLError as exc:
         raise ValueError(f"OpenAI request failed: {exc}") from exc
     return parse_ai_plan(extract_response_text(data))
+
+
+def _segment_options_payload(data: dict[str, Any]) -> lightctl.WledPayload:
+    seg: dict[str, Any] = {}
+    field_map = {
+        "segment_on": "on",
+        "freeze": "frz",
+        "reverse": "rev",
+        "mirror": "mi",
+        "brightness": "bri",
+        "palette": "pal",
+        "c1": "c1",
+        "c2": "c2",
+        "c3": "c3",
+        "grouping": "grp",
+        "spacing": "spc",
+        "offset": "of",
+    }
+    for source, dest in field_map.items():
+        if data.get(source) is not None:
+            value = data[source]
+            seg[dest] = value if isinstance(value, bool) else int(value)
+    if data.get("kelvin") is not None:
+        seg["cct"] = lightctl.clamp_byte((int(data["kelvin"]) - 2000) * 255 / 4500)
+    return {"seg": [seg]} if seg else {}
 
 
 def payload_for_ai_action(action: dict[str, Any]) -> lightctl.WledPayload:
@@ -2139,12 +942,14 @@ def payload_for_ai_action(action: dict[str, Any]) -> lightctl.WledPayload:
         return lightctl.random_scene_payload(transition_ms=transition_ms)
     if kind == "preset":
         return lightctl.preset_payload(int_or_default("preset_id", 1), transition_ms=transition_ms)
+    if kind == "save_preset":
+        preset_id = int_or_default("preset_id", 1)
+        name = str(action.get("name") or f"Preset {preset_id}")
+        return {"psave": preset_id, "n": name}
+    if kind == "delete_preset":
+        return {"pdel": int_or_default("preset_id", 1)}
     if kind == "playlist":
-        playlist_id = int_or_default("playlist_id", 1)
-        payload: lightctl.WledPayload = {"pl": playlist_id}
-        if transition_ms > 0:
-            payload["transition"] = transition_ms
-        return payload
+        return lightctl.playlist_payload(int_or_default("playlist_id", 1), transition_ms=transition_ms)
     if kind == "palette":
         return {"seg": [{"pal": int_or_default("palette", 0)}]}
     if kind == "nightlight":
@@ -2162,31 +967,8 @@ def payload_for_ai_action(action: dict[str, Any]) -> lightctl.WledPayload:
         enabled = bool(action.get("enabled"))
         return {"AudioReactive": {"on": enabled, "enabled": enabled}}
     if kind == "segment_options":
-        seg: dict[str, Any] = {}
-        field_map = {
-            "segment_on": "on",
-            "freeze": "frz",
-            "reverse": "rev",
-            "mirror": "mi",
-            "brightness": "bri",
-            "palette": "pal",
-            "c1": "c1",
-            "c2": "c2",
-            "c3": "c3",
-            "grouping": "grp",
-            "spacing": "spc",
-            "offset": "of",
-        }
-        for source, dest in field_map.items():
-            if action.get(source) is not None:
-                value = action[source]
-                seg[dest] = value if isinstance(value, bool) else int(value)
-        if action.get("kelvin") is not None:
-            seg["cct"] = lightctl.clamp_byte((int(action["kelvin"]) - 2000) * 255 / 4500)
-        return {"seg": [seg]} if seg else {}
+        return _segment_options_payload(action)
     if kind == "save_scene":
-        name = str(action.get("scene") or "custom")
-        lightctl.save_scene(name, {})
         return {}
     if kind == "delete_scene":
         lightctl.delete_scene(str(action.get("scene") or ""))
@@ -2210,6 +992,15 @@ def payload_for_ai_action(action: dict[str, Any]) -> lightctl.WledPayload:
 def apply_ai_actions(client: lightctl.LightClient, actions: list[dict[str, Any]]) -> str:
     applied = []
     for action in actions:
+        if action.get("action") == "save_scene":
+            payload: lightctl.WledPayload = {}
+            state = client.get_state()
+            for key in ("on", "bri", "seg", "transition"):
+                if key in state:
+                    payload[key] = state[key]  # type: ignore[literal-required]
+            lightctl.save_scene(str(action.get("scene") or "custom"), payload)
+            applied.append("save_scene")
+            continue
         payload = payload_for_ai_action(action)
         if payload:
             client.post_state(payload)
@@ -2241,6 +1032,8 @@ def payload_for_action(action: str, data: dict[str, Any]) -> lightctl.WledPayloa
             int(data.get("green", 255)),
             int(data.get("blue", 255)),
             int(data.get("white", 0)),
+            red2=data.get("red2"), green2=data.get("green2"), blue2=data.get("blue2"), white2=data.get("white2"),
+            red3=data.get("red3"), green3=data.get("green3"), blue3=data.get("blue3"), white3=data.get("white3"),
             transition_ms=transition_ms,
         )
     if action == "rgbw_bri":
@@ -2268,14 +1061,27 @@ def payload_for_action(action: str, data: dict[str, Any]) -> lightctl.WledPayloa
             transition_ms=transition_ms,
         )
     if action == "fx":
-        return lightctl.effect_payload(int(data.get("effect", 1)), int(data.get("speed", 128)), transition_ms=transition_ms)
+        return lightctl.effect_payload(
+            int(data.get("effect", 2)),
+            speed=int(data.get("speed", 128)),
+            intensity=data.get("intensity"),
+            palette=data.get("palette"),
+            c1=data.get("c1"), c2=data.get("c2"), c3=data.get("c3"),
+            o1=data.get("o1"), o2=data.get("o2"), o3=data.get("o3"),
+            transition_ms=transition_ms
+        )
     if action == "scene":
         return lightctl.scene_payload(str(data.get("name", "warm")), transition_ms=transition_ms)
     if action == "temp":
+        # Prefer native cct if provided, fall back to RGBW approx
+        if data.get("cct") is not None:
+            return lightctl.cct_payload(int(data["cct"]), transition_ms=transition_ms)
         return lightctl.color_payload(
             *lightctl.kelvin_to_rgbw(int(data.get("kelvin", 4000))),
             transition_ms=transition_ms,
         )
+    if action == "cct":
+        return lightctl.cct_payload(int(data.get("cct", 127)), transition_ms=transition_ms)
     if action == "delete_scene":
         lightctl.delete_scene(str(data.get("name", "")))
         return {}
@@ -2299,6 +1105,32 @@ def payload_for_action(action: str, data: dict[str, Any]) -> lightctl.WledPayloa
         return lightctl.random_scene_payload(transition_ms=transition_ms)
     if action == "preset":
         return lightctl.preset_payload(int(data.get("id", 1)), transition_ms=transition_ms)
+    if action == "save_preset":
+        preset_id = int(data.get("id", 1))
+        name = str(data.get("name", f"Preset {preset_id}"))
+        return {"psave": preset_id, "n": name}
+    if action == "delete_preset":
+        return {"pdel": int(data.get("id", 1))}
+    if action == "playlist":
+        return lightctl.playlist_payload(int(data.get("id", 1)), transition_ms=transition_ms)
+    if action == "palette":
+        return {"seg": [{"pal": int(data.get("id", 0))}]}
+    if action == "nightlight":
+        return {
+            "nl": {
+                "on": bool(data.get("enabled")),
+                "dur": int(data.get("minutes", 60)),
+                "mode": int(data.get("mode", 1)),
+                "tbri": int(data.get("target_brightness", 0)),
+            }
+        }
+    if action == "udp_sync":
+        return {"udpn": {"send": bool(data.get("send")), "recv": bool(data.get("receive"))}}
+    if action == "native_audio_reactive":
+        enabled = bool(data.get("enabled"))
+        return {"AudioReactive": {"on": enabled, "enabled": enabled}}
+    if action == "segment_options":
+        return _segment_options_payload(data)
     if action == "restart":
         return lightctl.restart_payload()
     raise ValueError(f"Unknown action: {action}")
@@ -2461,7 +1293,8 @@ class AutonomousMode:
                 "color, secondary color, effect speed, intensity, and brightness that match this "
                 "song's specific mood, energy, and tempo. Both color slots will be used by beat "
                 "detection for two-tone rhythmic pulsing. Be bold and creative — each song should "
-                "feel distinctly different. Reference the actual energy and genre of this song."
+                "feel distinctly different. Reference the actual energy and genre of this song. "
+                "For the 'response' field (shown as scrolling marquee at top of UI), include fun music trivia, artist trivia, song facts, jokes or hype — vary it and make it entertaining to scroll."
             )
             snapshot = self._client.get_device_snapshot()
             plan = call_openai_for_plan(prompt, now_playing, snapshot)
@@ -2534,12 +1367,15 @@ class ScheduleExecutor:
         logger.info("Schedule executor started.")
         while not self._stop.is_set():
             now = time.strftime("%H:%M")
+            today = time.strftime("%Y-%m-%d")
             schedule = lightctl.list_schedule()
             modified = False
             for entry in schedule:
-                if entry.get("time") == now and not entry.get("_executed_today"):
+                if entry.get("time") == now and entry.get("last_run_date") != today:
                     try:
-                        action = entry["action"]
+                        action = entry.get("action")
+                        if not action:
+                            continue
                         data = entry.get("data", {})
                         if action == "on":
                             self.client.post_state(lightctl.on_payload(True))
@@ -2551,12 +1387,8 @@ class ScheduleExecutor:
                         logger.info("Executed schedule: %s -> %s", entry["time"], action)
                     except Exception:
                         logger.exception("Schedule execution failed")
-                    entry["_executed_today"] = True
+                    entry["last_run_date"] = today
                     modified = True
-            if now == "00:00":
-                for entry in schedule:
-                    entry.pop("_executed_today", None)
-                modified = True
             if modified:
                 lightctl._save_schedule(schedule)
             time.sleep(30)
@@ -2568,8 +1400,54 @@ class GuiState:
         self.mode1 = lightctl.ReactiveThread(client)
         self.autonomous = AutonomousMode(client)
         self.schedule = ScheduleExecutor(client)
+        self.mood_session = mood_orchestrator.MoodSession(
+            client=client,
+            recognize_fn=music_recognizer.recognize_audio_bytes_sync,
+            generate_fn=lambda song: generate_mood_for_song(client, song),
+        )
         self.schedule.start()
         self.fade_timer: lightctl.FadeTimer | None = None
+        self.is_offline = False
+        self.last_offline_check = 0.0
+        self.cached_state = None
+        self.cached_info = None
+        self.state_lock = threading.Lock()
+
+    def _fetch_throttled(self, cache_attr: str, fetch_fn: Callable[[], dict]) -> dict:
+        now = time.time()
+        if self.is_offline and (now - self.last_offline_check < 5.0):
+            cached = getattr(self, cache_attr)
+            if cached is not None:
+                return cached
+            raise RuntimeError("Controller is offline (throttled)")
+
+        with self.state_lock:
+            now = time.time()
+            if self.is_offline and (now - self.last_offline_check < 5.0):
+                cached = getattr(self, cache_attr)
+                if cached is not None:
+                    return cached
+                raise RuntimeError("Controller is offline (throttled)")
+
+            try:
+                result = fetch_fn()
+                self.is_offline = False
+                self.last_offline_check = now
+                setattr(self, cache_attr, result)
+                return result
+            except Exception as exc:
+                self.is_offline = True
+                self.last_offline_check = now
+                cached = getattr(self, cache_attr)
+                if cached is not None:
+                    return cached
+                raise exc
+
+    def get_state_throttled(self) -> dict:
+        return self._fetch_throttled("cached_state", self.client.get_state)
+
+    def get_info_throttled(self) -> dict:
+        return self._fetch_throttled("cached_info", self.client.get_info)
 
     def start_mode1(self) -> str:
         return self.mode1.start()
@@ -2649,7 +1527,7 @@ def make_handler(state: GuiState):
             path = parsed.path
             if path == "/api/now-playing":
                 query = urllib.parse.parse_qs(parsed.query)
-                use_shazam = query.get("shazam", [""])[0].lower() in ("1", "true", "yes")
+                use_shazam = False
                 now_playing = get_now_playing_with_shazam_fallback(use_shazam=use_shazam)
                 self.respond_json(
                     {
@@ -2666,45 +1544,14 @@ def make_handler(state: GuiState):
                         status=503,
                     )
                     return
-                try:
-                    if not music_recognizer.is_available():
-                        self.respond_json(
-                            {"ok": False, "error": music_recognizer.available_reason()},
-                            status=503,
-                        )
-                        return
-                    shazam_result = music_recognizer.recognize_sync()
-                    if shazam_result:
-                        now_playing = {
-                            "title": shazam_result.get("title", ""),
-                            "artist": shazam_result.get("artist", ""),
-                            "album": shazam_result.get("album", ""),
-                            "status": "Playing",
-                            "source": "shazam",
-                        }
-                        self.respond_json(
-                            {
-                                "ok": True,
-                                "now_playing": now_playing,
-                                "text": now_playing_text(now_playing),
-                            }
-                        )
-                    else:
-                        if not music_recognizer.is_available():
-                            err = music_recognizer.available_reason()
-                        else:
-                            err = "No match found (microphone unavailable or no audible music)."
-                        self.respond_json({"ok": False, "error": err})
-                except Exception as exc:
-                    logger.exception("Shazam recognition error")
-                    self.respond_json({"ok": False, "error": str(exc)}, status=500)
+                self.respond_json(
+                    {"ok": False, "error": "Browser audio is required for song recognition."},
+                    status=400,
+                )
                 return
             if path == "/api/match-lights":
-                if not music_recognizer.can_identify_song():
-                    self.respond_json({"ok": False, "error": "Music recognition unavailable"}, status=503)
-                    return
                 try:
-                    result = match_lights_to_song(state.client)
+                    result = match_lights_to_song(state.client, now_playing=get_now_playing())
                     self.respond_json(
                         {
                             "ok": result["ok"],
@@ -2720,17 +1567,27 @@ def make_handler(state: GuiState):
                 return
             if path == "/api/state":
                 try:
-                    st = state.client.get_state()
+                    if hasattr(state, "get_state_throttled"):
+                        st = state.get_state_throttled()
+                    else:
+                        st = state.client.get_state()
                     self.respond_json({"ok": True, "state": st})
                 except Exception as exc:
-                    logger.exception("Error reading state")
-                    self.respond_json({"ok": False, "error": str(exc)}, status=500)
+                    is_off = getattr(state, "is_offline", False)
+                    if is_off:
+                        self.respond_json({"ok": False, "error": "WLED controller is offline", "offline": True}, status=503)
+                    else:
+                        logger.exception("Error reading state")
+                        self.respond_json({"ok": False, "error": str(exc)}, status=500)
                 return
             if path == "/api/suggestions":
                 try:
-                    st = state.client.get_state()
+                    if hasattr(state, "get_state_throttled"):
+                        st = state.get_state_throttled()
+                    else:
+                        st = state.client.get_state()
                 except Exception:
-                    st = None
+                    st = getattr(state, "cached_state", None)
                 self.respond_json({"ok": True, "suggestions": smart_suggestions(st, get_now_playing())})
                 return
             if path == "/api/events":
@@ -2740,49 +1597,135 @@ def make_handler(state: GuiState):
                 self.send_header("Connection", "keep-alive")
                 self.end_headers()
                 try:
+                    tick = 0
                     while True:
-                        auto_status = state.autonomous.status()
+                        auto_status = {}
+                        if hasattr(state, "autonomous"):
+                            auto_status = state.autonomous.status()
+
                         try:
-                            st = state.client.get_state()
-                            payload = json.dumps({"state": st, "autonomous": auto_status})
+                            if hasattr(state, "get_state_throttled"):
+                                st = state.get_state_throttled()
+                            else:
+                                st = state.client.get_state()
+
+                            intel = {}
+                            # always try to include leds capabilities for visualizer accuracy
+                            try:
+                                if hasattr(state, "get_info_throttled"):
+                                    info = state.get_info_throttled()
+                                else:
+                                    info = state.client.get_info()
+
+                                leds = info.get("leds", {}) or {}
+                                intel["leds"] = leds
+                                if tick % 4 == 0:
+                                    intel["name"] = info.get("name")
+                                    intel["ver"] = info.get("ver")
+                                    intel["wifi"] = info.get("wifi", {})
+                                    intel["uptime"] = info.get("uptime")
+                                    intel["freeheap"] = info.get("freeheap")
+                                    intel["fps"] = leds.get("fps")
+                                    intel["pwr"] = leds.get("pwr")
+                                    intel["ps"] = st.get("ps")
+                                    intel["pl"] = st.get("pl")
+                                    seg0 = (st.get("seg") or [{}])[0]
+                                    intel["cct"] = seg0.get("cct")
+                            except Exception:
+                                pass
+
+                            payload = json.dumps({
+                                "state": st,
+                                "autonomous": auto_status,
+                                "mood": state.mood_session.status() if hasattr(state, "mood_session") else {},
+                                "intel": intel,
+                            })
                             self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
                         except Exception:
                             payload = json.dumps({"error": "device_unavailable", "autonomous": auto_status})
                             self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
-                        self.wfile.flush()
+
+                        try:
+                            self.wfile.flush()
+                        except (BrokenPipeError, ConnectionResetError):
+                            break
                         time.sleep(0.5)
+                        tick += 1
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 return
+            if path == "/wled-logo.png":
+                try:
+                    logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wled-logo.png")
+                    if os.path.exists(logo_path):
+                        with open(logo_path, "rb") as f:
+                            logo_data = f.read()
+                        self.send_response(200)
+                        self.send_header("Content-Type", "image/png")
+                        self.send_header("Content-Length", str(len(logo_data)))
+                        self.send_header("Cache-Control", "public, max-age=86400")
+                        self.end_headers()
+                        self.wfile.write(logo_data)
+                    else:
+                        self.send_error(404, "Logo file not found")
+                except Exception as exc:
+                    logger.exception("Error serving logo")
+                    self.send_error(500, str(exc))
+                return
+
             if path != "/":
                 self.send_error(404)
                 return
             body = render_html().encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
 
         def do_HEAD(self) -> None:
             path = urllib.parse.urlparse(self.path).path
-            if path not in ("/", "/api/now-playing", "/api/recognize", "/api/match-lights", "/api/state", "/api/suggestions"):
+            if path not in ("/", "/wled-logo.png", "/api/now-playing", "/api/recognize", "/api/match-lights", "/api/state", "/api/suggestions", "/api/mood/sample", "/api/mood/control"):
                 self.send_error(404)
                 return
-            if path in ("/api/now-playing", "/api/recognize", "/api/match-lights", "/api/state", "/api/suggestions"):
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
+            if path == "/wled-logo.png":
+                try:
+                    logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wled-logo.png")
+                    if os.path.exists(logo_path):
+                        logo_size = os.path.getsize(logo_path)
+                        self.send_response(200)
+                        self.send_header("Content-Type", "image/png")
+                        self.send_header("Content-Length", str(logo_size))
+                        self.send_header("Cache-Control", "public, max-age=86400")
+                        self.end_headers()
+                    else:
+                        self.send_error(404)
+                except Exception:
+                    self.send_error(500)
+                return
+            if path in ("/api/now-playing", "/api/recognize", "/api/match-lights", "/api/state", "/api/suggestions", "/api/mood/sample", "/api/mood/control"):
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
                 return
             body = render_html().encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
 
         def do_POST(self) -> None:
             path = self.path
-            if path not in ("/api/action", "/api/ai", "/api/recognize", "/api/match-lights"):
+            if path not in ("/api/action", "/api/ai", "/api/recognize", "/api/match-lights", "/api/mood/sample", "/api/mood/control"):
                 self.send_error(404)
                 return
             try:
@@ -2804,10 +1747,11 @@ def make_handler(state: GuiState):
                         except Exception:
                             shazam_result = None
                     else:
-                        if not music_recognizer.is_available():
-                            self.respond_json({"ok": False, "error": music_recognizer.available_reason()}, status=503)
-                            return
-                        shazam_result = music_recognizer.recognize_sync()
+                        self.respond_json(
+                            {"ok": False, "error": "Browser audio is required for song recognition."},
+                            status=400,
+                        )
+                        return
                     if shazam_result:
                         np = {
                             "title": shazam_result.get("title", ""),
@@ -2828,11 +1772,15 @@ def make_handler(state: GuiState):
                         self.respond_json({"ok": False, "error": msg})
                     return
                 if path == "/api/match-lights":
-                    # Support client mic audio (webcam) for identification before AI match
+                    # Prefer the same now-playing metadata shown in the browser. Audio remains
+                    # available for explicit legacy callers, but the main UI does not need it.
+                    provided_now_playing = data.get("now_playing")
                     audio_b64 = data.get("audio") or data.get("audio_b64")
                     provided_np = None
                     used_client_mic = bool(audio_b64)
-                    if used_client_mic and music_recognizer.can_identify_song():
+                    if isinstance(provided_now_playing, dict):
+                        provided_np = provided_now_playing
+                    elif used_client_mic and music_recognizer.can_identify_song():
                         import base64
                         try:
                             audio_bytes = base64.b64decode(audio_b64)
@@ -2848,11 +1796,13 @@ def make_handler(state: GuiState):
                                 }
                         except Exception:
                             pass
-                    if used_client_mic:
+                    if isinstance(provided_now_playing, dict):
+                        now_playing_for_match = provided_np
+                    elif used_client_mic:
                         # Respect explicit mic capture result (even if None = no song found)
                         now_playing_for_match = provided_np
                     else:
-                        now_playing_for_match = get_now_playing_with_shazam_fallback(use_shazam=True)
+                        now_playing_for_match = get_now_playing()
                     result = match_lights_to_song(state.client, now_playing=now_playing_for_match)
                     self.respond_json({
                         "ok": result["ok"],
@@ -2862,6 +1812,37 @@ def make_handler(state: GuiState):
                         "now_playing": result.get("now_playing"),
                     })
                     return
+                if path == "/api/mood/sample":
+                    audio_b64 = data.get("audio_b64") or data.get("audio")
+                    if not audio_b64:
+                        self.respond_json({"ok": False, "error": "audio_b64 is required"}, status=400)
+                        return
+                    import base64
+                    try:
+                        audio_bytes = base64.b64decode(audio_b64)
+                    except Exception as exc:
+                        self.respond_json({"ok": False, "error": f"Invalid audio data: {exc}"}, status=400)
+                        return
+                    result = state.mood_session.sample(audio_bytes)
+                    self.respond_json({"ok": True, **result})
+                    return
+
+                if path == "/api/mood/control":
+                    command = str(data.get("command", "")).strip().lower()
+                    if command == "start":
+                        state.mood_session.start()
+                        message = "Mood session started."
+                    elif command == "stop":
+                        state.mood_session.stop()
+                        message = "Mood session stopped."
+                    elif command == "status":
+                        message = "OK"
+                    else:
+                        self.respond_json({"ok": False, "error": "command must be start, stop, or status"}, status=400)
+                        return
+                    self.respond_json({"ok": True, "message": message, **state.mood_session.status()})
+                    return
+
                 if path == "/api/ai":
                     prompt = str(data.get("prompt", "")).strip()
                     if not prompt:
@@ -2924,9 +1905,7 @@ def make_handler(state: GuiState):
                     elif action == "sunrise_stop":
                         message = state.stop_sunrise()
                     elif action == "autonomous_start":
-                        # Stop browser Mode 1 if running — autonomous has its own beat thread
-                        state.mode1.stop()
-                        message = state.autonomous.start()
+                        message = "Use browser Music Mode; server-side microphone autonomous mode is disabled to avoid duplicate listeners."
                     elif action == "autonomous_stop":
                         message = state.autonomous.stop()
                     elif action == "restart":
@@ -2968,12 +1947,17 @@ def make_handler(state: GuiState):
                 self.respond_json({"ok": False, "error": "Internal server error"}, status=500)
 
         def respond_json(self, payload: dict, status: int = 200) -> None:
-            body = json.dumps(payload).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                body = json.dumps(payload).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                # Client disconnected (tab close, refresh during slow AI call, etc.).
+                # No point logging or crashing the handler thread.
+                pass
 
         def log_message(self, format: str, *args: object) -> None:
             return
