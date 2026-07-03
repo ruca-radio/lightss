@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import io
 import json
+import logging
+import math
 import os
+import struct
 import threading
 import time
+import wave
 from typing import Any, Callable
 
 import lightctl
+
+_LOGGER = logging.getLogger(__name__)
 
 _CONFIG_DIR = os.path.expanduser("~/.config/lightss")
 _SONG_CACHE_PATH = os.path.join(_CONFIG_DIR, "song_moods.json")
@@ -25,8 +32,10 @@ class SongCache:
                 data = json.load(f)
             if isinstance(data, dict):
                 return data
-        except (FileNotFoundError, json.JSONDecodeError):
+        except FileNotFoundError:
             pass
+        except json.JSONDecodeError as exc:
+            _LOGGER.warning("Song cache file %s is corrupt (%s); resetting.", self.path, exc)
         return {}
 
     def _save(self) -> None:
@@ -74,7 +83,7 @@ class TransitionSmoother:
             payload["tt"] = min_tt
 
         # If brightness jump is too large, split into two posts.
-        if abs(target_bri - current_bri) > 2 * self.BRIGHTNESS_JUMP_THRESHOLD:
+        if abs(target_bri - current_bri) > self.BRIGHTNESS_JUMP_THRESHOLD:
             direction = 1 if target_bri > current_bri else -1
             intermediate_bri = current_bri + direction * self.BRIGHTNESS_JUMP_THRESHOLD
             intermediate = dict(payload)
@@ -94,20 +103,60 @@ class AudioSampleBuffer:
         self,
         recognize_fn: Callable[[bytes], dict[str, str] | None],
         cooldown_seconds: float = 20.0,
+        rms_threshold: float | None = None,
     ) -> None:
         self.recognize_fn = recognize_fn
         self.cooldown_seconds = cooldown_seconds
+        self.rms_threshold = rms_threshold
         self._last_attempt: float = 0.0
+        self._lock = threading.Lock()
 
     def maybe_recognize(self, audio_bytes: bytes) -> dict[str, str] | None:
-        now = time.monotonic()
-        if now - self._last_attempt < self.cooldown_seconds:
-            return None
-        self._last_attempt = now
+        if self.rms_threshold is not None:
+            rms = self._rms(audio_bytes)
+            if rms < self.rms_threshold:
+                _LOGGER.debug(
+                    "Audio sample RMS %.4f below threshold %.4f; skipping.",
+                    rms,
+                    self.rms_threshold,
+                )
+                return None
+
+        with self._lock:
+            now = time.monotonic()
+            if now - self._last_attempt < self.cooldown_seconds:
+                return None
+            self._last_attempt = now
+
         try:
             return self.recognize_fn(audio_bytes)
         except Exception:
+            _LOGGER.exception("Recognizer failed")
             return None
+
+    def _rms(self, audio_bytes: bytes) -> float:
+        """Compute RMS of a WAV audio payload, normalized to [0, 1]."""
+        try:
+            with wave.open(io.BytesIO(audio_bytes), "rb") as wf:
+                nframes = wf.getnframes()
+                if nframes == 0:
+                    return 0.0
+                sampwidth = wf.getsampwidth()
+                frames = wf.readframes(nframes)
+        except Exception:
+            return 0.0
+
+        if sampwidth == 1:
+            samples = [(b - 128) / 128.0 for b in frames]
+        elif sampwidth == 2:
+            fmt = f"<{len(frames) // 2}h"
+            samples = [s / 32768.0 for s in struct.unpack(fmt, frames)]
+        else:
+            return 0.0
+
+        if not samples:
+            return 0.0
+        return math.sqrt(sum(s * s for s in samples) / len(samples))
 
 
 class MoodSession:
@@ -126,7 +175,6 @@ class MoodSession:
         cache: SongCache | None = None,
         smoother: TransitionSmoother | None = None,
         ambient_payload: lightctl.WledPayload | None = None,
-        sample_duration: float = 5.0,
         recognize_cooldown: float = 20.0,
         ambient_timeout: float = 60.0,
     ) -> None:
@@ -193,13 +241,13 @@ class MoodSession:
             payload = self.generate_fn(song)
             self.cache.set(key, dict(payload))
 
-        source = "ambient_to_mood" if self._state == self.STATE_AMBIENT else "recognized"
-        self._apply_payload(payload, source)
-
         with self._lock:
+            source = "ambient_to_mood" if self._state == self.STATE_AMBIENT else "recognized"
             self._state = self.STATE_RECOGNIZED
             self._current_song = song
             self._last_song_key = key
+
+        self._apply_payload(payload, source)
 
         return self.status()
 
