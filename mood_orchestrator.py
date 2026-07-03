@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from typing import Any, Callable
 
@@ -107,3 +108,141 @@ class AudioSampleBuffer:
             return self.recognize_fn(audio_bytes)
         except Exception:
             return None
+
+
+class MoodSession:
+    """Orchestrate continuous mic -> song -> mood -> WLED with ambient fallback."""
+
+    STATE_IDLE = "idle"
+    STATE_LISTENING = "listening"
+    STATE_RECOGNIZED = "recognized"
+    STATE_AMBIENT = "ambient"
+
+    def __init__(
+        self,
+        client: lightctl.LightClient,
+        recognize_fn: Callable[[bytes], dict[str, str] | None],
+        generate_fn: Callable[[dict[str, str]], lightctl.WledPayload],
+        cache: SongCache | None = None,
+        smoother: TransitionSmoother | None = None,
+        ambient_payload: lightctl.WledPayload | None = None,
+        sample_duration: float = 5.0,
+        recognize_cooldown: float = 20.0,
+        ambient_timeout: float = 60.0,
+    ) -> None:
+        self.client = client
+        self.recognize_fn = recognize_fn
+        self.generate_fn = generate_fn
+        self.cache = cache or SongCache()
+        self.smoother = smoother or TransitionSmoother()
+        self.ambient_payload = ambient_payload or lightctl.merge_payloads(
+            lightctl.on_payload(True),
+            lightctl.brightness_payload(60),
+            lightctl.color_payload(*lightctl.kelvin_to_rgbw(2700)),
+        )
+        self.ambient_timeout = ambient_timeout
+        self._buffer = AudioSampleBuffer(recognize_fn, cooldown_seconds=recognize_cooldown)
+        self._state = self.STATE_IDLE
+        self._lock = threading.Lock()
+        self._current_song: dict[str, str] | None = None
+        self._last_recognition_time: float = 0.0
+        self._last_song_key: str = ""
+        self._running = False
+
+    def start(self) -> None:
+        with self._lock:
+            if self._running:
+                return
+            self._running = True
+            self._state = self.STATE_LISTENING
+            self._current_song = None
+            self._last_recognition_time = 0.0
+
+    def stop(self) -> None:
+        with self._lock:
+            self._running = False
+            self._state = self.STATE_IDLE
+            self._current_song = None
+
+    def sample(self, audio_bytes: bytes) -> dict[str, Any]:
+        with self._lock:
+            if not self._running:
+                return self.status()
+
+        result = self._buffer.maybe_recognize(audio_bytes)
+
+        if result:
+            return self._handle_recognition(result)
+
+        self._check_ambient_timeout()
+        return self.status()
+
+    def _handle_recognition(self, song: dict[str, str]) -> dict[str, Any]:
+        key = self._song_key(song)
+        with self._lock:
+            self._last_recognition_time = time.monotonic()
+            changed = key != self._last_song_key
+
+        if not changed:
+            return self.status()
+
+        cached = self.cache.get(key)
+        if cached:
+            payload = dict(cached)
+        else:
+            payload = self.generate_fn(song)
+            self.cache.set(key, dict(payload))
+
+        source = "ambient_to_mood" if self._state == self.STATE_AMBIENT else "recognized"
+        self._apply_payload(payload, source)
+
+        with self._lock:
+            self._state = self.STATE_RECOGNIZED
+            self._current_song = song
+            self._last_song_key = key
+
+        return self.status()
+
+    def _check_ambient_timeout(self) -> None:
+        with self._lock:
+            if self._state != self.STATE_RECOGNIZED:
+                return
+            if time.monotonic() - self._last_recognition_time < self.ambient_timeout:
+                return
+            self._state = self.STATE_AMBIENT
+            self._current_song = None
+
+        self._apply_payload(self.ambient_payload, "ambient")
+
+    def _apply_payload(
+        self,
+        payload: lightctl.WledPayload,
+        source: str,
+    ) -> None:
+        try:
+            current_state = self.client.get_state()
+        except Exception:
+            current_state = None
+        for smoothed in self.smoother.smooth(payload, current_state, source):
+            try:
+                self.client.post_state(smoothed)
+            except Exception:
+                # Don't let a transient WLED error crash the session.
+                pass
+
+    def _song_key(self, song: dict[str, str]) -> str:
+        parts = [
+            str(song.get("artist", "")).strip().lower(),
+            str(song.get("title", "")).strip().lower(),
+            str(song.get("album", "")).strip().lower(),
+        ]
+        return "||".join(parts)
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "running": self._running,
+                "state": self._state,
+                "song": self._current_song,
+                "last_recognition_time": self._last_recognition_time,
+            }

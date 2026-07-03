@@ -4,6 +4,7 @@ import tempfile
 
 import pytest
 
+import lightctl
 import mood_orchestrator
 
 
@@ -74,3 +75,33 @@ class TestAudioSampleBuffer:
         assert buf.maybe_recognize(b"audio1") == {"title": "Song"}
         assert buf.maybe_recognize(b"audio2") is None
         assert len(calls) == 1
+
+
+class TestMoodSession:
+    def test_start_stop_lifecycle(self):
+        client = lightctl.LightClient("http://example.com", dry_run=True)
+        session = mood_orchestrator.MoodSession(
+            client=client,
+            recognize_fn=lambda data: None,
+            generate_fn=lambda song: {"bri": 100},
+        )
+        session.start()
+        assert session.status()["state"] == "listening"
+        session.stop()
+        assert session.status()["state"] == "idle"
+
+    def test_recognized_song_applies_mood(self):
+        client = lightctl.LightClient("http://example.com", dry_run=True)
+        session = mood_orchestrator.MoodSession(
+            client=client,
+            recognize_fn=lambda data: {"title": "Song", "artist": "Artist", "album": "Album"},
+            generate_fn=lambda song: {"bri": 222},
+            recognize_cooldown=0,
+            ambient_timeout=10,
+        )
+        session.start()
+        session.sample(b"audio")
+        status = session.status()
+        assert status["state"] == "recognized"
+        assert status["song"]["title"] == "Song"
+        session.stop()
