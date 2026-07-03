@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import time
 
 import pytest
 
@@ -104,4 +105,22 @@ class TestMoodSession:
         status = session.status()
         assert status["state"] == "recognized"
         assert status["song"]["title"] == "Song"
+        session.stop()
+
+
+class TestMoodSessionAmbient:
+    def test_enters_ambient_after_silence(self):
+        client = lightctl.LightClient("http://example.com", dry_run=True)
+        session = mood_orchestrator.MoodSession(
+            client=client,
+            recognize_fn=lambda data: None,
+            generate_fn=lambda song: {"bri": 222},
+            recognize_cooldown=0,
+            ambient_timeout=0.05,
+        )
+        session.start()
+        session.sample(b"audio")  # no match
+        time.sleep(0.1)
+        session.sample(b"audio")  # triggers timeout check
+        assert session.status()["state"] == "ambient"
         session.stop()

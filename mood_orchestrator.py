@@ -156,7 +156,7 @@ class MoodSession:
             self._running = True
             self._state = self.STATE_LISTENING
             self._current_song = None
-            self._last_recognition_time = 0.0
+            self._last_recognition_time = time.monotonic()
 
     def stop(self) -> None:
         with self._lock:
@@ -205,7 +205,7 @@ class MoodSession:
 
     def _check_ambient_timeout(self) -> None:
         with self._lock:
-            if self._state != self.STATE_RECOGNIZED:
+            if self._state not in (self.STATE_LISTENING, self.STATE_RECOGNIZED):
                 return
             if time.monotonic() - self._last_recognition_time < self.ambient_timeout:
                 return

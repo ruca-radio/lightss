@@ -1823,8 +1823,15 @@ def make_handler(state: GuiState):
                     except Exception as exc:
                         self.respond_json({"ok": False, "error": f"Invalid audio data: {exc}"}, status=400)
                         return
-                    result = state.mood_session.sample(audio_bytes)
-                    self.respond_json({"ok": True, **result})
+
+                    def _run_sample():
+                        try:
+                            state.mood_session.sample(audio_bytes)
+                        except Exception as exc:
+                            logger.exception("Mood sample processing failed: %s", exc)
+
+                    threading.Thread(target=_run_sample, daemon=True).start()
+                    self.respond_json({"ok": True, **state.mood_session.status()})
                     return
 
                 if path == "/api/mood/control":
