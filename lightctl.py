@@ -134,11 +134,27 @@ def brightness_payload(brightness: int, transition_ms: int = 0) -> WledPayload:
 
 
 def color_payload(
-    red: int, green: int, blue: int, white: int = 0, transition_ms: int = 0
+    red: int, green: int, blue: int, white: int = 0,
+    red2: int | None = None, green2: int | None = None, blue2: int | None = None, white2: int | None = None,
+    red3: int | None = None, green3: int | None = None, blue3: int | None = None, white3: int | None = None,
+    transition_ms: int = 0
 ) -> WledPayload:
-    payload: WledPayload = {
-        "seg": [{"col": [[clamp_byte(red), clamp_byte(green), clamp_byte(blue), clamp_byte(white)]]}]
-    }
+    colors = [[clamp_byte(red), clamp_byte(green), clamp_byte(blue), clamp_byte(white)]]
+    if red2 is not None or green2 is not None or blue2 is not None or white2 is not None:
+        colors.append([
+            clamp_byte(red2 or 0),
+            clamp_byte(green2 or 0),
+            clamp_byte(blue2 or 0),
+            clamp_byte(white2 or 0)
+        ])
+        if red3 is not None or green3 is not None or blue3 is not None or white3 is not None:
+            colors.append([
+                clamp_byte(red3 or 0),
+                clamp_byte(green3 or 0),
+                clamp_byte(blue3 or 0),
+                clamp_byte(white3 or 0)
+            ])
+    payload: WledPayload = {"seg": [{"col": colors}]}
     if transition_ms > 0:
         payload["transition"] = transition_ms
     return payload

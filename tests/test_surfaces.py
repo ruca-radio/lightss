@@ -12,6 +12,9 @@ class FakeClient:
     def post_state(self, payload):
         self.payloads.append(payload)
 
+    def get_state(self):
+        return {"on": True, "bri": 128, "seg": [{"col": [[255, 0, 0, 0]]}]}
+
 
 class SurfaceTests(unittest.TestCase):
     def test_gui_action_builds_color_payload(self):
@@ -155,6 +158,8 @@ class SurfaceTests(unittest.TestCase):
                 "temperature",
                 "random",
                 "preset",
+                "save_preset",
+                "delete_preset",
                 "playlist",
                 "palette",
                 "nightlight",

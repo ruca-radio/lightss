@@ -57,6 +57,7 @@ AI_ACTIONS = [
     "schedule_add",
     "schedule_remove",
     "music_detect",
+    "music_listen",
     "music_match",
 ]
 
@@ -69,6 +70,7 @@ CLIENT_ACTIONS = {
     "sunrise_start",
     "sunrise_stop",
     "music_detect",
+    "music_listen",
     "music_match",
 }
 
@@ -257,14 +259,11 @@ fxdef/set/rpt), individual LEDs (i array), mainseg, cct (0-255 or Kelvin), one-s
 transition (tt), live/lor, nightlight (nl.on/dur/mode/tbri), udpn sync, playlists
 (pl or full object), presets (ps/psave/pdel), ledmap, rmcpal, np, time, rb (reboot).
 
-Higher-level actions you may select (one per response):
-- on/off, brightness, color, temperature(Kelvin→RGBW), effect, palette, scene,
-  random, preset(by id from snapshot), playlist.
-- save_preset/delete_preset, nightlight, udp_sync, native_audio_reactive,
-  segment_options.
-- mode1_start/mode1_stop (desktop/browser-mic beat-synced cycling).
-- fade_off, cycle_start/cycle_stop, sunrise_start/sunrise_stop, save_scene,
-  delete_scene, schedule_add/schedule_remove, music_detect/music_match.
+### Available AI actions
+- on/off, brightness, color, temperature, effect, scene, random, preset
+- save_preset, delete_preset, nightlight, udp_sync, native_audio_reactive, segment_options
+- mode1_start, mode1_stop, fade_off, cycle_start, cycle_stop, sunrise_start, sunrise_stop
+- save_scene, delete_scene, schedule_add, schedule_remove, music_detect, music_listen, music_match
 
 One-shot examples (intent → action):
 - "soft ocean for 20 minutes then off" → scene ocean + nightlight on, duration 20, target brightness 0.
@@ -803,6 +802,8 @@ def parse_ai_plan(text: str) -> dict[str, Any]:
             client_actions.append({"action": "stopSunrise"})
         elif kind == "music_detect":
             client_actions.append({"action": "detectSong"})
+        elif kind == "music_listen":
+            client_actions.append({"action": "listenForSong"})
         elif kind == "music_match":
             client_actions.append({"action": "matchLightsFromNowPlaying"})
     return {
