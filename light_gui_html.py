@@ -434,6 +434,63 @@ HTML_TEMPLATE = """<!doctype html>
     .knowledge { margin-top: 10px; color: #8fa7bd; font-size: 12px; line-height: 1.35; }
     .now-playing { display: none; }
     #aiReply, #aiConfirmations { display: none; }
+
+    /* AI Vision Eye styles */
+    .vision-card {
+      background: rgba(255, 255, 255, 0.05);
+      backdrop-filter: blur(10px);
+      border-radius: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      padding: 24px;
+      margin-top: 20px;
+      position: relative;
+      overflow: hidden;
+    }
+    .webcam-container {
+      position: relative;
+      width: 100%;
+      max-width: 480px;
+      border-radius: 12px;
+      overflow: hidden;
+      margin: 12px auto;
+      border: 2px solid #00f0ff;
+      aspect-ratio: 4/3;
+      background: #000;
+    }
+    .webcam-video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .scanning-laser {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 3px;
+      background: linear-gradient(to right, transparent, #00f0ff, transparent);
+      box-shadow: 0 0 12px #00f0ff;
+      animation: laserScan 2s infinite linear;
+      display: none;
+    }
+    @keyframes laserScan {
+      0% { top: 0%; }
+      50% { top: 100%; }
+      100% { top: 0%; }
+    }
+    .btn-vision {
+      background: linear-gradient(135deg, #00f0ff, #0072ff);
+      color: #fff;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s ease;
+    }
+    .btn-vision:hover {
+      box-shadow: 0 0 15px rgba(0, 240, 255, 0.5);
+    }
   </style>
 </head>
 <body>
@@ -593,6 +650,21 @@ HTML_TEMPLATE = """<!doctype html>
             <div class="knowledge">AI can control power, brightness, full RGBW color, safe effects, scenes, and browser mic beat mode.</div>
             <div id="aiReply" class="ai-reply"></div>
             <div id="aiConfirmations" class="confirmations"></div>
+          </div>
+          <div class="vision-card">
+            <h3 style="color:#00f0ff; margin-top:0; display:flex; align-items:center; gap:8px;">
+              <span>👁️</span> AI Vision Eye
+            </h3>
+            <p style="font-size:0.9rem; color:#aaa;">Let the AI lighting director look at your room and set the mood.</p>
+            <div style="display:flex; gap:12px; justify-content:center; margin-bottom:12px;">
+              <button id="toggleWebcamBtn" class="btn-vision" onclick="toggleWebcam()">Toggle Camera</button>
+              <button id="analyzeRoomBtn" class="btn-vision" style="background: linear-gradient(135deg, #ff007f, #7f00ff); display:none;" onclick="analyzeRoom()">Analyze Room</button>
+            </div>
+            <div id="webcamContainer" class="webcam-container" style="display:none;">
+              <video id="webcamVideo" class="webcam-video" autoplay playsinline></video>
+              <div id="scanningLaser" class="scanning-laser"></div>
+            </div>
+            <div id="visionStatus" style="text-align:center; font-size:0.9rem; color:#00f0ff; margin-top:8px;"></div>
           </div>
         </div>
         <div class="right-col">
@@ -1074,6 +1146,102 @@ HTML_TEMPLATE = """<!doctype html>
       }
       setText('micPipelineState', running ? 'Listening' : 'Idle');
       setText('nextMatchState', running ? (detail || 'Every 30s') : 'Manual');
+    }
+
+    let webcamStream = null;
+
+    async function toggleWebcam() {
+      const video = document.getElementById('webcamVideo');
+      const container = document.getElementById('webcamContainer');
+      const analyzeBtn = document.getElementById('analyzeRoomBtn');
+      const toggleBtn = document.getElementById('toggleWebcamBtn');
+
+      if (webcamStream) {
+        // Stop webcam
+        webcamStream.getTracks().forEach(track => track.stop());
+        webcamStream = null;
+        video.srcObject = null;
+        container.style.display = 'none';
+        analyzeBtn.style.display = 'none';
+        toggleBtn.innerText = 'Start Camera';
+        document.getElementById('scanningLaser').style.display = 'none';
+      } else {
+        // Start webcam
+        try {
+          webcamStream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+          video.srcObject = webcamStream;
+          container.style.display = 'block';
+          analyzeBtn.style.display = 'inline-block';
+          toggleBtn.innerText = 'Stop Camera';
+        } catch (err) {
+          document.getElementById('visionStatus').innerText = 'Error opening camera: ' + err.message;
+        }
+      }
+    }
+
+    async function analyzeRoom() {
+      const video = document.getElementById('webcamVideo');
+      const laser = document.getElementById('scanningLaser');
+      const status = document.getElementById('visionStatus');
+
+      if (!webcamStream) return;
+
+      laser.style.display = 'block';
+      status.innerText = 'Scanning room layout & lighting...';
+
+      // Capture frame
+      const canvas = document.createElement('canvas');
+      canvas.width = 640;
+      canvas.height = 480;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const base64Image = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+
+      try {
+        const response = await fetch('/api/ai_vision', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: base64Image })
+        });
+        const data = await response.json();
+        laser.style.display = 'none';
+        if (data.error) {
+          status.innerText = 'Analysis failed: ' + data.error;
+        } else {
+          status.innerText = 'Vibe parsed! Mood: ' + data.response;
+          // Refresh live UI
+          await fetchLiveState();
+        }
+      } catch (err) {
+        laser.style.display = 'none';
+        status.innerText = 'Network error: ' + err.message;
+      }
+    }
+
+    async function fetchLiveState() {
+      try {
+        const response = await fetch('/api/state');
+        const data = await response.json();
+        if (data.ok && data.state) {
+          const st = data.state;
+          const onOff = st.on ? 'ON' : 'OFF';
+          const bri = st.bri ?? '?';
+          const seg = st.seg && st.seg[0] ? st.seg[0] : {};
+          const col = seg.col && seg.col[0] ? seg.col[0] : [0,0,0,0];
+          let display = `Power: ${onOff}\nBrightness: ${bri}\nColor: RGBW(${col.join(',')})\nEffect: ${seg.fx ?? '-'} Speed: ${seg.sx ?? '-'}`;
+          
+          const stateDisplay = document.getElementById('stateDisplay');
+          const stateSummary = document.getElementById('stateSummary');
+          if (stateDisplay) stateDisplay.textContent = display;
+          if (stateSummary) stateSummary.textContent = `${onOff} | Bri ${bri} | Fx ${seg.fx ?? '-'} @ ${seg.sx ?? '-'}`;
+          
+          if (typeof updateLightPreview === 'function') {
+            updateLightPreview(st, ledCapabilities);
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching live state:', err);
+      }
     }
 
     async function refreshNowPlaying() {

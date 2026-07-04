@@ -416,6 +416,42 @@ class WledInfoTests(unittest.TestCase):
         self.assertEqual(info.ip, "10.27.27.110")
 
 
+class LightClientLockAndRateLimitTests(unittest.TestCase):
+    @patch("urllib.request.urlopen")
+    def test_rate_limiting_enforced(self, mock_urlopen):
+        mock_response = MagicMock()
+        mock_response.read.return_value = b"{}"
+        mock_response.__enter__.return_value = mock_response
+        mock_urlopen.return_value = mock_response
+
+        client = lightctl.LightClient()
+        
+        # Make first request
+        start_time = time.time()
+        client.get_state()
+        
+        # Make second request immediately
+        client.get_state()
+        end_time = time.time()
+        
+        # The time elapsed should be at least 0.1 seconds because of the rate limiting
+        self.assertGreaterEqual(end_time - start_time, 0.09) # 0.09 to tolerate minor timer resolution/float precision issues
+
+    @patch("urllib.request.urlopen")
+    def test_http_lock_is_thread_safe_and_reentrant(self, mock_urlopen):
+        mock_response = MagicMock()
+        mock_response.read.return_value = b"{}"
+        mock_response.__enter__.return_value = mock_response
+        mock_urlopen.return_value = mock_response
+
+        client = lightctl.LightClient()
+        
+        # Verify we can acquire it twice (proves reentrancy, whereas simple lock would deadlock)
+        with client._http_lock:
+            with client._http_lock:
+                client.get_state()
+
+
 class CycleThreadTests(unittest.TestCase):
     def _mock_post(self, payload):
         pass

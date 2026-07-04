@@ -686,11 +686,12 @@ class LightClient:
     timeout: float = 2.5
     dry_run: bool = False
     _last_post_time: float = 0.0
-    _post_lock: threading.Lock = None  # type: ignore[assignment]
+    _last_req_time: float = 0.0
+    _http_lock: threading.RLock = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         self.host = normalize_host(self.host)
-        self._post_lock = threading.Lock()
+        self._http_lock = threading.RLock()
 
     @property
     def json_url(self) -> str:
@@ -846,30 +847,30 @@ class LightClient:
         self, request: urllib.request.Request, retries: int = 3
     ) -> urllib.request.addinfourl:
         last_exc: Exception | None = None
-        for attempt in range(retries):
-            try:
-                return urllib.request.urlopen(request, timeout=self.timeout)
-            except urllib.error.HTTPError as exc:
-                # 501 Not Implemented (e.g. /json/live, /json/presets; see E1.31 docs for realtime)
-                # and other 4xx/5xx mean the endpoint doesn't exist or is unsupported;
-                # fail fast without spamming retries.
-                if exc.code in (501, 404, 405):
-                    raise
-                last_exc = exc
-                if attempt < retries - 1:
-                    wait = 0.2 * (2 ** attempt)
-                    logger.warning("Request failed (attempt %d/%d), retrying in %.1fs: %s", attempt + 1, retries, wait, exc)
-                    time.sleep(wait)
-                else:
-                    raise
-            except urllib.error.URLError as exc:
-                last_exc = exc
-                if attempt < retries - 1:
-                    wait = 0.2 * (2 ** attempt)
-                    logger.warning("Request failed (attempt %d/%d), retrying in %.1fs: %s", attempt + 1, retries, wait, exc)
-                    time.sleep(wait)
-                else:
-                    raise
+        _WLED_MIN_REQ_INTERVAL = 0.1
+        with self._http_lock:
+            elapsed = time.time() - self._last_req_time
+            if elapsed < _WLED_MIN_REQ_INTERVAL:
+                time.sleep(_WLED_MIN_REQ_INTERVAL - elapsed)
+            for attempt in range(retries):
+                try:
+                    res = urllib.request.urlopen(request, timeout=self.timeout)
+                    self._last_req_time = time.time()
+                    return res
+                except urllib.error.HTTPError as exc:
+                    if exc.code in (501, 404, 405):
+                        raise
+                    last_exc = exc
+                    if attempt < retries - 1:
+                        time.sleep(0.1 * (2 ** attempt))
+                    else:
+                        raise
+                except urllib.error.URLError as exc:
+                    last_exc = exc
+                    if attempt < retries - 1:
+                        time.sleep(0.1 * (2 ** attempt))
+                    else:
+                        raise
         raise RuntimeError(f"Could not reach light controller at {request.full_url}: {last_exc}") from last_exc
 
     def get_state(self) -> dict:
@@ -883,10 +884,7 @@ class LightClient:
             logger.info("dry-run: %s", body.decode("utf-8"))
             return
 
-        with self._post_lock:
-            elapsed = time.time() - self._last_post_time
-            if elapsed < _WLED_MIN_POST_INTERVAL:
-                time.sleep(_WLED_MIN_POST_INTERVAL - elapsed)
+        with self._http_lock:
             request = urllib.request.Request(
                 self.state_url,
                 data=body,
@@ -895,7 +893,6 @@ class LightClient:
             )
             with self._request_with_retry(request) as response:
                 response.read()
-            self._last_post_time = time.time()
 
 
 # ---------------------------------------------------------------------------

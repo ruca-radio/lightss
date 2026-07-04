@@ -842,6 +842,63 @@ def call_openai_for_plan(
     return parse_ai_plan(extract_response_text(data))
 
 
+def call_openai_vision_for_plan(image_base64: str, client: lightctl.LightClient) -> dict[str, Any]:
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY is not set in the GUI server environment.")
+
+    model = os.environ.get("LIGHT_AI_MODEL", os.environ.get("OPENAI_MODEL", "gpt-4o"))
+    device_snapshot = client.get_device_snapshot()
+
+    # System and user prompts for Vision
+    system_prompt = system_knowledge_prompt()
+    user_text_content = (
+        "Here is a webcam snapshot of the bedroom environment.\n"
+        "Analyze the real-world ambient brightness, current room layout, and colors.\n"
+        "Map these real-world vibes into a validated WLED action to set a fitting, premium light atmosphere.\n"
+        f"Current WLED device snapshot:\n{device_snapshot_text(device_snapshot)}"
+    )
+
+    # Build multi-modal body (using OpenAI structure with image_url)
+    body = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": [
+                {"type": "text", "text": user_text_content},
+                {"type": "image_url", "image_url": {
+                    "url": f"data:image/jpeg;base64,{image_base64}"
+                }}
+            ]}
+        ],
+        "response_format": {"type": "json_object"}
+    }).encode("utf-8")
+
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=body,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            data = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise ValueError(f"OpenAI request failed: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise ValueError(f"OpenAI request failed: {exc}") from exc
+
+    # Extract completed plan
+    plan_text = data["choices"][0]["message"]["content"]
+    parsed = parse_ai_plan(plan_text)
+    
+    # Apply actions to WLED client
+    apply_ai_plan(client, parsed)
+    return parsed
+
+
 def _segment_options_payload(data: dict[str, Any]) -> lightctl.WledPayload:
     seg: dict[str, Any] = {}
     field_map = {
@@ -1726,6 +1783,29 @@ def make_handler(state: GuiState):
 
         def do_POST(self) -> None:
             path = self.path
+            if path == "/api/ai_vision":
+                try:
+                    content_length = int(self.headers.get("Content-Length", 0))
+                    post_data = self.rfile.read(content_length)
+                    req = json.loads(post_data.decode("utf-8"))
+                    image_base64 = req.get("image")
+                    if not image_base64:
+                        raise ValueError("Missing image data in request.")
+
+                    # Run Multi-Modal Vision Analysis
+                    result = call_openai_vision_for_plan(image_base64, client=state.client)
+                    
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps(result).encode("utf-8"))
+                except Exception as exc:
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": str(exc)}).encode("utf-8"))
+                return
+
             if path not in ("/api/action", "/api/ai", "/api/recognize", "/api/match-lights", "/api/mood/sample", "/api/mood/control"):
                 self.send_error(404)
                 return
