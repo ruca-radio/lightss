@@ -1205,8 +1205,6 @@ class MainWindow(QMainWindow):
                 self._set_status("Sunrise not running")
         elif kind == "detectSong":
             self._on_detect_song()
-        elif kind == "listenForSong":
-            self._on_listen_song()
         elif kind == "matchLightsToSong":
             self._on_match_lights_tab()
 

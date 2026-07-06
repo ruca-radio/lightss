@@ -178,7 +178,6 @@ class SurfaceTests(unittest.TestCase):
                 "schedule_add",
                 "schedule_remove",
                 "music_detect",
-                "music_listen",
                 "music_match",
             },
         )
@@ -192,7 +191,9 @@ class SurfaceTests(unittest.TestCase):
 
         self.assertIn("Available AI actions", system)
         self.assertIn("schedule_add", system)
-        self.assertIn("music_listen", system)
+        self.assertIn("music_detect", system)
+        self.assertIn("music_match", system)
+        self.assertNotIn("music_listen", system)
         self.assertIn("One-shot examples", system)
 
     def test_parse_playerctl_metadata(self):
@@ -251,13 +252,13 @@ class SurfaceTests(unittest.TestCase):
 
     def test_ai_plan_can_request_music_and_timer_client_actions(self):
         parsed = light_gui.parse_ai_plan(
-            '{"response":"I will listen and fade later.","confirmations":["Listening for song.","Starting fade."],"actions":[{"action":"music_listen"},{"action":"fade_off","minutes":15},{"action":"cycle_start","interval":45},{"action":"sunrise_stop"}]}'
+            '{"response":"I will match the music and fade later.","confirmations":["Matching song.","Starting fade."],"actions":[{"action":"music_match"},{"action":"fade_off","minutes":15},{"action":"cycle_start","interval":45},{"action":"sunrise_stop"}]}'
         )
 
         self.assertEqual(
             parsed["client_actions"],
             [
-                {"action": "listenForSong"},
+                {"action": "matchLightsFromNowPlaying"},
                 {"action": "fadeOff", "minutes": 15.0},
                 {"action": "startCycle", "interval": 45.0},
                 {"action": "stopSunrise"},

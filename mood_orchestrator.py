@@ -16,14 +16,17 @@ import lightctl
 _LOGGER = logging.getLogger(__name__)
 
 _CONFIG_DIR = os.path.expanduser("~/.config/lightss")
-_SONG_CACHE_PATH = os.path.join(_CONFIG_DIR, "song_moods.json")
+
+
+def _song_cache_path() -> str:
+    return os.path.join(_CONFIG_DIR, "song_moods.json")
 
 
 class SongCache:
     """Persistent cache of song key -> last WLED mood payload."""
 
     def __init__(self, path: str | None = None) -> None:
-        self.path = path or _SONG_CACHE_PATH
+        self.path = path or _song_cache_path()
         self._data = self._load()
 
     def _load(self) -> dict:

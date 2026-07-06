@@ -57,7 +57,6 @@ AI_ACTIONS = [
     "schedule_add",
     "schedule_remove",
     "music_detect",
-    "music_listen",
     "music_match",
 ]
 
@@ -70,7 +69,6 @@ CLIENT_ACTIONS = {
     "sunrise_start",
     "sunrise_stop",
     "music_detect",
-    "music_listen",
     "music_match",
 }
 
@@ -263,7 +261,7 @@ transition (tt), live/lor, nightlight (nl.on/dur/mode/tbri), udpn sync, playlist
 - on/off, brightness, color, temperature, effect, scene, random, preset
 - save_preset, delete_preset, nightlight, udp_sync, native_audio_reactive, segment_options
 - mode1_start, mode1_stop, fade_off, cycle_start, cycle_stop, sunrise_start, sunrise_stop
-- save_scene, delete_scene, schedule_add, schedule_remove, music_detect, music_listen, music_match
+- save_scene, delete_scene, schedule_add, schedule_remove, music_detect, music_match
 
 One-shot examples (intent → action):
 - "soft ocean for 20 minutes then off" → scene ocean + nightlight on, duration 20, target brightness 0.
@@ -802,8 +800,6 @@ def parse_ai_plan(text: str) -> dict[str, Any]:
             client_actions.append({"action": "stopSunrise"})
         elif kind == "music_detect":
             client_actions.append({"action": "detectSong"})
-        elif kind == "music_listen":
-            client_actions.append({"action": "listenForSong"})
         elif kind == "music_match":
             client_actions.append({"action": "matchLightsFromNowPlaying"})
     return {
@@ -1465,15 +1461,21 @@ class GuiState:
         )
         self.schedule.start()
         self.fade_timer: lightctl.FadeTimer | None = None
-        self.is_offline = False
-        self.last_offline_check = 0.0
         self.cached_state = None
         self.cached_info = None
+        # Offline status is tracked per-endpoint: a hiccup fetching /json/info
+        # must not make /json/state (and vice versa) serve stale cached data.
+        self._offline: dict[str, bool] = {}
+        self._offline_checked_at: dict[str, float] = {}
         self.state_lock = threading.Lock()
+
+    @property
+    def is_offline(self) -> bool:
+        return self._offline.get("cached_state", False)
 
     def _fetch_throttled(self, cache_attr: str, fetch_fn: Callable[[], dict]) -> dict:
         now = time.time()
-        if self.is_offline and (now - self.last_offline_check < 5.0):
+        if self._offline.get(cache_attr) and (now - self._offline_checked_at.get(cache_attr, 0.0) < 5.0):
             cached = getattr(self, cache_attr)
             if cached is not None:
                 return cached
@@ -1481,7 +1483,7 @@ class GuiState:
 
         with self.state_lock:
             now = time.time()
-            if self.is_offline and (now - self.last_offline_check < 5.0):
+            if self._offline.get(cache_attr) and (now - self._offline_checked_at.get(cache_attr, 0.0) < 5.0):
                 cached = getattr(self, cache_attr)
                 if cached is not None:
                     return cached
@@ -1489,13 +1491,13 @@ class GuiState:
 
             try:
                 result = fetch_fn()
-                self.is_offline = False
-                self.last_offline_check = now
+                self._offline[cache_attr] = False
+                self._offline_checked_at[cache_attr] = now
                 setattr(self, cache_attr, result)
                 return result
             except Exception as exc:
-                self.is_offline = True
-                self.last_offline_check = now
+                self._offline[cache_attr] = True
+                self._offline_checked_at[cache_attr] = now
                 cached = getattr(self, cache_attr)
                 if cached is not None:
                     return cached

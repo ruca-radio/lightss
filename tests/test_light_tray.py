@@ -58,7 +58,9 @@ def test_ai_control_prompt_includes_context_and_instruction():
     assert "Available AI actions:" in prompt
     assert "fade_off" in prompt
     assert "schedule_add" in prompt
-    assert "music_listen" in prompt
+    assert "music_detect" in prompt
+    assert "music_match" in prompt
+    assert "music_listen" not in prompt
     assert "Current WLED device snapshot:" in prompt
     assert "WLED-Gledopto" in prompt
     assert "AudioReactive" in prompt

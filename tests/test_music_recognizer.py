@@ -4,11 +4,37 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
 
 import numpy as np
 import pytest
 
 import music_recognizer
+
+
+def test_import_does_not_load_sounddevice_at_module_import_time():
+    script = """
+import builtins
+import sys
+
+real_import = builtins.__import__
+seen_sounddevice = False
+
+def guarded_import(name, *args, **kwargs):
+    global seen_sounddevice
+    if name == "sounddevice" or name.startswith("sounddevice."):
+        seen_sounddevice = True
+        raise ImportError("sounddevice must be lazy")
+    return real_import(name, *args, **kwargs)
+
+builtins.__import__ = guarded_import
+import music_recognizer
+sys.exit(1 if seen_sounddevice else 0)
+"""
+    result = subprocess.run([sys.executable, "-c", script], cwd=".", check=False)
+
+    assert result.returncode == 0
 
 
 class TestParseShazamResult:

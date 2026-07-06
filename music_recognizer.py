@@ -43,13 +43,9 @@ try:
 except Exception as exc:  # pragma: no cover
     _try_import_errors.append(f"shazamio: {exc}")
 
-_sounddevice_available = False
-try:
-    import sounddevice as sd
-
-    _sounddevice_available = True
-except Exception as exc:  # pragma: no cover
-    _try_import_errors.append(f"sounddevice: {exc}")
+_sounddevice_available: bool | None = None
+_sounddevice_import_error: BaseException | None = None
+sd = None
 
 if _try_import_errors:
     logger.debug("music_recognizer optional deps unavailable: %s", _try_import_errors)
@@ -60,11 +56,31 @@ DEFAULT_SAMPLE_RATE = 0  # 0 = auto-detect from device at runtime
 
 def _get_device_samplerate(device: str | int | None = None) -> int:
     """Return the native sample rate of the given (or default) input device."""
+    sounddevice = _load_sounddevice()
+    if sounddevice is None:
+        return 44100
     try:
-        info = sd.query_devices(device=device, kind="input") if device is not None else sd.query_devices(kind="input")
+        info = sounddevice.query_devices(device=device, kind="input") if device is not None else sounddevice.query_devices(kind="input")
         return int(info.get("default_samplerate", 44100))
     except Exception:
         return 44100
+
+
+def _load_sounddevice() -> Any | None:
+    """Load sounddevice only when microphone recording actually needs it."""
+    global sd, _sounddevice_available, _sounddevice_import_error
+    if _sounddevice_available is not None:
+        return sd
+    try:
+        import sounddevice as _sd
+    except Exception as exc:  # pragma: no cover
+        _sounddevice_available = False
+        _sounddevice_import_error = exc
+        return None
+    sd = _sd
+    _sounddevice_available = True
+    _sounddevice_import_error = None
+    return sd
 
 
 def _record_audio(duration: float, sample_rate: int, device: str | int | None = None) -> Any:
@@ -75,7 +91,8 @@ def _record_audio(duration: float, sample_rate: int, device: str | int | None = 
     """
     if np is None:
         raise RuntimeError("numpy is not available")
-    if not _sounddevice_available:
+    sounddevice = _load_sounddevice()
+    if sounddevice is None:
         raise RuntimeError("sounddevice is not available")
     if device is None:
         device = lightctl.get_mic_device()
@@ -83,7 +100,7 @@ def _record_audio(duration: float, sample_rate: int, device: str | int | None = 
     # If a concrete device was selected but is not currently usable, fall back to default (None)
     if device is not None:
         try:
-            info = sd.query_devices(device=device, kind="input")
+            info = sounddevice.query_devices(device=device, kind="input")
             if not info or info.get("max_input_channels", 0) <= 0:
                 logger.warning("Selected mic device %r is not a valid input; falling back to default", device)
                 device = None
@@ -97,8 +114,8 @@ def _record_audio(duration: float, sample_rate: int, device: str | int | None = 
     frames = int(duration * sample_rate)
     try:
         # Record as float32, then convert to int16
-        recording = sd.rec(frames, samplerate=sample_rate, channels=1, dtype=np.float32, device=device)
-        sd.wait()
+        recording = sounddevice.rec(frames, samplerate=sample_rate, channels=1, dtype=np.float32, device=device)
+        sounddevice.wait()
     except Exception as exc:
         # Let upper layers turn this into "no match" instead of crashing the process
         raise RuntimeError(f"Failed to open/record from audio device: {exc}") from exc
@@ -181,7 +198,7 @@ async def recognize_microphone(
         raise RuntimeError("shazamio is not available")
     if np is None:
         raise RuntimeError("numpy is not available")
-    if not _sounddevice_available:
+    if _load_sounddevice() is None:
         raise RuntimeError("sounddevice is not available")
     if AudioSegment is None:
         raise RuntimeError("pydub is not available")
@@ -292,8 +309,13 @@ def recognize_audio_bytes_sync(audio_bytes: bytes) -> dict[str, Any] | None:
 
 
 def is_available() -> bool:
-    """Return True if all required dependencies are present (for mic recording)."""
-    return _shazam_available and _sounddevice_available and AudioSegment is not None and np is not None
+    """Return True if known dependencies for mic recording are present.
+
+    Do not import sounddevice here. In some desktop/sandbox environments the
+    PortAudio import can block while probing devices, and this status check is
+    called from GUI/request paths.
+    """
+    return _shazam_available and _sounddevice_available is not False and AudioSegment is not None and np is not None
 
 
 def can_identify_song() -> bool:
@@ -312,8 +334,13 @@ def available_reason() -> str:
         reasons.append("shazamio not installed")
     if np is None:
         reasons.append("numpy not installed")
-    if not _sounddevice_available:
-        reasons.append("sounddevice not installed")
+    if _sounddevice_available is False:
+        if _sounddevice_import_error is not None:
+            reasons.append(f"sounddevice not installed ({_sounddevice_import_error})")
+        else:
+            reasons.append("sounddevice not installed")
+    elif _sounddevice_available is None:
+        reasons.append("sounddevice not checked until microphone recording")
     if AudioSegment is None:
         reasons.append("pydub not installed")
     return "Music recognition unavailable: " + ", ".join(reasons)
