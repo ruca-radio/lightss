@@ -1,0 +1,14 @@
+[project]
+name = "lightss"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "audioop-lts>=0.2 ; python_full_version >= '3.13'",
+    "numpy>=1.26,<2.0",
+    "pydub>=0.25,<0.26",
+    "pytest>=7,<10",
+    "shazamio==0.2.0.0",
+    "sounddevice>=0.5,<0.6",
+]

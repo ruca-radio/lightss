@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import lightctl
 
@@ -125,6 +126,49 @@ class LightCtlTests(unittest.TestCase):
                 raise AssertionError("should not query when explicit sample rate is provided")
 
         self.assertEqual(lightctl.resolve_input_samplerate(FakeSoundDevice, None, 22050), 22050)
+
+
+class RequestRetryTests(unittest.TestCase):
+    """WLED's ESP-based HTTP server can reset the connection mid-response
+    (e.g. while rebooting after a restart command). Regression coverage for
+    a bug where that raw socket error bypassed retry entirely and wasn't
+    wrapped into the RuntimeError that CLI/GUI/MCP restart handlers rely on
+    to distinguish "device unreachable" from other failures."""
+
+    def setUp(self):
+        self.client = lightctl.LightClient("10.27.27.110", timeout=0.01)
+        self.sleep_patch = patch("lightctl.time.sleep")
+        self.sleep_patch.start()
+
+    def tearDown(self):
+        self.sleep_patch.stop()
+
+    def test_connection_reset_mid_response_is_retried_then_wrapped(self):
+        with patch("lightctl.urllib.request.urlopen", side_effect=ConnectionResetError("reset by peer")) as mock_urlopen:
+            with self.assertRaises(RuntimeError):
+                self.client.get_state()
+        self.assertEqual(mock_urlopen.call_count, 3)
+
+    def test_exhausted_url_error_retries_raise_runtime_error(self):
+        with patch(
+            "lightctl.urllib.request.urlopen",
+            side_effect=lightctl.urllib.error.URLError("connection refused"),
+        ):
+            with self.assertRaises(RuntimeError):
+                self.client.get_state()
+
+    def test_success_after_transient_reset_returns_response(self):
+        import io
+
+        good_response = io.BytesIO(b'{"on": true}')
+        with patch(
+            "lightctl.urllib.request.urlopen",
+            side_effect=[ConnectionResetError("reset by peer"), good_response],
+        ):
+            with self.client._request_with_retry(
+                lightctl.urllib.request.Request(self.client.state_url)
+            ) as response:
+                self.assertEqual(response.read(), b'{"on": true}')
 
 
 if __name__ == "__main__":

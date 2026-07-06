@@ -527,6 +527,44 @@ class GuiPresetTests(unittest.TestCase):
         self.assertEqual(payload["ps"], 5)
 
 
+class GuiStateOfflineTrackingTests(unittest.TestCase):
+    """The state and info endpoints must track connectivity independently.
+
+    Regression test for a bug where a single shared is_offline/last_offline_check
+    flag meant a hiccup on one WLED endpoint (e.g. /json/info) would force the
+    other endpoint (/json/state) to serve stale cached data for 5 seconds even
+    though it was still reachable.
+    """
+
+    def _make_state(self, client):
+        state = light_gui.GuiState.__new__(light_gui.GuiState)
+        state.client = client
+        state.cached_state = None
+        state.cached_info = None
+        state._offline = {}
+        state._offline_checked_at = {}
+        state.state_lock = threading.Lock()
+        return state
+
+    def test_info_failure_does_not_stall_state_fetches(self):
+        client = MagicMock()
+        client.get_state.return_value = {"on": True}
+        client.get_info.side_effect = RuntimeError("info endpoint unreachable")
+        state = self._make_state(client)
+
+        self.assertEqual(state.get_state_throttled(), {"on": True})
+        self.assertFalse(state.is_offline)
+
+        with self.assertRaises(RuntimeError):
+            state.get_info_throttled()
+
+        # A fresh state fetch should still hit the device, not return the
+        # earlier cached value because of the (unrelated) info failure.
+        client.get_state.return_value = {"on": False}
+        self.assertEqual(state.get_state_throttled(), {"on": False})
+        self.assertFalse(state.is_offline)
+
+
 class McpPresetTests(unittest.TestCase):
     def test_preset_tool_exists(self):
         tools = mcp_light.build_tools()

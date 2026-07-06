@@ -678,14 +678,11 @@ def get_mic_device() -> str | int | None:
 # HTTP client
 # ---------------------------------------------------------------------------
 
-_WLED_MIN_POST_INTERVAL = 0.15  # seconds between consecutive POSTs to avoid 503s
-
 @dataclass
 class LightClient:
     host: str = DEFAULT_HOST
     timeout: float = 2.5
     dry_run: bool = False
-    _last_post_time: float = 0.0
     _last_req_time: float = 0.0
     _http_lock: threading.RLock = None  # type: ignore[assignment]
 
@@ -863,14 +860,20 @@ class LightClient:
                     last_exc = exc
                     if attempt < retries - 1:
                         time.sleep(0.1 * (2 ** attempt))
-                    else:
-                        raise
-                except urllib.error.URLError as exc:
+                except OSError as exc:
+                    # Covers urllib.error.URLError (connect/DNS failures) as well as
+                    # raw socket errors - ConnectionResetError, TimeoutError,
+                    # http.client.RemoteDisconnected - that WLED's ESP-based HTTP
+                    # server can raise mid-response after the connection is already
+                    # open (e.g. rebooting after a restart command). urlopen() only
+                    # wraps failures during connect/send into URLError, so these
+                    # otherwise bypass retry entirely.
                     last_exc = exc
                     if attempt < retries - 1:
                         time.sleep(0.1 * (2 ** attempt))
-                    else:
-                        raise
+            # Retries exhausted: wrap in RuntimeError so callers (CLI/GUI/MCP restart
+            # handlers, main()'s top-level catch) can rely on one exception type for
+            # "controller unreachable" instead of a raw socket/urllib exception.
         raise RuntimeError(f"Could not reach light controller at {request.full_url}: {last_exc}") from last_exc
 
     def get_state(self) -> dict:
