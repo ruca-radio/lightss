@@ -51,8 +51,22 @@ class SettingsApiHttpTest(unittest.TestCase):
         self._write_config(
             {
                 "controllers": [
-                    {"name": "right", "host": "http://10.0.0.1", "segments": {"0": "right", "1": "right-center"}},
-                    {"name": "left", "host": "http://10.0.0.2", "segments": {"0": "left-center", "1": "left"}},
+                    {
+                        "name": "right",
+                        "host": "http://10.0.0.1",
+                        "segments": {
+                            "0": {"channel": "far-right", "gpio": 2, "pixels": 40},
+                            "1": {"channel": "middle-right", "gpio": 16, "pixels": 40},
+                        },
+                    },
+                    {
+                        "name": "left",
+                        "host": "http://10.0.0.2",
+                        "segments": {
+                            "0": {"channel": "middle-left", "gpio": 16, "pixels": 40},
+                            "1": {"channel": "far-left", "gpio": 2, "pixels": 40},
+                        },
+                    },
                 ],
                 "audio_source": "monitor",
             }
@@ -147,6 +161,88 @@ class SettingsApiHttpTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(payload["ok"])
         self.assertNotIn("bogus", self._read_config())
+
+    def test_installation_settings_roundtrip_preserves_metadata(self):
+        installation = {
+            "wall_order": ["far-left", "middle-left", "middle-right", "far-right"],
+            "spacing_inches": 30,
+            "orientation": "vertical",
+            "pixel_zero": "bottom",
+            "column_length_m": 2.0,
+            "pixels_per_meter": 20,
+            "visible_leds_per_meter": 720,
+            "color_order": "BRG",
+        }
+        status, payload = self._post("/api/settings", {"installation": installation})
+        assert status == 200
+        assert self._read_config()["installation"] == installation
+        _, payload = self._get("/api/settings")
+        assert payload["settings"]["installation"] == installation
+
+    def test_unknown_segment_keys_survive_settings_roundtrip(self) -> None:
+        controllers = [
+            {
+                "name": "right",
+                "host": "http://10.0.0.1",
+                "segments": {
+                    "0": {"channel": "far-right", "gpio": 2, "pixels": 40, "notes": "window side"},
+                    "1": {"channel": "middle-right", "gpio": 16, "pixels": 40},
+                },
+            },
+            {
+                "name": "left",
+                "host": "http://10.0.0.2",
+                "segments": {
+                    "0": {"channel": "middle-left", "gpio": 16, "pixels": 40},
+                    "1": {"channel": "far-left", "gpio": 2, "pixels": 40, "notes": "door side"},
+                },
+            },
+        ]
+
+        status, payload = self._post("/api/settings", {"controllers": controllers})
+
+        self.assertEqual(status, 200)
+        self.assertEqual(self._read_config()["controllers"], controllers)
+        _, settings_payload = self._get("/api/settings")
+        self.assertEqual(settings_payload["settings"]["controllers"], controllers)
+
+    def test_invalid_installation_rejected_without_touching_config(self) -> None:
+        before = self._read_config()
+
+        status, payload = self._post(
+            "/api/settings",
+            {"installation": {"orientation": "diagonal"}},
+        )
+
+        self.assertEqual(status, 400)
+        self.assertFalse(payload["ok"])
+        self.assertIn("orientation", payload["error"])
+        self.assertEqual(self._read_config(), before)
+
+    def test_installation_wall_order_without_matching_segments_rejected(self) -> None:
+        before = self._read_config()
+
+        status, payload = self._post(
+            "/api/settings",
+            {"installation": {"wall_order": ["far-left", "no-such-channel"]}},
+        )
+
+        self.assertEqual(status, 400)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(self._read_config(), before)
+
+    def test_invalid_controllers_rejected_without_touching_config(self) -> None:
+        before = self._read_config()
+        controllers = [
+            {"name": "a", "host": "http://10.0.0.9", "segments": {"0": {"channel": "dup"}}},
+            {"name": "b", "host": "http://10.0.0.10", "segments": {"0": {"channel": "dup"}}},
+        ]
+
+        status, payload = self._post("/api/settings", {"controllers": controllers})
+
+        self.assertEqual(status, 400)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(self._read_config(), before)
 
     def test_post_settings_reload_rebuilds_fleet(self) -> None:
         status, payload = self._post("/api/settings/reload")

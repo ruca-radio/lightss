@@ -2326,7 +2326,7 @@ def smart_suggestions(state_data: dict | None = None, now_playing: dict[str, str
 # Settings API helpers
 # ---------------------------------------------------------------------------
 
-SETTINGS_MERGE_KEYS = ("ai", "controllers", "audio_source", "mic_device", "system_prompt_override")
+SETTINGS_MERGE_KEYS = ("ai", "controllers", "installation", "audio_source", "mic_device", "system_prompt_override")
 
 
 def current_settings(config: dict | None = None) -> dict:
@@ -2335,6 +2335,7 @@ def current_settings(config: dict | None = None) -> dict:
         config = lightctl.load_config()
     override = config.get("system_prompt_override")
     mic_device = config.get("mic_device")
+    installation = config.get("installation")
     controllers = config.get("controllers")
     if not isinstance(controllers, list) or not controllers:
         # Config has no controllers section yet — show the effective fleet
@@ -2353,6 +2354,7 @@ def current_settings(config: dict | None = None) -> dict:
         "ai": ai_settings(config),
         "system_prompt_override": override if isinstance(override, str) and override.strip() else None,
         "controllers": controllers,
+        "installation": dict(installation) if isinstance(installation, dict) else None,
         "audio_source": str(config.get("audio_source") or "monitor"),
         "mic_device": str(mic_device) if mic_device not in (None, "") else None,
     }
@@ -2360,7 +2362,10 @@ def current_settings(config: dict | None = None) -> dict:
 
 def merge_settings_into_config(updates: dict) -> dict:
     """Merge a partial settings body into config.json (top-level keys only;
-    the 'ai' object is merged key-by-key). Returns the merged config."""
+    the 'ai' object is merged key-by-key). Returns the merged config.
+
+    Controller/installation updates are validated against fleet.load_topology
+    before anything is written; a ValueError leaves the config file untouched."""
     config = lightctl.load_config()
     for key in SETTINGS_MERGE_KEYS:
         if key not in updates:
@@ -2370,6 +2375,10 @@ def merge_settings_into_config(updates: dict) -> dict:
             config["ai"].update(value)
         else:
             config[key] = value
+    if "controllers" in updates or "installation" in updates:
+        import fleet as fleet_mod  # lazy: fleet imports lightctl
+
+        fleet_mod.load_topology(config)  # raises ValueError on invalid topology
     lightctl.save_config(config)
     return config
 
