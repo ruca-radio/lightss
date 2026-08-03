@@ -1,6 +1,19 @@
 # Bedroom LED Controller
 
-Simple controller for the Wi-Fi LED strip at `10.27.27.110`.
+Controller for a small fleet of Wi-Fi WLED controllers driving the bedroom wall
+strips. The default installation is two GLEDOPTO GL-C-310WL controllers, each
+with two 50-LED WS2811 buses exposed as WLED segments:
+
+- **Controller `right`** — `http://10.27.27.110` (WLED 0.15.4, 187 effects)
+  - Segment 0 → channel **right**
+  - Segment 1 → channel **middle-right**
+- **Controller `left`** — `http://10.27.27.112` (WLED 16.0.1, 220 effects)
+  - Segment 0 → channel **middle-left**
+  - Segment 1 → channel **left**
+
+Physical wall order (left → right): `far-left`, `middle-left`, `middle-right`, `far-right`.
+Every surface (CLI, GUI, tray, MCP) can target `all` controllers (default), a
+single controller, or a single channel/segment.
 
 ## Setup
 
@@ -16,6 +29,8 @@ python3 -m venv .venv
 | `OPENAI_API_KEY` | API key for AI features in the GUI | *(required for AI)* |
 | `LIGHT_AI_MODEL` | OpenAI model override for AI prompts | `gpt-5.2` |
 | `LIGHT_HOST` | WLED controller URL for MCP server | `http://10.27.27.110` |
+| `LIGHT_HOSTS` | Comma-separated WLED controller URLs defining the fleet (names `light-1`, `light-2`, …; no channel aliases) | config `controllers` / built-in two-controller default |
+| `LIGHT_AUDIO_SOURCE` | Audio capture source: `monitor`, `mic`, or a device name | `monitor` |
 | `LD_LIBRARY_PATH` | May be needed for `sounddevice` / PortAudio | `/home/linuxbrew/.linuxbrew/lib` |
 
 ## Commands
@@ -43,9 +58,32 @@ python3 -m venv .venv
 ./lightctl cycle --interval 60      # Auto-rotate scenes every 60s
 ./lightctl sunrise --minutes 30     # Gradual wake-up simulation
 ./lightctl info                     # Read WLED device info
+./lightctl segments                 # List controllers, channels, and segment IDs
 ```
 
-Use a different controller host:
+Target one controller or channel, and address a specific segment:
+
+```bash
+./lightctl --target right fx 9              # Only the 'right' controller
+./lightctl --target middle-left color 255 0 0 0   # Only the middle-left channel
+./lightctl --target right --segment 1 fx 46 # Segment 1 on the 'right' controller
+```
+
+Valid targets: `all` (default), a controller name (`right`, `left`), or a
+channel name (`far-left`, `middle-left`, `middle-right`, `far-right`). Channel targets
+automatically address the matching WLED segment id.
+
+Wall-wide composer modes across all four columns:
+
+```bash
+./lightctl wall span --fx 9               # Same effect on all four columns
+./lightctl wall mirror --fx 9             # Left pair mirrors the right pair
+./lightctl wall chase --fx 28             # Staggered chase along the wall
+./lightctl wall versus --fx-left 9 --fx-right 46   # Left vs right duel
+```
+
+Use a single controller host directly (single-client escape hatch, bypasses the
+fleet):
 
 ```bash
 ./lightctl --host 10.27.27.110 on
@@ -65,7 +103,7 @@ Smooth transitions (0–65535 ms):
 
 ## Mode 1: Audio Reactive
 
-Mode 1 listens to the default microphone, detects room-music energy spikes, and
+Mode 1 listens to an audio source, detects room-music energy spikes, and
 changes LED color, brightness, effect, and effect speed on beats.
 
 ```bash
@@ -73,6 +111,14 @@ changes LED color, brightness, effect, and effect speed on beats.
 ```
 
 Stop it with `Ctrl+C`.
+
+The default audio source is the **system monitor** — the PulseAudio/PipeWire
+monitor of the default output (`audio_source: "monitor"` in `config.json`), so
+it reacts to music playing on this machine without a microphone. Set
+`audio_source` to `"mic"` (or a device name) to use a microphone instead;
+`LIGHT_AUDIO_SOURCE` overrides the config value. Track metadata comes from
+MPRIS (`playerctl`, filtered to browser players like Chrome/Chromium/Firefox),
+with Shazam as fallback when MPRIS yields nothing.
 
 ## Browser GUI
 
@@ -89,7 +135,9 @@ http://127.0.0.1:8123/
 ```
 
 The GUI includes:
-- **Live state** display auto-updated via SSE (`/api/events`)
+- **Live state** display auto-updated via SSE (`/api/events`), aggregated per controller
+- **Target selector** — All / controllers / individual channels
+- **Wall panel** with the four wall modes (span, mirror, chase, left-vs-right)
 - Power, brightness, RGBW colors, hex color input, effect control
 - **Transition** slider for smooth fades
 - **Temperature** slider and presets (Warm 2700K, Daylight 5000K, Cool 6500K)
@@ -101,6 +149,10 @@ The GUI includes:
 - **Schedule** management with automatic execution
 - Mode 1 start/stop with browser microphone support
 - AI prompt box with now-playing detection
+- Browser Music Mode with shared mic capture for beat detection, Shazam matching,
+  and mood orchestration
+- Webcam room analysis for AI-selected ambient lighting
+- **📺 TV** toggle and **↗** cast button for Fire TV integration (see below)
 
 GUI Mode 1 uses the browser microphone permission on `localhost`, so it can react
 to room music even when Python cannot see a system audio device. Effects are
@@ -115,15 +167,51 @@ model override:
 LIGHT_AI_MODEL=gpt-5.2 ./light-gui
 ```
 
+If installed as a package, the same entry point is available as:
+
+```bash
+lightss
+```
+
 The AI receives the system map: power, brightness, full RGBW color space, hex
 colors, safe non-strobe effects, effect speed, scenes, random scenes, WLED presets,
 temperature, transitions, sunrise simulation, scene cycling, fade timers, and
-browser microphone beat mode. It returns a visible response plus operation
-confirmations in the GUI.
+browser microphone beat mode. It can also use a webcam snapshot as room context.
+It returns a visible response plus operation confirmations in the GUI.
 
 The AI also reads desktop now-playing metadata when available through MPRIS
 media sessions, or `playerctl` if it is installed. Use **Detect Song** in the GUI
 to confirm what the AI can see before applying a prompt.
+
+## Fire TV
+
+The platform can drive a Fire TV (via ADB at `10.27.27.207:5555`) so the TV
+complements the light visuals instead of competing with them. On first use the
+TV shows a one-time **Allow USB debugging** authorization prompt — accept it on
+the TV to finish pairing.
+
+TV control is gated behind the **📺 TV** toggle in the GUI header. When the
+toggle is off, the platform will not touch the TV at all — use this when the
+TV is busy playing music. The **↗** button next to it casts the ambient
+visuals page (`/tv`, a fullscreen wall-mirror view) to the TV.
+
+The AI/MCP server exposes matching tools: `tv_status`, `tv_wake`, `tv_sleep`,
+and `tv_open_url`. Action tools raise an error while the toggle is off.
+
+`config.json` holds the `firetv` settings:
+
+```json
+{
+  "firetv": {"enabled": true, "host": "10.27.27.207:5555"}
+}
+```
+
+For casting to work, the GUI must be reachable from the TV — start it bound to
+all interfaces instead of the default loopback:
+
+```bash
+./light-gui --listen 0.0.0.0
+```
 
 ## MCP Server
 
@@ -133,11 +221,15 @@ Run the MCP stdio server:
 ./mcp-light
 ```
 
-Useful environment override:
+The server controls the whole fleet by default. Useful environment overrides:
 
 ```bash
-LIGHT_HOST=http://10.27.27.110 ./mcp-light
+LIGHT_HOST=http://10.27.27.110 ./mcp-light                    # single controller
+LIGHT_HOSTS=http://10.27.27.110,http://10.27.27.112 ./mcp-light   # custom fleet
 ```
+
+Every control tool accepts an optional `target` argument (`all` by default, or
+a controller/channel name) and, where meaningful, an optional `segment` id.
 
 Tools exposed to MCP clients:
 
@@ -160,6 +252,26 @@ Tools exposed to MCP clients:
 - `start_sunrise`
 - `start_audio_reactive`
 - `stop_audio_reactive`
+- `recognize_music`
+- `match_lights_to_song`
+- `restart_controller`
+- `list_controllers`
+- `list_segments`
+- `wall_mode` (mode: `span` | `mirror` | `chase` | `versus`, with `fx`/`pal` or
+  `fx_left`/`fx_right`/`pal_left`/`pal_right`)
+- `tv_status`
+- `tv_wake`
+- `tv_sleep`
+- `tv_open_url`
+
+## Package Entry Points
+
+When installed from `pyproject.toml`, these console scripts are available:
+
+- `lightss` / `light-gui` — start the browser GUI
+- `lightctl` — CLI controller
+- `mcp-light` — MCP stdio server
+- `light-tray` — desktop tray GUI
 
 ## Configuration
 
@@ -167,4 +279,27 @@ Scenes, schedules, and settings are persisted in `~/.config/lightss/`:
 
 - `scenes.json` — saved custom scenes
 - `schedule.json` — timed automation entries
-- `config.json` — general configuration (host, defaults, etc.)
+- `config.json` — general configuration (controllers, defaults, etc.)
+- `song_moods.json` — cached AI-generated song moods
+
+The controller fleet is defined in `config.json` under `controllers` (written
+on first run if absent). Each controller lists its host and a map of WLED
+segment id → channel name:
+
+```json
+{
+  "controllers": [
+    {"name": "right", "host": "http://10.27.27.110", "segments": {"0": "far-right", "1": "middle-right"}},
+    {"name": "left",  "host": "http://10.27.27.112", "segments": {"0": "middle-left", "1": "far-left"}}
+  ]
+}
+```
+
+Resolution order: config file `controllers` → `LIGHT_HOSTS` env (comma-separated
+hosts named `light-1`, `light-2`, … with no channel aliases) → the built-in
+two-controller default above.
+
+`config.json` also holds `audio_source` for music/beat capture: `"monitor"`
+(default, system output monitor), `"mic"`, or a device name; `LIGHT_AUDIO_SOURCE`
+overrides it. The legacy `mic_device` setting still applies when `audio_source`
+is `"mic"`.

@@ -1,14 +1,51 @@
 [project]
 name = "lightss"
 version = "0.1.0"
-description = "Add your description here"
+description = "Agentic AI WLED light controller with browser music mode and MCP tools"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "audioop-lts>=0.2 ; python_full_version >= '3.13'",
     "numpy>=1.26,<2.0",
     "pydub>=0.25,<0.26",
-    "pytest>=7,<10",
     "shazamio==0.2.0.0",
     "sounddevice>=0.5,<0.6",
 ]
+
+[project.scripts]
+lightss = "light_gui:main"
+light-gui = "light_gui:main"
+lightctl = "lightctl:main"
+mcp-light = "mcp_light:main"
+light-tray = "light_tray:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7,<10",
+]
+
+[tool.setuptools]
+py-modules = [
+    "actions",
+    "ai_chat",
+    "atmospheres",
+    "columns",
+    "firetv",
+    "fleet",
+    "light_gui",
+    "light_gui_html",
+    "light_tray",
+    "lightctl",
+    "main",
+    "mcp_light",
+    "mood_orchestrator",
+    "music_director",
+    "music_recognizer",
+    "shows",
+    "youtopia_bridge",
+    "youtopia_daemon",
+]
+include-package-data = true
+
+[tool.setuptools.package-data]
+"*" = ["wled-logo.png"]

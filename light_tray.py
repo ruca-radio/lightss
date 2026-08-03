@@ -8,11 +8,14 @@ import os
 import sys
 import threading
 import time
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import lightctl
 import light_gui
 import music_recognizer
+
+if TYPE_CHECKING:
+    import fleet
 
 logger = logging.getLogger("light_tray")
 LOG_PATH = os.path.expanduser("~/.config/lightss/tray.log")
@@ -68,7 +71,7 @@ QScrollBar:horizontal { height: 0; }
 
 try:
     from PySide6.QtCore import Qt, QTimer, Signal, QObject
-    from PySide6.QtGui import QAction, QFont, QIcon, QPixmap, QCursor, QKeySequence, QShortcut
+    from PySide6.QtGui import QAction, QActionGroup, QFont, QIcon, QKeySequence, QPixmap, QShortcut
     from PySide6.QtWidgets import (
         QApplication,
         QCheckBox,
@@ -159,15 +162,44 @@ def build_ai_control_prompt(
 
 
 class LightWorker:
-    """Thread-safe wrapper around LightClient for the GUI."""
+    """Thread-safe wrapper around a LightFleet or single LightClient for the GUI."""
 
-    def __init__(self, client: lightctl.LightClient) -> None:
+    def __init__(self, client: lightctl.LightClient | fleet.LightFleet, target: str = "all") -> None:
         self.client = client
+        self.target = target
+
+    def set_target(self, target: str) -> None:
+        """Change the fleet target applied to subsequent quick actions."""
+        self.target = target
+        logger.info("Worker target set to %s", target)
+
+    @property
+    def _is_fleet(self) -> bool:
+        return hasattr(self.client, "resolve") and hasattr(self.client, "post_state")
+
+    def _post_state(self, payload: lightctl.WledPayload) -> object:
+        if self._is_fleet:
+            return self.client.post_state(payload, target=self.target)
+        return self.client.post_state(payload)
 
     def _safe_post(self, payload: lightctl.WledPayload) -> str:
         try:
-            logger.info("Posting to %s: %s", getattr(self.client, "state_url", "client"), payload)
-            self.client.post_state(payload)
+            logger.info(
+                "Posting to %s (target=%s): %s",
+                getattr(self.client, "state_url", "fleet"),
+                self.target,
+                payload,
+            )
+            result = self._post_state(payload)
+            if isinstance(result, dict):
+                errors = [
+                    f"{name}: {entry.get('error', 'failed')}"
+                    for name, entry in result.items()
+                    if isinstance(entry, dict) and not entry.get("ok")
+                ]
+                if errors:
+                    logger.warning("Fleet post had failures: %s", errors)
+                    return "Partial: " + "; ".join(errors)
             logger.info("Post succeeded")
             return "OK"
         except Exception as exc:
@@ -218,13 +250,30 @@ class LightWorker:
 
     def get_state(self) -> dict | None:
         try:
+            if self._is_fleet:
+                return self._fleet_state()
             return self.client.get_state()
         except Exception:
             logger.exception("get_state failed")
             return None
 
+    def _fleet_state(self) -> dict | None:
+        """Return a single representative state dict for the current target."""
+        states = self.client.get_state(target=self.target)
+        for entry in states.values():
+            if not isinstance(entry, dict):
+                continue
+            response = entry.get("response")
+            if isinstance(response, dict) and ("on" in response or "seg" in response):
+                return response
+            if "on" in entry or "seg" in entry:
+                return entry
+        return None
+
     def get_device_snapshot(self) -> dict:
         try:
+            if self._is_fleet:
+                return self.client.get_fleet_snapshot()
             return self.client.get_device_snapshot()
         except Exception as exc:
             logger.exception("get_device_snapshot failed")
@@ -235,10 +284,16 @@ class LightWorker:
 
     def restart(self) -> str:
         try:
-            self.client.post_state(lightctl.restart_payload())
+            self._post_state(lightctl.restart_payload())
             return "Restart command sent."
         except Exception:
             return "Restart command sent (device may have rebooted before responding)."
+
+    def thread_client(self) -> object:
+        """Client for long-running background threads, honoring the fleet target."""
+        if self._is_fleet:
+            return lightctl._FleetRouter(self.client, target=self.target)
+        return self.client
 
 
 # ---------------------------------------------------------------------------
@@ -252,11 +307,16 @@ class _ChatSignals(QObject):
 class _MusicSignals(QObject):
     listen_done = Signal(object, str)
     match_done = Signal(object, str, str)
+    detect_done = Signal(object)
 
 
 class _AudioSignals(QObject):
     level_changed = Signal(float, bool)
     error = Signal(str)
+
+
+class _StateSignals(QObject):
+    state_ready = Signal(object)
 
 
 # ---------------------------------------------------------------------------
@@ -280,9 +340,12 @@ class MainWindow(QMainWindow):
         self._music_signals = _MusicSignals()
         self._music_signals.listen_done.connect(self._handle_listen_result)
         self._music_signals.match_done.connect(self._handle_match_result)
+        self._music_signals.detect_done.connect(self._handle_detect_result)
         self._audio_signals = _AudioSignals()
         self._audio_signals.level_changed.connect(self._on_audio_level)
         self._audio_signals.error.connect(self._on_audio_error)
+        self._state_signals = _StateSignals()
+        self._state_signals.state_ready.connect(self._apply_state)
 
         # Thread managers
         self._mode1_thread: lightctl.ReactiveThread | None = None
@@ -290,6 +353,7 @@ class MainWindow(QMainWindow):
         self._sunrise_sim: lightctl.SunriseSimulator | None = None
         self._cycle_thread: lightctl.CycleThread | None = None
         self._current_song: dict | None = None
+        self._refresh_in_flight = False
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -803,7 +867,7 @@ class MainWindow(QMainWindow):
                     device_snapshot=device_snapshot,
                 )
                 plan = light_gui.call_openai_for_plan(prompt, song, device_snapshot)
-                result = light_gui.apply_ai_plan(self.worker.client, plan)
+                result = light_gui.apply_ai_plan(self.worker.client, plan, target=self.worker.target)
                 self._chat_signals.response_ready.emit(result)
             except Exception as exc:
                 self._chat_signals.response_ready.emit({"error": str(exc)})
@@ -820,9 +884,9 @@ class MainWindow(QMainWindow):
 
     def _on_bri_changed(self, value: int) -> None:
         self.bri_label.setText(str(value))
+        if self.bri_slider.isSliderDown():
+            return
         if self._ai_mode_active():
-            if self.bri_slider.isSliderDown():
-                return
             self._submit_ai_control(f"Set brightness to {value}.")
             return
         result = self.worker.set_bri(value, transition_ms=self._transition())
@@ -850,9 +914,9 @@ class MainWindow(QMainWindow):
 
     def _on_temp_slider(self, value: int) -> None:
         self.temp_label.setText(f"{value} K")
+        if self.temp_slider.isSliderDown():
+            return
         if self._ai_mode_active():
-            if self.temp_slider.isSliderDown():
-                return
             self._submit_ai_control(f"Set the lights to {value}K color temperature.")
             return
         result = self.worker.set_temp(value, transition_ms=self._transition())
@@ -911,27 +975,16 @@ class MainWindow(QMainWindow):
         result = self.worker.restart()
         self._set_status(result)
 
-    def _on_fade_off(self) -> None:
-        if self._ai_mode_active():
-            self._submit_ai_control("Fade the lights off over 30 minutes.")
-            return
-        timer = lightctl.FadeTimer(self.worker.client, 30)
-        timer.start()
-        self._set_status("Fade off started (30 min)")
-
     def _on_fade_off_custom(self) -> None:
         minutes = self.fade_minutes.value()
         if self._ai_mode_active():
             self._submit_ai_control(f"Fade the lights off over {minutes} minutes.")
             return
-        self._fade_timer = lightctl.FadeTimer(self.worker.client, minutes)
+        if self._fade_timer and self._fade_timer.is_alive():
+            self._fade_timer.stop()
+        self._fade_timer = lightctl.FadeTimer(self.worker.thread_client(), minutes)
         self._fade_timer.start()
         self._set_status(f"Fade off started ({minutes} min)")
-
-    def _on_sunrise(self) -> None:
-        sim = lightctl.SunriseSimulator(self.worker.client, duration_minutes=30)
-        sim.start()
-        self._set_status("Sunrise started (30 min)")
 
     def _on_sunrise_custom(self) -> None:
         minutes = self.sunrise_minutes.value()
@@ -941,7 +994,7 @@ class MainWindow(QMainWindow):
         if self._sunrise_sim and self._sunrise_sim.is_alive():
             self._set_status("Sunrise already running")
             return
-        self._sunrise_sim = lightctl.SunriseSimulator(self.worker.client, duration_minutes=minutes)
+        self._sunrise_sim = lightctl.SunriseSimulator(self.worker.thread_client(), duration_minutes=minutes)
         self._sunrise_sim.start()
         self._set_status(f"Sunrise started ({minutes} min)")
 
@@ -963,7 +1016,7 @@ class MainWindow(QMainWindow):
         if self._cycle_thread and self._cycle_thread.is_alive():
             self._set_status("Cycle already running")
             return
-        self._cycle_thread = lightctl.CycleThread(self.worker.client, interval_seconds=interval)
+        self._cycle_thread = lightctl.CycleThread(self.worker.thread_client(), interval_seconds=interval)
         self._cycle_thread.start()
         self._set_status(f"Cycle started ({interval}s)")
 
@@ -1069,7 +1122,11 @@ class MainWindow(QMainWindow):
         for key in ("on", "bri", "seg", "transition"):
             if key in state:
                 payload[key] = state[key]
-        lightctl.save_scene(name, payload)
+        try:
+            lightctl.save_scene(name, payload)
+        except OSError as exc:
+            self._set_status(f"Failed to save scene '{name}': {exc}")
+            return
         self._set_status(f"Saved scene '{name}'")
 
     def _on_delete_scene(self) -> None:
@@ -1077,7 +1134,11 @@ class MainWindow(QMainWindow):
         if not name:
             self._set_status("Enter a scene name to delete")
             return
-        lightctl.delete_scene(name)
+        try:
+            lightctl.delete_scene(name)
+        except OSError as exc:
+            self._set_status(f"Failed to delete scene '{name}': {exc}")
+            return
         self._set_status(f"Deleted scene '{name}'")
 
     def _set_swatch_color(self, r: int, g: int, b: int, w: int) -> None:
@@ -1092,9 +1153,16 @@ class MainWindow(QMainWindow):
         action = self.sched_action.currentText()
         data: dict = {}
         scene_name = self.sched_scene.text().strip()
-        if action == "scene" and scene_name:
+        if action == "scene":
+            if not scene_name:
+                self._set_status("Enter a scene name to schedule a scene")
+                return
             data["scene"] = scene_name
-        lightctl.add_schedule(time_str, action, data)
+        try:
+            lightctl.add_schedule(time_str, action, data)
+        except OSError as exc:
+            self._set_status(f"Failed to schedule {action}: {exc}")
+            return
         self._set_status(f"Scheduled {action} at {time_str}")
         self._on_schedule_refresh()
 
@@ -1108,8 +1176,9 @@ class MainWindow(QMainWindow):
             t = entry.get("time", "?")
             action = entry.get("action", "?")
             extra = ""
-            if entry.get("data", {}).get("scene"):
-                extra = f" -> scene: {entry['data']['scene']}"
+            scene = (entry.get("data") or {}).get("scene")
+            if scene:
+                extra = f" -> scene: {scene}"
             lines.append(f"{i}: {t} -> {action}{extra}")
         self.sched_list.setPlainText("\n".join(lines))
 
@@ -1142,7 +1211,7 @@ class MainWindow(QMainWindow):
                     device_snapshot=device_snapshot,
                 )
                 plan = light_gui.call_openai_for_plan(prompt, now_playing, device_snapshot)
-                result = light_gui.apply_ai_plan(self.worker.client, plan)
+                result = light_gui.apply_ai_plan(self.worker.client, plan, target=self.worker.target)
                 self._chat_signals.response_ready.emit(result)
             except Exception as exc:
                 self._chat_signals.response_ready.emit({"error": str(exc)})
@@ -1172,41 +1241,46 @@ class MainWindow(QMainWindow):
 
     def _run_ai_client_action(self, action: dict) -> None:
         kind = action.get("action")
-        if kind == "fadeOff":
-            self.fade_minutes.setValue(int(action.get("minutes") or self.fade_minutes.value()))
-            self._fade_timer = lightctl.FadeTimer(self.worker.client, self.fade_minutes.value())
-            self._fade_timer.start()
-            self._set_status(f"Fade off started ({self.fade_minutes.value()} min)")
-        elif kind == "startCycle":
-            self.cycle_interval.setValue(int(action.get("interval") or self.cycle_interval.value()))
-            if not self._cycle_thread or not self._cycle_thread.is_alive():
-                self._cycle_thread = lightctl.CycleThread(self.worker.client, interval_seconds=self.cycle_interval.value())
-                self._cycle_thread.start()
-            self._set_status(f"Cycle started ({self.cycle_interval.value()}s)")
-        elif kind == "stopCycle":
-            if self._cycle_thread:
-                self._set_status(self._cycle_thread.stop())
-            else:
-                self._set_status("Cycle not running")
-        elif kind == "startSunrise":
-            self.sunrise_minutes.setValue(int(action.get("minutes") or self.sunrise_minutes.value()))
-            if not self._sunrise_sim or not self._sunrise_sim.is_alive():
-                self._sunrise_sim = lightctl.SunriseSimulator(
-                    self.worker.client,
-                    duration_minutes=self.sunrise_minutes.value(),
-                    max_brightness=int(action.get("brightness") or 255),
-                )
-                self._sunrise_sim.start()
-            self._set_status(f"Sunrise started ({self.sunrise_minutes.value()} min)")
-        elif kind == "stopSunrise":
-            if self._sunrise_sim:
-                self._set_status(self._sunrise_sim.stop())
-            else:
-                self._set_status("Sunrise not running")
-        elif kind == "detectSong":
-            self._on_detect_song()
-        elif kind == "matchLightsToSong":
-            self._on_match_lights_tab()
+        try:
+            if kind == "fadeOff":
+                self.fade_minutes.setValue(int(action.get("minutes") or self.fade_minutes.value()))
+                if self._fade_timer and self._fade_timer.is_alive():
+                    self._fade_timer.stop()
+                self._fade_timer = lightctl.FadeTimer(self.worker.thread_client(), self.fade_minutes.value())
+                self._fade_timer.start()
+                self._set_status(f"Fade off started ({self.fade_minutes.value()} min)")
+            elif kind == "startCycle":
+                self.cycle_interval.setValue(int(action.get("interval") or self.cycle_interval.value()))
+                if not self._cycle_thread or not self._cycle_thread.is_alive():
+                    self._cycle_thread = lightctl.CycleThread(self.worker.thread_client(), interval_seconds=self.cycle_interval.value())
+                    self._cycle_thread.start()
+                self._set_status(f"Cycle started ({self.cycle_interval.value()}s)")
+            elif kind == "stopCycle":
+                if self._cycle_thread:
+                    self._set_status(self._cycle_thread.stop())
+                else:
+                    self._set_status("Cycle not running")
+            elif kind == "startSunrise":
+                self.sunrise_minutes.setValue(int(action.get("minutes") or self.sunrise_minutes.value()))
+                if not self._sunrise_sim or not self._sunrise_sim.is_alive():
+                    self._sunrise_sim = lightctl.SunriseSimulator(
+                        self.worker.thread_client(),
+                        duration_minutes=self.sunrise_minutes.value(),
+                        max_brightness=int(action.get("brightness") or 255),
+                    )
+                    self._sunrise_sim.start()
+                self._set_status(f"Sunrise started ({self.sunrise_minutes.value()} min)")
+            elif kind == "stopSunrise":
+                if self._sunrise_sim:
+                    self._set_status(self._sunrise_sim.stop())
+                else:
+                    self._set_status("Sunrise not running")
+            elif kind == "detectSong":
+                self._on_detect_song()
+            elif kind == "matchLightsToSong":
+                self._on_match_lights_tab()
+        except (TypeError, ValueError) as exc:
+            self._set_status(f"Invalid AI action '{kind}': {exc}")
 
     def _add_chat_user(self, text: str) -> None:
         self.chat_history.append(
@@ -1233,7 +1307,19 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _on_detect_song(self) -> None:
-        song = light_gui.get_now_playing()
+        self.song_title_label.setText("Detecting song...")
+
+        def _do_detect() -> None:
+            try:
+                song = light_gui.get_now_playing()
+            except Exception:
+                logger.exception("get_now_playing failed")
+                song = None
+            self._music_signals.detect_done.emit(song)
+
+        threading.Thread(target=_do_detect, daemon=True).start()
+
+    def _handle_detect_result(self, song: dict | None) -> None:
         self._update_song_display(song)
         if self._ai_mode_active() and song:
             self._submit_ai_control("Use the detected song to choose matching lighting.", now_playing=song)
@@ -1267,9 +1353,9 @@ class MainWindow(QMainWindow):
             self.song_detail_label.setText(music_recognizer.available_reason())
             self.btn_match_lights.setEnabled(False)
             return
-        resume_mode1 = self._pause_mode1_for_microphone()
+        mode1_running = self._mode1_thread is not None and self._mode1_thread.is_alive()
         self.song_title_label.setText("🎤 Listening...")
-        if resume_mode1:
+        if mode1_running:
             self._reset_vu()
             self.beat_label.setText("Beat: paused for music recognition")
             self.song_detail_label.setText("Paused Mode 1 so Shazam can use the microphone...")
@@ -1278,6 +1364,7 @@ class MainWindow(QMainWindow):
         self.btn_match_lights.setEnabled(False)
 
         def _do_listen():
+            resume_mode1 = self._pause_mode1_for_microphone()
             try:
                 result = music_recognizer.recognize_sync()
                 if result:
@@ -1310,8 +1397,8 @@ class MainWindow(QMainWindow):
     def _on_match_lights_tab(self) -> None:
         self.btn_match_lights.setEnabled(False)
         self.song_title_label.setText("Matching lights...")
-        resume_mode1 = self._pause_mode1_for_microphone()
-        if resume_mode1:
+        mode1_running = self._mode1_thread is not None and self._mode1_thread.is_alive()
+        if mode1_running:
             self._reset_vu()
             self.beat_label.setText("Beat: paused for music detection")
             self.song_detail_label.setText("Paused Mode 1 so music detection can use the microphone...")
@@ -1319,9 +1406,11 @@ class MainWindow(QMainWindow):
             self.song_detail_label.setText("Detecting song...")
 
         def _do_match():
+            resume_mode1 = False
             try:
                 song = getattr(self, "_current_song", None)
                 if not song:
+                    resume_mode1 = self._pause_mode1_for_microphone()
                     song = light_gui.get_now_playing_with_shazam_fallback(use_shazam=True)
                 if not song:
                     self._music_signals.match_done.emit(None, "", "No music detected. Play a song first.")
@@ -1362,7 +1451,17 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _refresh_state(self) -> None:
-        state = self.worker.get_state()
+        if self._refresh_in_flight:
+            return
+        self._refresh_in_flight = True
+
+        def _do_refresh() -> None:
+            self._state_signals.state_ready.emit(self.worker.get_state())
+
+        threading.Thread(target=_do_refresh, daemon=True).start()
+
+    def _apply_state(self, state: dict | None) -> None:
+        self._refresh_in_flight = False
         if state is None:
             self.status_label.setText("🔴 Disconnected")
             return
@@ -1388,13 +1487,27 @@ class MainWindow(QMainWindow):
 # ---------------------------------------------------------------------------
 
 class TrayApplication(QApplication):
-    def __init__(self, argv: list[str], host: str, dry_run: bool) -> None:
+    show_message = Signal(str, str, int)
+    tray_action_done = Signal(str, str)
+
+    def __init__(self, argv: list[str], host: str | None, dry_run: bool, target: str = "all") -> None:
         super().__init__(argv)
         self.setQuitOnLastWindowClosed(False)
         self.setStyleSheet(DARK_STYLESHEET)
+        self.show_message.connect(self._show_tray_message)
+        self.tray_action_done.connect(self._on_tray_action_done)
 
-        client = lightctl.LightClient(host, dry_run=dry_run)
-        self.worker = LightWorker(client)
+        targets: list[tuple[str, str]] = []
+        if host:
+            client: lightctl.LightClient | fleet.LightFleet = lightctl.LightClient(host, dry_run=dry_run)
+        else:
+            import fleet as fleet_module
+
+            client = fleet_module.LightFleet.from_config(dry_run=dry_run)
+            targets.append(("All", "all"))
+            targets.extend((name, name) for name in client.names())
+            targets.extend((channel, channel) for channel in client.channels())
+        self.worker = LightWorker(client, target=target)
 
         self.window = MainWindow(self.worker)
 
@@ -1427,6 +1540,22 @@ class TrayApplication(QApplication):
             )
             menu_scenes.addAction(act)
         menu.addMenu(menu_scenes)
+
+        if targets:
+            menu_target = QMenu("Target", menu)
+            target_group = QActionGroup(self)
+            target_group.setExclusive(True)
+            for label, value in targets:
+                act = QAction(label, self)
+                act.setCheckable(True)
+                act.setChecked(value == target)
+                act.setToolTip(f"Apply tray quick actions to {label}")
+                act.triggered.connect(
+                    lambda checked=False, v=value, lbl=label: self._on_target_changed(v, lbl)
+                )
+                target_group.addAction(act)
+                menu_target.addAction(act)
+            menu.addMenu(menu_target)
 
         act_restart = QAction("⟳ Restart Controller", self)
         act_restart.triggered.connect(lambda checked=False: self._run_tray_action("Restart", self.worker.restart))
@@ -1461,16 +1590,36 @@ class TrayApplication(QApplication):
                 self.window.raise_()
                 self.window.activateWindow()
 
-    def _run_tray_action(self, label: str, action: Callable[[], str]) -> None:
-        result = action()
+    def _show_tray_message(self, title: str, message: str, msecs: int) -> None:
+        self.tray.showMessage(title, message, QSystemTrayIcon.MessageIcon.Information, msecs)
+
+    def _on_tray_action_done(self, label: str, result: str) -> None:
         message = f"{label}: {result}"
         logger.info("Tray action: %s", message)
+        self.window._set_status(message)
+        self._show_tray_message("Bedroom LED Controller", message, 3000)
+
+    def _run_tray_action(self, label: str, action: Callable[[], str]) -> None:
+        def _do_action() -> None:
+            try:
+                result = action()
+            except Exception as exc:
+                logger.exception("Tray action failed: %s", label)
+                result = str(exc)
+            self.tray_action_done.emit(label, result)
+
+        threading.Thread(target=_do_action, daemon=True).start()
+
+    def _on_target_changed(self, target: str, label: str) -> None:
+        self.worker.set_target(target)
+        message = f"Target: {label}"
+        logger.info("Tray target changed: %s", target)
         self.window._set_status(message)
         self.tray.showMessage(
             "Bedroom LED Controller",
             message,
             QSystemTrayIcon.MessageIcon.Information,
-            3000,
+            2000,
         )
 
     def _on_recognize_music(self) -> None:
@@ -1505,7 +1654,7 @@ class TrayApplication(QApplication):
                 msg = f"Recognition failed: {exc}"
             finally:
                 self.window._resume_mode1_after_microphone(resume_mode1)
-            self.tray.showMessage("Music Recognition", msg, QSystemTrayIcon.MessageIcon.Information, 8000)
+            self.show_message.emit("Music Recognition", msg, 8000)
 
         threading.Thread(target=_do_recognize, daemon=True).start()
 
@@ -1518,7 +1667,8 @@ class TrayApplication(QApplication):
         )
 
         def _do_match():
-            import shutil, subprocess, re
+            import shutil
+            import subprocess
             song = None
             resume_mode1 = False
             try:
@@ -1527,7 +1677,7 @@ class TrayApplication(QApplication):
                         ["playerctl", "metadata", "--format", "{{artist}}\n{{title}}\n{{album}}"],
                         capture_output=True, text=True, timeout=2,
                     ).stdout
-                    lines = [l.strip() for l in meta.splitlines()]
+                    lines = [line.strip() for line in meta.splitlines()]
                     if len(lines) >= 2 and (lines[0] or lines[1]):
                         song = {"artist": lines[0], "title": lines[1], "album": lines[2] if len(lines) > 2 else ""}
                 if not song and music_recognizer.is_available():
@@ -1536,22 +1686,21 @@ class TrayApplication(QApplication):
                     if result:
                         song = {"artist": result.get("artist", ""), "title": result.get("title", ""), "album": result.get("album", ""), "genre": result.get("genre", "")}
             except Exception as exc:
-                self.tray.showMessage("Match Lights", f"Detection failed: {exc}", QSystemTrayIcon.MessageIcon.Warning, 5000)
+                self.show_message.emit("Match Lights", f"Detection failed: {exc}", 5000)
                 return
             finally:
                 self.window._resume_mode1_after_microphone(resume_mode1)
             if not song:
-                self.tray.showMessage("Match Lights", "No music detected. Play a song first.", QSystemTrayIcon.MessageIcon.Warning, 5000)
+                self.show_message.emit("Match Lights", "No music detected. Play a song first.", 5000)
                 return
             genre = song.get("genre", "")
             prompt = f"Song: {song['title']} by {song['artist']}"
             if genre:
                 prompt += f" (genre: {genre})"
             prompt += ". Create lights that match its mood and energy."
-            self.tray.showMessage(
+            self.show_message.emit(
                 "Match Lights",
                 f"Detected: {song['title']} by {song['artist']}\nApply this prompt in the AI panel:\n{prompt}",
-                QSystemTrayIcon.MessageIcon.Information,
                 10000,
             )
 
@@ -1561,7 +1710,16 @@ class TrayApplication(QApplication):
 def main() -> int:
     import argparse
     parser = argparse.ArgumentParser(description="Desktop tray GUI for the bedroom LED controller.")
-    parser.add_argument("--host", default=lightctl.DEFAULT_HOST, help=f"Controller host, default {lightctl.DEFAULT_HOST}")
+    parser.add_argument(
+        "--host",
+        default=None,
+        help=f"Force a single controller host (default: fleet from config, first is {lightctl.DEFAULT_HOST})",
+    )
+    parser.add_argument(
+        "--target",
+        default="all",
+        help="Fleet target for quick actions: 'all', a controller name, or a channel name (default all)",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print JSON instead of sending it")
     args = parser.parse_args()
 
@@ -1576,7 +1734,7 @@ def main() -> int:
     )
     logger.info("Starting desktop tray GUI; log=%s", LOG_PATH)
 
-    app = TrayApplication(sys.argv, args.host, args.dry_run)
+    app = TrayApplication(sys.argv, args.host, args.dry_run, target=args.target)
     return app.exec()
 
 

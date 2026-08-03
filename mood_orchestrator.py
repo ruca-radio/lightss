@@ -9,9 +9,12 @@ import struct
 import threading
 import time
 import wave
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import lightctl
+
+if TYPE_CHECKING:
+    import fleet
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -20,6 +23,26 @@ _CONFIG_DIR = os.path.expanduser("~/.config/lightss")
 
 def _song_cache_path() -> str:
     return os.path.join(_CONFIG_DIR, "song_moods.json")
+
+
+def _extract_state_dict(raw: Any) -> dict[str, Any] | None:
+    """Normalize ``get_state()`` from a LightClient or a LightFleet.
+
+    A LightClient returns a single WLED state dict; a LightFleet returns
+    ``{controller_name: {"ok": ..., "response"/"state": state}}``. Pick one
+    representative state dict for transition smoothing, or None.
+    """
+    if not isinstance(raw, dict):
+        return None
+    if "bri" in raw or "seg" in raw or "on" in raw:
+        return raw
+    for value in raw.values():
+        if not isinstance(value, dict):
+            continue
+        inner = value.get("response") or value.get("state") or value
+        if isinstance(inner, dict) and ("bri" in inner or "seg" in inner or "on" in inner):
+            return inner
+    return None
 
 
 class SongCache:
@@ -42,7 +65,9 @@ class SongCache:
         return {}
 
     def _save(self) -> None:
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        directory = os.path.dirname(self.path)
+        if directory:  # a bare filename has no parent to create
+            os.makedirs(directory, exist_ok=True)
         with open(self.path, "w", encoding="utf-8") as f:
             json.dump(self._data, f, indent=2)
 
@@ -113,6 +138,7 @@ class AudioSampleBuffer:
         self.rms_threshold = rms_threshold
         self._last_attempt: float = 0.0
         self._lock = threading.Lock()
+        self._rms_width_warned = False
 
     def maybe_recognize(self, audio_bytes: bytes) -> dict[str, str] | None:
         if self.rms_threshold is not None:
@@ -137,6 +163,11 @@ class AudioSampleBuffer:
             _LOGGER.exception("Recognizer failed")
             return None
 
+    def next_available_in(self) -> float:
+        with self._lock:
+            remaining = self.cooldown_seconds - (time.monotonic() - self._last_attempt)
+        return max(0.0, remaining)
+
     def _rms(self, audio_bytes: bytes) -> float:
         """Compute RMS of a WAV audio payload, normalized to [0, 1]."""
         try:
@@ -155,6 +186,12 @@ class AudioSampleBuffer:
             fmt = f"<{len(frames) // 2}h"
             samples = [s / 32768.0 for s in struct.unpack(fmt, frames)]
         else:
+            if not self._rms_width_warned:
+                self._rms_width_warned = True
+                _LOGGER.warning(
+                    "Unsupported WAV sample width %d bytes; RMS gating treats it as silence.",
+                    sampwidth,
+                )
             return 0.0
 
         if not samples:
@@ -163,7 +200,12 @@ class AudioSampleBuffer:
 
 
 class MoodSession:
-    """Orchestrate continuous mic -> song -> mood -> WLED with ambient fallback."""
+    """Orchestrate continuous mic -> song -> mood -> WLED with ambient fallback.
+
+    ``client`` may be a ``lightctl.LightClient`` (single controller) or a
+    ``fleet.LightFleet`` (duck-typed ``post_state(payload)`` / ``get_state()``;
+    the fleet's ``target`` defaults to ``"all"``, so it is a drop-in).
+    """
 
     STATE_IDLE = "idle"
     STATE_LISTENING = "listening"
@@ -172,7 +214,7 @@ class MoodSession:
 
     def __init__(
         self,
-        client: lightctl.LightClient,
+        client: lightctl.LightClient | fleet.LightFleet,
         recognize_fn: Callable[[bytes], dict[str, str] | None],
         generate_fn: Callable[[dict[str, str]], lightctl.WledPayload],
         cache: SongCache | None = None,
@@ -198,6 +240,9 @@ class MoodSession:
         self._current_song: dict[str, str] | None = None
         self._last_recognition_time: float = 0.0
         self._last_song_key: str = ""
+        self._last_payload: dict | None = None
+        self._last_error: str = ""
+        self._last_cache_hit: bool | None = None
         self._running = False
 
     def start(self) -> None:
@@ -207,6 +252,7 @@ class MoodSession:
             self._running = True
             self._state = self.STATE_LISTENING
             self._current_song = None
+            self._last_song_key = ""
             self._last_recognition_time = time.monotonic()
 
     def stop(self) -> None:
@@ -217,8 +263,10 @@ class MoodSession:
 
     def sample(self, audio_bytes: bytes) -> dict[str, Any]:
         with self._lock:
-            if not self._running:
-                return self.status()
+            running = self._running
+        if not running:
+            # status() takes the lock itself — never call it while held.
+            return self.status()
 
         result = self._buffer.maybe_recognize(audio_bytes)
 
@@ -240,15 +288,25 @@ class MoodSession:
         cached = self.cache.get(key)
         if cached:
             payload = dict(cached)
+            cache_hit = True
         else:
-            payload = self.generate_fn(song)
-            self.cache.set(key, dict(payload))
+            try:
+                payload = self.generate_fn(song)
+            except Exception as exc:
+                _LOGGER.warning("Mood generation failed for %r: %s; using ambient.", key, exc)
+                payload = dict(self.ambient_payload)
+            try:
+                self.cache.set(key, dict(payload))
+            except Exception as exc:
+                _LOGGER.warning("Failed to persist song mood cache: %s", exc)
+            cache_hit = False
 
         with self._lock:
             source = "ambient_to_mood" if self._state == self.STATE_AMBIENT else "recognized"
             self._state = self.STATE_RECOGNIZED
             self._current_song = song
             self._last_song_key = key
+            self._last_cache_hit = cache_hit
 
         self._apply_payload(payload, source)
 
@@ -271,15 +329,20 @@ class MoodSession:
         source: str,
     ) -> None:
         try:
-            current_state = self.client.get_state()
+            current_state = _extract_state_dict(self.client.get_state())
         except Exception:
             current_state = None
+        with self._lock:
+            self._last_error = ""
         for smoothed in self.smoother.smooth(payload, current_state, source):
+            with self._lock:
+                self._last_payload = dict(smoothed)
             try:
                 self.client.post_state(smoothed)
-            except Exception:
+            except Exception as exc:
                 # Don't let a transient WLED error crash the session.
-                pass
+                with self._lock:
+                    self._last_error = str(exc)
 
     def _song_key(self, song: dict[str, str]) -> str:
         parts = [
@@ -296,4 +359,8 @@ class MoodSession:
                 "state": self._state,
                 "song": self._current_song,
                 "last_recognition_time": self._last_recognition_time,
+                "last_payload": self._last_payload,
+                "last_error": self._last_error,
+                "last_cache_hit": self._last_cache_hit,
+                "next_recognition_in": round(self._buffer.next_available_in(), 3),
             }

@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+
+# Ensure the bundled venv Python symlink points to the system interpreter.
+ln -sf /usr/bin/python3.14 /usr/share/lightss/venv/bin/python3.14
+
+# Compile Python modules for faster startup.
+if [ -x /usr/bin/python3.14 ]; then
+    /usr/bin/python3.14 -m compileall -q /usr/share/lightss/venv/lib/python3.14/site-packages || true
+fi
+
+# DEBHELPER#

@@ -177,6 +177,26 @@ HTML_TEMPLATE = """<!doctype html>
       display: block;
       animation: tab-fade-in 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
     }
+    .target-bar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin: 0 0 14px;
+      padding: 10px 14px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,.06);
+      border-radius: var(--radius-md);
+      width: fit-content;
+      font-size: 13px;
+      font-weight: 800;
+      color: var(--text-secondary);
+    }
+    .target-bar select { min-width: 190px; }
+    .target-bar .target-hint { font-size: 11px; color: var(--muted); font-weight: 650; }
+    .target-bar .firetv-bar { display: flex; gap: 8px; align-items: center; margin-left: 10px; padding-left: 12px; border-left: 1px solid var(--border); }
+    .target-bar .firetv-toggle { display: flex; gap: 5px; align-items: center; cursor: pointer; white-space: nowrap; }
+    .target-bar .firetv-toggle input { cursor: pointer; }
+    .target-bar .firetv-open { padding: 3px 9px; font-size: 13px; line-height: 1.4; }
     /* Custom scrollbars for a premium feel */
     ::-webkit-scrollbar {
       width: 8px;
@@ -491,6 +511,26 @@ HTML_TEMPLATE = """<!doctype html>
     .btn-vision:hover {
       box-shadow: 0 0 15px rgba(0, 240, 255, 0.5);
     }
+
+    /* Settings tab */
+    .settings-msg { min-height: 18px; font-size: 12px; margin-top: 8px; font-weight: 650; }
+    .settings-msg.ok { color: var(--success); }
+    .settings-msg.err { color: var(--danger); }
+    .settings-msg.info { color: var(--text-secondary); }
+    .settings-badge { padding: 6px 12px; border-radius: 999px; font-size: 12px; font-weight: 800; border: 1px solid rgba(251,70,102,.45); background: rgba(251,70,102,.12); color: #fda4af; white-space: nowrap; }
+    .settings-badge.set { border-color: rgba(52,211,153,.45); background: rgba(16,185,129,.14); color: #6ee7b7; }
+    .controller-row { display: grid; grid-template-columns: auto minmax(90px,.8fr) minmax(120px,1.2fr) minmax(120px,1.2fr) minmax(0,1fr) auto; gap: 8px; align-items: center; margin: 8px 0; padding: 8px; border-radius: var(--radius-sm); background: rgba(4,8,20,.46); border: 1px solid rgba(255,255,255,.10); }
+    .controller-row input { width: 100%; padding: 7px 9px; font-size: 12px; }
+    .ctl-info { font-size: 11px; color: var(--text-secondary); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ctl-remove { padding: 6px 10px; font-size: 11px; }
+    .dot { width: 12px; height: 12px; border-radius: 50%; background: #64748b; box-shadow: 0 0 6px rgba(100,116,139,.6); flex: 0 0 auto; }
+    .dot.ok { background: var(--success); box-shadow: 0 0 8px rgba(52,211,153,.8); }
+    .dot.fail { background: var(--danger); box-shadow: 0 0 8px rgba(251,70,102,.8); }
+    .sys-default { max-height: 160px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: rgba(4,8,20,.58); border: 1px solid rgba(255,255,255,.10); border-radius: var(--radius-sm); padding: 10px; color: var(--text-secondary); }
+    @media (max-width: 640px) {
+      .controller-row { grid-template-columns: auto 1fr auto; }
+      .controller-row .ctl-host, .controller-row .ctl-segments, .controller-row .ctl-info { grid-column: 2 / -1; }
+    }
   </style>
 </head>
 <body>
@@ -626,9 +666,32 @@ HTML_TEMPLATE = """<!doctype html>
       <div class="smart-grid" id="smartSuggestions" aria-live="polite"></div>
     </div>
 
+    <div class="target-bar">
+      <span>🎯 Target</span>
+      <select id="targetSelect" onchange="setTarget(this.value)" title="Which controller or channel actions apply to">
+        <option value="all">All controllers</option>
+      </select>
+      <span class="target-hint" id="targetHint">applies to every action below</span>
+      <span class="firetv-bar">
+        <label class="firetv-toggle" title="Let the TV mirror the wall visuals">
+          <input type="checkbox" id="firetvEnabled" onchange="toggleFiretv(this.checked)"> 📺 TV
+        </label>
+        <button class="secondary firetv-open" onclick="openFiretvVisuals()" title="Open the ambient wall visuals on the TV">↗</button>
+        <span class="target-hint" id="firetvMsg"></span>
+      </span>
+      <span class="firetv-bar">
+        <label class="firetv-toggle" title="Mood-matching music mode: the wall follows the now-playing mood">
+          <input type="checkbox" id="musicDirectorEnabled" onchange="toggleMusicDirector(this.checked)"> 🎵 Music
+        </label>
+        <span class="target-hint" id="musicDirectorTrack"></span>
+        <span class="target-hint" id="musicDirectorMsg"></span>
+      </span>
+    </div>
+
     <div class="tab-bar">
       <button class="tab-btn active" data-tab="live" onclick="switchTab('live')">Live View</button>
       <button class="tab-btn" data-tab="manual" onclick="switchTab('manual')">Manual Controls</button>
+      <button class="tab-btn" data-tab="settings" onclick="switchTab('settings')">⚙ Settings</button>
     </div>
 
     <div id="tab-live" class="tab-content active">
@@ -754,6 +817,47 @@ HTML_TEMPLATE = """<!doctype html>
       </label>
     </div>
     <div class="card">
+      <h2>🧱 Wall (4 columns)</h2>
+      <div class="row">
+        <label>Effect
+          <select id="wallFx">
+            __SAFE_EFFECT_OPTIONS__
+          </select>
+        </label>
+        <label>Palette <input id="wallPal" type="number" min="0" max="70" value="6"></label>
+        <label>Speed <input id="wallSpeed" type="number" min="0" max="255" value="140"></label>
+      </div>
+      <div class="row">
+        <button onclick="wallMode('wall_span')" title="Same effect spanned across all four columns">Span</button>
+        <button onclick="wallMode('wall_mirror')" title="Left half mirrors the right half">Mirror</button>
+        <button onclick="wallMode('wall_chase')" title="Effect chase staggered along the wall">Chase</button>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <label>Left FX
+          <select id="wallFxL">
+            __SAFE_EFFECT_OPTIONS__
+          </select>
+        </label>
+        <label>Right FX
+          <select id="wallFxR">
+            __SAFE_EFFECT_OPTIONS__
+          </select>
+        </label>
+        <button onclick="wallVersus()" title="Left half vs right half with different effects">Left vs Right</button>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <label>Channel
+          <select id="wallChannel">
+            <option value="far-left">far-left</option>
+            <option value="middle-left">middle-left</option>
+            <option value="middle-right">middle-right</option>
+            <option value="far-right">far-right</option>
+          </select>
+        </label>
+        <button class="secondary" onclick="applyWallChannel()" title="Apply the effect/palette above to one channel only">Set Channel</button>
+      </div>
+    </div>
+    <div class="card">
       <h2>🎬 Scenes</h2>
       <div class="row">
         <button onclick="send('scene', {name: 'warm'})" title="Apply warm scene">Warm</button>
@@ -819,6 +923,88 @@ HTML_TEMPLATE = """<!doctype html>
       </div>
     </div>
   </div>
+
+  <div id="tab-settings" class="tab-content">
+    <div class="manual-grid">
+      <div class="card">
+        <h2>🤖 AI Provider</h2>
+        <label>Provider
+          <select id="setAiProvider" onchange="aiProviderChanged()">
+            <option value="openai">OpenAI</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="ollama">Ollama (local)</option>
+            <option value="custom">Custom</option>
+          </select>
+        </label>
+        <label>Base URL
+          <input id="setAiBaseUrl" type="text" placeholder="https://api.openai.com/v1" style="width:100%;">
+        </label>
+        <div class="row">
+          <label style="flex:1;">Model
+            <input id="setAiModel" type="text" placeholder="gpt-4o-mini" style="width:100%;">
+          </label>
+          <label style="flex:1;">Vision model
+            <input id="setAiVisionModel" type="text" placeholder="gpt-4o" style="width:100%;">
+          </label>
+        </div>
+        <div class="row" style="align-items:flex-end;">
+          <label style="flex:1;">API key env var
+            <input id="setAiKeyEnv" type="text" placeholder="OPENAI_API_KEY" style="width:100%;">
+          </label>
+          <span class="settings-badge" id="setAiKeyBadge">API key: unknown</span>
+        </div>
+        <div class="row" style="margin-top:10px;">
+          <button onclick="saveAiSettings(this)" title="Save AI provider settings">Save</button>
+          <button class="secondary" onclick="testAiConnection(this)" title="Test the configured AI connection">Test connection</button>
+        </div>
+        <div class="settings-msg" id="aiSettingsMsg"></div>
+      </div>
+
+      <div class="card">
+        <h2>🧠 System Prompt</h2>
+        <textarea id="setSysPrompt" rows="9" style="width:100%; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px;" placeholder="Loading..."></textarea>
+        <div class="row" style="margin-top:10px;">
+          <button onclick="saveSystemPrompt(this)" title="Save a custom system prompt">Save custom</button>
+          <button class="secondary" onclick="resetSystemPrompt(this)" title="Reset to the built-in default prompt">Reset to default</button>
+        </div>
+        <details style="margin-top:10px; font-size:12px; color:var(--text-secondary);">
+          <summary style="cursor:pointer;">View default prompt</summary>
+          <pre id="setSysDefault" class="sys-default"></pre>
+        </details>
+        <div style="font-size:12px; color:var(--muted); margin-top:8px;">Changes apply to new AI requests immediately.</div>
+        <div class="settings-msg" id="sysPromptMsg"></div>
+      </div>
+
+      <div class="card">
+        <h2>🔌 Controllers</h2>
+        <div id="controllerRows"></div>
+        <div class="row" style="margin-top:10px;">
+          <button class="secondary" onclick="addControllerRow()" title="Add a controller row">+ Add controller</button>
+          <button class="secondary" onclick="verifyControllers(this)" title="Ping every configured controller">Verify connections</button>
+          <button onclick="saveControllers(this)" title="Save controllers and hot-reload the fleet">Save &amp; reload</button>
+        </div>
+        <div class="settings-msg" id="controllersMsg"></div>
+      </div>
+
+      <div class="card">
+        <h2>🎙 Audio Input</h2>
+        <label>Audio source
+          <select id="setAudioSource" onchange="audioSourceChanged()">
+            <option value="monitor">Monitor (system output bus — what the PC plays)</option>
+            <option value="mic">Microphone / webcam</option>
+            <option value="custom">Custom device</option>
+          </select>
+        </label>
+        <label id="micDeviceRow">Device name
+          <input id="setMicDevice" type="text" placeholder="e.g. alsa_input.pci-0000_00_1f.3.analog-stereo" style="width:100%;">
+        </label>
+        <div class="row" style="margin-top:10px;">
+          <button onclick="saveAudioSettings(this)" title="Save audio input settings">Save</button>
+        </div>
+        <div class="settings-msg" id="audioMsg"></div>
+      </div>
+    </div>
+  </div>
   </main>
   <div class="status-bar">
     <div class="indicator">
@@ -836,6 +1022,7 @@ HTML_TEMPLATE = """<!doctype html>
     let musicRecognitionBusy = false;
     let moodRecorder = null;
     let moodRecorderInterval = null;
+    let beatRequestInFlight = false;
     const MUSIC_RECOGNITION_INTERVAL_MS = 30000;
     let baseline = 18;
     let lastBeat = 0;
@@ -929,6 +1116,7 @@ HTML_TEMPLATE = """<!doctype html>
       // activate the corresponding button using data attribute
       const activeBtn = document.querySelector('.tab-btn[data-tab="' + tab + '"]');
       if (activeBtn) activeBtn.classList.add('active');
+      if (tab === 'settings') loadSettings();
     }
 
     function addChatMessage(role, text) {
@@ -993,20 +1181,251 @@ HTML_TEMPLATE = """<!doctype html>
       pane.appendChild(wrapper);
     }
 
-    async function send(action, values = {}) {
-      status.textContent = 'Sending...';
-      // Optimistic immediate update to LED preview for accurate live colors + motion feel
-      try { optimisticPreviewFromAction(action, values); } catch(e) {}
+    let currentTarget = 'all';
+    let fleetInfo = {fleet: false, targets: ['all'], channels: {}};
+
+    function setTarget(value) {
+      currentTarget = value || 'all';
+    }
+
+    function applyFleetInfo(data) {
+      if (!data) return;
+      if (Array.isArray(data.targets) && data.targets.length) fleetInfo.targets = data.targets;
+      if (data.channels && typeof data.channels === 'object') fleetInfo.channels = data.channels;
+      fleetInfo.fleet = !!data.fleet;
+      const sel = document.getElementById('targetSelect');
+      if (!sel) return;
+      if (fleetInfo.targets.length <= 1) {
+        // Fleet shrank to a single controller: drop stale controller options.
+        const current = Array.from(sel.options).map(o => o.value).join('|');
+        if (current !== 'all') {
+          sel.innerHTML = '';
+          const opt = document.createElement('option');
+          opt.value = 'all';
+          opt.textContent = 'All controllers';
+          sel.appendChild(opt);
+        }
+        sel.value = 'all';
+        currentTarget = 'all';
+        return;
+      }
+      const wanted = Array.from(sel.options).map(o => o.value).join('|');
+      const offered = fleetInfo.targets.join('|');
+      if (wanted === offered) return;  // already populated
+      const channels = fleetInfo.channels || {};
+      sel.innerHTML = '';
+      for (const name of fleetInfo.targets) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name === 'all' ? 'All controllers'
+          : (name in channels ? 'Channel: ' + name : 'Controller: ' + name);
+        sel.appendChild(opt);
+      }
+      sel.value = fleetInfo.targets.includes(currentTarget) ? currentTarget : 'all';
+      currentTarget = sel.value;
+    }
+
+    // Resolve the state blob to display: raw single-controller state, or the
+    // controller matching the current target (first controller otherwise).
+    // Channel targets also carry the segment id to preview (mapping[1]).
+    function displayState(st) {
+      if (!st || typeof st !== 'object') return {state: {}, name: '', segId: 0};
+      if ('seg' in st || 'on' in st) return {state: st, name: '', segId: 0};
+      const names = Object.keys(st);
+      if (!names.length) return {state: {}, name: '', segId: 0};
+      let name = names[0];
+      let segId = 0;
+      const mapping = fleetInfo.channels || {};
+      if (currentTarget in mapping && names.includes(mapping[currentTarget][0])) {
+        name = mapping[currentTarget][0];
+        segId = Number(mapping[currentTarget][1]) || 0;
+      } else if (names.includes(currentTarget)) {
+        name = currentTarget;
+      }
+      return {state: st[name] || {}, name, segId};
+    }
+
+    // --- FireTV companion visuals ------------------------------------------
+    function firetvMsg(text, kind) {
+      const el = document.getElementById('firetvMsg');
+      if (!el) return;
+      el.textContent = text || '';
+      el.style.color = kind === 'err' ? 'var(--danger)' : (kind === 'ok' ? 'var(--success)' : '');
+    }
+
+    async function loadFiretvState() {
+      try {
+        const data = await fetchJsonWithTimeout('/api/firetv', {}, 5000);
+        const cb = document.getElementById('firetvEnabled');
+        if (cb && typeof data.enabled === 'boolean') cb.checked = data.enabled;
+      } catch (err) {
+        console.warn('FireTV state unavailable:', err);
+      }
+    }
+
+    async function toggleFiretv(enabled) {
+      const cb = document.getElementById('firetvEnabled');
+      firetvMsg('Saving...', '');
+      try {
+        const data = await postJson('/api/firetv', {enabled: !!enabled});
+        if (data.ok === false) throw new Error(data.error || 'Save failed.');
+        firetvMsg(enabled ? 'TV visuals enabled' : 'TV visuals disabled', 'ok');
+      } catch (err) {
+        if (cb) cb.checked = !enabled;  // revert on error
+        firetvMsg(err.message || 'Error saving FireTV setting.', 'err');
+      }
+    }
+
+    async function openFiretvVisuals() {
+      firetvMsg('Opening visuals on TV...', '');
+      try {
+        const url = location.protocol + '//' + location.host + '/tv';
+        const data = await postJson('/api/firetv', {action: 'open_url', url: url});
+        if (data.ok === false) throw new Error(data.error || 'Failed to open TV.');
+      } catch (err) {
+        firetvMsg(err.message || 'Error reaching FireTV.', 'err');
+      }
+    }
+
+    // --- Music Director (mood-matching music mode) ---------------------------
+    let musicDirectorPollId = null;
+
+    function musicDirectorMsg(text, kind) {
+      const el = document.getElementById('musicDirectorMsg');
+      if (!el) return;
+      el.textContent = text || '';
+      el.style.color = kind === 'err' ? 'var(--danger)' : (kind === 'ok' ? 'var(--success)' : '');
+    }
+
+    function musicDirectorTrack(text) {
+      const el = document.getElementById('musicDirectorTrack');
+      if (el) el.textContent = text || '';
+    }
+
+    async function pollMusicDirector() {
+      try {
+        const data = await fetchJsonWithTimeout('/api/music-director', {}, 5000);
+        const track = data && data.status && data.status.track;
+        musicDirectorTrack(track ? '♪ ' + track : '');
+      } catch (err) {
+        console.warn('Music Director poll failed:', err);
+      }
+    }
+
+    function setMusicDirectorPolling(enabled) {
+      if (musicDirectorPollId) {
+        clearInterval(musicDirectorPollId);
+        musicDirectorPollId = null;
+      }
+      if (enabled) {
+        pollMusicDirector();
+        musicDirectorPollId = setInterval(pollMusicDirector, 10000);
+      } else {
+        musicDirectorTrack('');
+      }
+    }
+
+    async function loadMusicDirectorState() {
+      try {
+        const data = await fetchJsonWithTimeout('/api/music-director', {}, 5000);
+        const cb = document.getElementById('musicDirectorEnabled');
+        const enabled = !!(data && data.enabled);
+        if (cb) cb.checked = enabled;
+        setMusicDirectorPolling(enabled);
+      } catch (err) {
+        console.warn('Music Director state unavailable:', err);
+      }
+    }
+
+    async function toggleMusicDirector(enabled) {
+      const cb = document.getElementById('musicDirectorEnabled');
+      musicDirectorMsg('Saving...', '');
+      try {
+        const data = await postJson('/api/music-director', {enabled: !!enabled});
+        if (data.ok === false) throw new Error(data.error || 'Save failed.');
+        musicDirectorMsg(enabled ? 'Music mode on' : 'Music mode off', 'ok');
+        setMusicDirectorPolling(enabled);
+      } catch (err) {
+        if (cb) cb.checked = !enabled;  // revert on error
+        musicDirectorMsg(err.message || 'Error saving Music setting.', 'err');
+      }
+    }
+
+    async function wallMode(mode) {
+      await send(mode, {fx: Number(wallFx.value), pal: Number(wallPal.value), speed: Number(wallSpeed.value)});
+    }
+
+    async function wallVersus() {
+      await send('wall_versus', {
+        fx_left: Number(wallFxL.value),
+        fx_right: Number(wallFxR.value),
+        pal: Number(wallPal.value),
+        speed: Number(wallSpeed.value)
+      });
+    }
+
+    async function applyWallChannel() {
+      await send('set_channel', {
+        channel: wallChannel.value,
+        fx: Number(wallFx.value),
+        pal: Number(wallPal.value),
+        speed: Number(wallSpeed.value)
+      });
+    }
+
+    async function postAction(action, values = {}, timeoutMs = 4000) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
       try {
         const res = await fetch('/api/action', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({action, ...values})
+          body: JSON.stringify({action, target: currentTarget, ...values}),
+          signal: controller.signal
         });
-        const data = await res.json();
+        return await res.json();
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 15000) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const res = await fetch(url, {...options, signal: controller.signal});
+        return await res.json();
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    async function send(action, values = {}) {
+      // Explicit controller actions take ownership from the continuous Music
+      // Mode beat loop, otherwise the next beat immediately overwrites them.
+      if (musicModeRunning) stopMusicMode();
+      status.textContent = 'Sending...';
+      // Optimistic immediate update to LED preview for accurate live colors + motion feel
+      try { optimisticPreviewFromAction(action, values); } catch(e) {}
+      try {
+        const data = await postAction(action, values);
         status.textContent = data.ok ? data.message : data.error;
       } catch (err) {
         status.textContent = 'Error: ' + err.message;
+      }
+    }
+
+    async function sendBeatUpdate(values) {
+      if (beatRequestInFlight) return;
+      beatRequestInFlight = true;
+      try {
+        optimisticPreviewFromAction('beat', values);
+        const data = await postAction('beat', values, 900);
+        if (!data.ok) console.warn('Beat update rejected:', data.error);
+      } catch (err) {
+        console.warn('Beat update skipped:', err.message);
+      } finally {
+        beatRequestInFlight = false;
       }
     }
 
@@ -1078,6 +1497,9 @@ HTML_TEMPLATE = """<!doctype html>
     async function askAI() {
       const prompt = aiInput.value.trim();
       if (!prompt) return;
+      // Freeze the continuously-writing beat loop before the AI snapshots and
+      // changes WLED so its result remains visible and controllable.
+      if (musicModeRunning) stopMusicMode();
       addChatMessage('user', prompt);
       aiInput.value = '';
       addChatMessage('system', 'Thinking...');
@@ -1087,12 +1509,16 @@ HTML_TEMPLATE = """<!doctype html>
       aiConfirmations.textContent = '';
       try {
         const song = await refreshNowPlaying();
-        const res = await fetch('/api/ai', {
+        const res = await fetchJsonWithTimeout('/api/ai', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({prompt, now_playing: song})
-        });
-        const data = await res.json();
+          body: JSON.stringify({prompt, now_playing: song, async: true})
+        }, 180000);
+        let data = res;
+        if (data.ok && data.job_id) {
+          status.textContent = 'AI planning...';
+          data = await waitForAiJob(data.job_id);
+        }
         if (thinkingEl) thinkingEl.remove();
         status.textContent = data.ok ? data.message : data.error;
         if (data.response) {
@@ -1122,6 +1548,21 @@ HTML_TEMPLATE = """<!doctype html>
         status.textContent = 'AI error: ' + err.message;
         addChatMessage('ai', 'Error: ' + err.message);
       }
+    }
+
+    async function waitForAiJob(jobId) {
+      // Tool-calling AI loops (multi-round function calls) routinely take
+      // 1-4 minutes on slower providers — wait up to 5 minutes.
+      const started = Date.now();
+      while (Date.now() - started < 300000) {
+        const data = await fetchJsonWithTimeout(`/api/ai/jobs/${encodeURIComponent(jobId)}`);
+        const job = data.job || {};
+        if (job.status === 'complete') return job.result || {ok: false, error: 'AI job completed without a result.'};
+        if (job.status === 'error') return {ok: false, error: job.error || 'AI job failed.'};
+        status.textContent = `AI planning... ${Math.floor((Date.now() - started) / 1000)}s`;
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      return {ok: false, error: 'AI job timed out.'};
     }
 
     function useExamplePrompt() {
@@ -1198,12 +1639,11 @@ HTML_TEMPLATE = """<!doctype html>
       const base64Image = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
 
       try {
-        const response = await fetch('/api/ai_vision', {
+        const data = await fetchJsonWithTimeout('/api/ai_vision', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ image: base64Image })
-        });
-        const data = await response.json();
+        }, 60000);
         laser.style.display = 'none';
         if (data.error) {
           status.innerText = 'Analysis failed: ' + data.error;
@@ -1223,12 +1663,15 @@ HTML_TEMPLATE = """<!doctype html>
         const response = await fetch('/api/state');
         const data = await response.json();
         if (data.ok && data.state) {
-          const st = data.state;
+          applyFleetInfo(data);
+          const picked = displayState(data.state);
+          const st = picked.state;
           const onOff = st.on ? 'ON' : 'OFF';
           const bri = st.bri ?? '?';
           const seg = st.seg && st.seg[0] ? st.seg[0] : {};
           const col = seg.col && seg.col[0] ? seg.col[0] : [0,0,0,0];
           let display = `Power: ${onOff}\nBrightness: ${bri}\nColor: RGBW(${col.join(',')})\nEffect: ${seg.fx ?? '-'} Speed: ${seg.sx ?? '-'}`;
+          if (picked.name) display = `Controller: ${picked.name}\n` + display;
           
           const stateDisplay = document.getElementById('stateDisplay');
           const stateSummary = document.getElementById('stateSummary');
@@ -1236,7 +1679,7 @@ HTML_TEMPLATE = """<!doctype html>
           if (stateSummary) stateSummary.textContent = `${onOff} | Bri ${bri} | Fx ${seg.fx ?? '-'} @ ${seg.sx ?? '-'}`;
           
           if (typeof updateLightPreview === 'function') {
-            updateLightPreview(st, ledCapabilities);
+            updateLightPreview(st, ledCapabilities, picked.segId);
           }
         }
       } catch (err) {
@@ -1246,8 +1689,7 @@ HTML_TEMPLATE = """<!doctype html>
 
     async function refreshNowPlaying() {
       try {
-        const res = await fetch('/api/now-playing');
-        const data = await res.json();
+        const data = await fetchJsonWithTimeout('/api/now-playing');
         const np = data.now_playing || null;
         if (np) {
           musicTitle.textContent = np.title || 'Unknown';
@@ -1295,11 +1737,37 @@ HTML_TEMPLATE = """<!doctype html>
       }
       return buf;
     }
+    async function getPreferredMicStream() {
+      const audio = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+      const initial = await navigator.mediaDevices.getUserMedia({ audio });
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const preferred = devices.find((device) =>
+          device.kind === 'audioinput' && /c920|webcam/i.test(device.label || '')
+        );
+        const currentTrack = initial.getAudioTracks()[0];
+        const currentDeviceId = currentTrack && currentTrack.getSettings
+          ? currentTrack.getSettings().deviceId
+          : '';
+        if (!preferred || !preferred.deviceId || preferred.deviceId === currentDeviceId) return initial;
+
+        const webcamStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            ...audio,
+            deviceId: { exact: preferred.deviceId }
+          }
+        });
+        initial.getTracks().forEach((track) => track.stop());
+        return webcamStream;
+      } catch (err) {
+        console.warn('Could not select webcam microphone; using browser default:', err.message);
+        return initial;
+      }
+    }
+
     async function ensureMicSession() {
       if (!micStream) {
-        micStream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
-        });
+        micStream = await getPreferredMicStream();
       }
       if (!audioContext || audioContext.state === 'closed') {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -1349,12 +1817,11 @@ HTML_TEMPLATE = """<!doctype html>
       albumArt.classList.remove('visible');
       try {
         const b64 = await captureMicWav(6);
-        const res = await fetch('/api/recognize', {
+        const data = await fetchJsonWithTimeout('/api/recognize', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({audio: b64})
-        });
-        const data = await res.json();
+        }, 20000);
         if (data.ok && data.now_playing) {
           const np = data.now_playing;
           musicTitle.textContent = np.title || 'Song recognized!';
@@ -1404,12 +1871,11 @@ HTML_TEMPLATE = """<!doctype html>
           if (st) st.textContent = message;
           return {ok: false, now_playing: null, error: message};
         }
-        const res = await fetch('/api/match-lights', {
+        const data = await fetchJsonWithTimeout('/api/match-lights', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({now_playing: song})
         });
-        const data = await res.json();
         if (data.ok) {
           applyMatchedSongResponse(data);
         } else {
@@ -1422,6 +1888,26 @@ HTML_TEMPLATE = """<!doctype html>
       }
     }
 
+    async function matchLightsFromRecognizedSong(song) {
+      if (!song) return {ok: false, now_playing: null, error: 'No song recognized.'};
+      try {
+        const data = await fetchJsonWithTimeout('/api/match-lights', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({now_playing: song})
+        });
+        if (data.ok) {
+          applyMatchedSongResponse(data);
+        } else {
+          status.textContent = data.error || 'Could not match recognized song.';
+        }
+        return data;
+      } catch (err) {
+        status.textContent = 'Recognized song match error: ' + err.message;
+        return {ok: false, now_playing: song, error: err.message};
+      }
+    }
+
     async function matchLightsToSong() {
       return matchLightsFromNowPlaying();
     }
@@ -1430,8 +1916,7 @@ HTML_TEMPLATE = """<!doctype html>
       const box = document.getElementById('smartSuggestions');
       if (!box) return;
       try {
-        const res = await fetch('/api/suggestions');
-        const data = await res.json();
+        const data = await fetchJsonWithTimeout('/api/suggestions');
         const suggestions = data.suggestions || [];
         box.innerHTML = suggestions.map((item) => {
           const click = item.action === 'music_match'
@@ -1458,7 +1943,7 @@ HTML_TEMPLATE = """<!doctype html>
       btn.disabled = true;
       st.textContent = 'Detecting song and choosing lights…';
       try {
-        await matchLightsFromNowPlaying();
+        await runMusicRecognitionCycle(true);
         st.textContent = status.textContent || 'Done';
       } catch (err) {
         st.textContent = 'Error: ' + err.message;
@@ -1529,6 +2014,21 @@ HTML_TEMPLATE = """<!doctype html>
       }
     }
 
+    async function setMoodSessionRunning(running) {
+      try {
+        const data = await fetchJsonWithTimeout('/api/mood/control', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({command: running ? 'start' : 'stop'})
+        });
+        if (!data.ok) console.warn('Mood session control failed:', data.error);
+        return data.ok;
+      } catch (err) {
+        console.warn('Mood session control failed:', err.message);
+        return false;
+      }
+    }
+
     async function startMusicMode() {
       if (musicModeRunning) return;
       const btn = document.getElementById('musicModeBtn');
@@ -1537,15 +2037,21 @@ HTML_TEMPLATE = """<!doctype html>
       try {
         await startAudioReactive();
         if (!audioReactiveRunning) return;
+        musicModeRunning = true;
+        // Server-side MoodSession.sample() drops chunks unless the session is
+        // running — start it before the recorder uploads the first sample.
+        await setMoodSessionRunning(true);
         await startMoodRecorder();
         setText('songSourceState', 'Webcam mic');
-        musicModeRunning = true;
         if (btn) btn.textContent = 'Music Mode Running';
         setMusicModeUi(true, 'Checking now');
-        if (st) st.textContent = 'Beat matching live audio; checking media metadata every 30 seconds.';
-        await runMusicRecognitionCycle(true);
+        if (st) st.textContent = 'Beat matching live audio; checking media metadata and browser mic.';
         musicRecognitionTimer = setInterval(() => runMusicRecognitionCycle(false), MUSIC_RECOGNITION_INTERVAL_MS);
+        await runMusicRecognitionCycle(true);
       } catch (err) {
+        musicModeRunning = false;
+        setMoodSessionRunning(false);
+        stopAudioReactive();  // close the mic and cancel the analyser rAF
         if (st) st.textContent = 'Music mode error: ' + err.message;
       } finally {
         if (btn) btn.disabled = false;
@@ -1554,6 +2060,7 @@ HTML_TEMPLATE = """<!doctype html>
 
     function stopMusicMode() {
       musicModeRunning = false;
+      setMoodSessionRunning(false);
       stopMoodRecorder();
       if (musicRecognitionTimer) clearInterval(musicRecognitionTimer);
       musicRecognitionTimer = null;
@@ -1576,8 +2083,15 @@ HTML_TEMPLATE = """<!doctype html>
         if (result && result.ok && result.now_playing) {
           if (st) st.textContent = `Matched ${result.now_playing.title || 'song'}; beat mode continues.`;
         } else {
-          if (st) st.textContent = 'No media metadata detected; beat matching live audio.';
-          if (status.textContent === 'Checking media metadata...') status.textContent = 'No media metadata detected; beat matching live audio.';
+          if (st) st.textContent = 'No media metadata detected; listening with browser mic.';
+          const recognizedSong = await recognizeSongOnce();
+          if (recognizedSong) {
+            await matchLightsFromRecognizedSong(recognizedSong);
+            if (st) st.textContent = `Matched ${recognizedSong.title || 'song'} with browser mic; beat mode continues.`;
+          } else {
+            if (st) st.textContent = 'No Shazam match; beat matching live audio.';
+            if (status.textContent === 'Checking media metadata...') status.textContent = 'No Shazam match; beat matching live audio.';
+          }
         }
       } finally {
         if (musicModeRunning) setText('nextMatchState', 'Every 30s');
@@ -1602,6 +2116,8 @@ HTML_TEMPLATE = """<!doctype html>
     function stopAudioReactive() {
       if (!audioReactiveRunning) return;
       musicModeRunning = false;
+      setMoodSessionRunning(false);
+      stopMoodRecorder();
       if (musicRecognitionTimer) clearInterval(musicRecognitionTimer);
       musicRecognitionTimer = null;
       audioReactiveRunning = false;
@@ -1894,8 +2410,10 @@ HTML_TEMPLATE = """<!doctype html>
       const b = Math.round(160 - binIndex * 4 + energy * 60);
       const w = Math.round(energy * 90);
       const spd = Math.round(80 + energy * 130);
-      // Send a beat-ish color + safe effect with intensity tied to the bin
-      send('beat', { red: r, green: g, blue: b, white: w, brightness: Math.round(120 + energy*90), effect: (binIndex % 5 === 0 ? 9 : 8), speed: spd });
+      // Send a beat-ish color + safe effect with intensity tied to the bin.
+      // Goes through sendBeatUpdate (not send) so a click during reactive
+      // mode doesn't stop the music-mode beat loop.
+      sendBeatUpdate({ red: r, green: g, blue: b, white: w, brightness: Math.round(120 + energy*90), effect: (binIndex % 5 === 0 ? 9 : 8), speed: spd });
       flashOrb(energy);
     }
 
@@ -1913,16 +2431,16 @@ HTML_TEMPLATE = """<!doctype html>
         effect: 67, // Colorwaves - very creative & smooth
         speed: Math.round(70 + (a.drive || 0.5) * 140)
       };
-      send('color', payload); // will use merge internally in some paths
-      // also nudge a nice effect
-      setTimeout(() => send('fx', {effect: 67, speed: payload.speed}), 80);
+      // Beat-shaped payload (color + effect + speed in one call) via
+      // sendBeatUpdate so a click during reactive mode keeps the loop alive.
+      sendBeatUpdate(payload);
     }
 
     function creativeEnergyPulse() {
       const a = musicAnalysis;
       const strength = Math.max(0.4, a.energy || 0.5);
       const fx = (a.bass > 0.6) ? 2 : (a.treble > 0.55 ? 8 : 12);
-      send('beat', {
+      sendBeatUpdate({
         red: Math.round(200 * strength), green: Math.round(80 + 90 * a.mid),
         blue: Math.round(255 * a.treble), white: Math.round(60 * strength),
         brightness: Math.round(160 + strength * 70),
@@ -1960,7 +2478,7 @@ HTML_TEMPLATE = """<!doctype html>
       const effect = beatEffects[effectIndex++ % beatEffects.length];
       const brightness = Math.max(90, Math.min(255, Math.round(80 + analysis.drive * 175)));
       const speed = Math.max(96, Math.min(255, Math.round(90 + analysis.beatConfidence * 110 + analysis.treble * 55)));
-      send('beat', {red: color[0], green: color[1], blue: color[2], white: color[3], brightness, effect, speed});
+      sendBeatUpdate({red: color[0], green: color[1], blue: color[2], white: color[3], brightness, effect, speed});
     }
 
     function resetAnalysisDisplay() {
@@ -2040,7 +2558,7 @@ HTML_TEMPLATE = """<!doctype html>
         text = `🎵 ${auto.song.title} — ${auto.song.artist || ''}${genre}`;
         color = 'var(--success)';
       }
-      if (autoSt) { autoSt.textContent = text; }
+      if (autoSt) { autoSt.textContent = text; autoSt.style.color = color; }
     }
 
     function updateMoodStatus(mood) {
@@ -2051,14 +2569,22 @@ HTML_TEMPLATE = """<!doctype html>
       if (songSource) songSource.textContent = 'Webcam mic';
       if (nextMatch) nextMatch.textContent = 'Continuous';
       if (!st) return;
+      const details = [];
+      if (mood.last_error) details.push(`Error: ${mood.last_error}`);
+      if (mood.last_cache_hit === true) details.push('cached mood');
+      if (mood.last_cache_hit === false) details.push('fresh mood');
+      if (typeof mood.next_recognition_in === 'number' && mood.next_recognition_in > 0) {
+        details.push(`next check ${Math.ceil(mood.next_recognition_in)}s`);
+      }
+      const suffix = details.length ? ` (${details.join(' · ')})` : '';
       if (mood.state === 'ambient') {
-        st.textContent = 'No music detected — ambient fallback active.';
+        st.textContent = `No music detected — ambient fallback active.${suffix}`;
       } else if (mood.state === 'recognized' && mood.song) {
         const t = mood.song.title || 'song';
         const a = mood.song.artist || 'unknown artist';
-        st.textContent = `Matched: ${t} by ${a}`;
+        st.textContent = `Matched: ${t} by ${a}${suffix}`;
       } else {
-        st.textContent = 'Listening for music…';
+        st.textContent = `Listening for music…${suffix}`;
       }
     }
 
@@ -2238,8 +2764,10 @@ HTML_TEMPLATE = """<!doctype html>
       stripRafId = requestAnimationFrame(updateStripFrame);
     }
 
-    function updateLightPreview(st, ledInfo) {
-      const seg = st.seg && st.seg[0] ? st.seg[0] : {};
+    function updateLightPreview(st, ledInfo, segId = 0) {
+      // Channel targets map to a specific segment; fall back to the first.
+      const segs = Array.isArray(st.seg) ? st.seg : [];
+      const seg = segs[segId] || segs[0] || {};
       function normCol(c) {
         if (!c) return [0, 0, 0, 0];
         const out = c.slice ? c.slice(0, 4) : [c[0] || 0, c[1] || 0, c[2] || 0, c[3] || 0];
@@ -2266,7 +2794,7 @@ HTML_TEMPLATE = """<!doctype html>
         seg: seg,
         colors: colors,
         segments: STRIP_SEGMENTS,
-        ledInfo: ledInfo || currentStripState.ledInfo || null,
+        ledInfo: ledInfo || (currentStripState && currentStripState.ledInfo) || null,
       };
 
       const on = currentStripState.on;
@@ -2306,12 +2834,15 @@ HTML_TEMPLATE = """<!doctype html>
           updateMoodStatus(payload.mood);
         }
         if (payload.state) {
-          const st = payload.state;
+          applyFleetInfo(payload);
+          const picked = displayState(payload.state);
+          const st = picked.state;
           const onOff = st.on ? 'ON' : 'OFF';
           const bri = st.bri ?? '?';
           const seg = st.seg && st.seg[0] ? st.seg[0] : {};
           const col = seg.col && seg.col[0] ? seg.col[0] : [0,0,0,0];
           let display = `Power: ${onOff}\\nBrightness: ${bri}\\nColor: RGBW(${col.join(',')})\\nEffect: ${seg.fx ?? '-'} Speed: ${seg.sx ?? '-'}`;
+          if (picked.name) display = `Controller: ${picked.name}\\n` + display;
           if (payload.intel && Object.keys(payload.intel).length > 0) {
             const i = payload.intel;
             if (i.leds) ledCapabilities = i.leds;
@@ -2327,7 +2858,7 @@ HTML_TEMPLATE = """<!doctype html>
           }
           stateDisplay.textContent = display;
           stateSummary.textContent = `${onOff} | Bri ${bri} | Fx ${seg.fx ?? '-'} @ ${seg.sx ?? '-'}`;
-          updateLightPreview(st, ledCapabilities);
+          updateLightPreview(st, ledCapabilities, picked.segId);
           connIndicator.textContent = '🟢';
           connText.textContent = 'Connected';
         } else if (payload.error) {
@@ -2351,6 +2882,275 @@ HTML_TEMPLATE = """<!doctype html>
       connText.textContent = 'Disconnected';
     };
 
+    // ---------- Settings tab ----------
+    const AI_PROVIDER_PRESETS = {
+      openai: 'https://api.openai.com/v1',
+      openrouter: 'https://openrouter.ai/api/v1',
+      ollama: 'http://localhost:11434/v1',
+      custom: ''
+    };
+
+    function setMsg(el, text, kind) {
+      if (!el) return;
+      el.textContent = text || '';
+      el.classList.remove('ok', 'err', 'info');
+      if (text) el.classList.add(kind || 'info');
+    }
+
+    async function postJson(url, body) {
+      return fetchJsonWithTimeout(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body || {})
+      });
+    }
+
+    function aiProviderChanged() {
+      const preset = AI_PROVIDER_PRESETS[document.getElementById('setAiProvider').value];
+      if (preset) document.getElementById('setAiBaseUrl').value = preset;
+    }
+
+    async function loadSettings() {
+      const aiMsg = document.getElementById('aiSettingsMsg');
+      try {
+        const data = await fetchJsonWithTimeout('/api/settings');
+        const s = (data && data.settings) || {};
+        const ai = s.ai || {};
+        const knownProviders = ['openai', 'openrouter', 'ollama', 'custom'];
+        document.getElementById('setAiProvider').value = knownProviders.includes(ai.provider) ? ai.provider : 'custom';
+        document.getElementById('setAiBaseUrl').value = ai.base_url || '';
+        document.getElementById('setAiModel').value = ai.model || '';
+        document.getElementById('setAiVisionModel').value = ai.vision_model || '';
+        document.getElementById('setAiKeyEnv').value = ai.api_key_env || '';
+        const badge = document.getElementById('setAiKeyBadge');
+        badge.textContent = ai.api_key_set ? 'API key: set ✓' : 'API key: not set';
+        badge.classList.toggle('set', !!ai.api_key_set);
+        const rows = document.getElementById('controllerRows');
+        rows.innerHTML = '';
+        (Array.isArray(s.controllers) ? s.controllers : []).forEach(c => addControllerRow(c));
+        if (!rows.children.length) addControllerRow();
+        const knownSources = ['monitor', 'mic', 'custom'];
+        document.getElementById('setAudioSource').value = knownSources.includes(s.audio_source) ? s.audio_source : 'custom';
+        document.getElementById('setMicDevice').value = s.mic_device || '';
+        audioSourceChanged();
+        await loadSystemPrompt();
+        setMsg(aiMsg, '', 'info');
+      } catch (e) {
+        setMsg(aiMsg, 'Failed to load settings: ' + e.message, 'err');
+      }
+    }
+
+    async function saveAiSettings(btn) {
+      const msg = document.getElementById('aiSettingsMsg');
+      const ai = {
+        provider: document.getElementById('setAiProvider').value,
+        base_url: document.getElementById('setAiBaseUrl').value.trim(),
+        model: document.getElementById('setAiModel').value.trim(),
+        vision_model: document.getElementById('setAiVisionModel').value.trim(),
+        api_key_env: document.getElementById('setAiKeyEnv').value.trim()
+      };
+      btn.disabled = true;
+      setMsg(msg, 'Saving...', 'info');
+      try {
+        const data = await postJson('/api/settings', {ai: ai});
+        setMsg(msg, data.ok ? 'AI settings saved.' : (data.error || 'Save failed.'), data.ok ? 'ok' : 'err');
+      } catch (e) {
+        setMsg(msg, 'Error: ' + e.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function testAiConnection(btn) {
+      const msg = document.getElementById('aiSettingsMsg');
+      btn.disabled = true;
+      setMsg(msg, 'Testing connection...', 'info');
+      try {
+        const data = await postJson('/api/ai/test', {});
+        setMsg(msg, data.message || (data.ok ? 'Connection OK.' : 'Connection failed.'), data.ok ? 'ok' : 'err');
+      } catch (e) {
+        setMsg(msg, 'Error: ' + e.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function loadSystemPrompt() {
+      const data = await fetchJsonWithTimeout('/api/system-prompt');
+      if (data && data.ok) {
+        document.getElementById('setSysPrompt').value = data.current || '';
+        document.getElementById('setSysDefault').textContent = data.default || '';
+      }
+    }
+
+    async function saveSystemPrompt(btn) {
+      const msg = document.getElementById('sysPromptMsg');
+      btn.disabled = true;
+      setMsg(msg, 'Saving...', 'info');
+      try {
+        const data = await postJson('/api/system-prompt', {prompt: document.getElementById('setSysPrompt').value});
+        setMsg(msg, data.ok ? 'Custom prompt saved.' : (data.error || 'Save failed.'), data.ok ? 'ok' : 'err');
+      } catch (e) {
+        setMsg(msg, 'Error: ' + e.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function resetSystemPrompt(btn) {
+      const msg = document.getElementById('sysPromptMsg');
+      btn.disabled = true;
+      setMsg(msg, 'Resetting...', 'info');
+      try {
+        const data = await postJson('/api/system-prompt', {prompt: null});
+        if (data.ok) {
+          await loadSystemPrompt();
+          setMsg(msg, 'Reset to default.', 'ok');
+        } else {
+          setMsg(msg, data.error || 'Reset failed.', 'err');
+        }
+      } catch (e) {
+        setMsg(msg, 'Error: ' + e.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function addControllerRow(c) {
+      const rows = document.getElementById('controllerRows');
+      const row = document.createElement('div');
+      row.className = 'controller-row';
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+      dot.title = 'Not verified yet';
+      const name = document.createElement('input');
+      name.type = 'text';
+      name.className = 'ctl-name';
+      name.placeholder = 'name';
+      name.value = c && c.name ? c.name : '';
+      const host = document.createElement('input');
+      host.type = 'text';
+      host.className = 'ctl-host';
+      host.placeholder = '192.168.1.50';
+      host.value = c && c.host ? c.host : '';
+      const segs = document.createElement('input');
+      segs.type = 'text';
+      segs.className = 'ctl-segments';
+      segs.placeholder = 'segments JSON';
+      segs.value = c && c.segments != null ? JSON.stringify(c.segments) : '';
+      const info = document.createElement('span');
+      info.className = 'ctl-info';
+      const rm = document.createElement('button');
+      rm.className = 'danger ctl-remove';
+      rm.textContent = '✕';
+      rm.title = 'Remove this controller';
+      rm.onclick = () => row.remove();
+      row.append(dot, name, host, segs, info, rm);
+      rows.appendChild(row);
+    }
+
+    async function verifyControllers(btn) {
+      const msg = document.getElementById('controllersMsg');
+      btn.disabled = true;
+      setMsg(msg, 'Verifying connections...', 'info');
+      try {
+        const data = await postJson('/api/controllers/verify', {});
+        const results = (data && data.results) || {};
+        document.querySelectorAll('#controllerRows .controller-row').forEach(row => {
+          const name = row.querySelector('.ctl-name').value.trim();
+          const dot = row.querySelector('.dot');
+          const info = row.querySelector('.ctl-info');
+          const r = results[name];
+          dot.classList.remove('ok', 'fail');
+          if (!r) {
+            info.textContent = '';
+            dot.title = 'Not in saved config';
+            return;
+          }
+          if (r.ok) {
+            dot.classList.add('ok');
+            dot.title = 'OK';
+            info.textContent = 'WLED ' + (r.version || '?') + (r.effects != null ? ' · ' + r.effects + ' effects' : '');
+          } else {
+            dot.classList.add('fail');
+            dot.title = r.error || 'failed';
+            info.textContent = r.error || 'unreachable';
+          }
+        });
+        setMsg(msg, data.ok ? 'Verification complete.' : (data.error || 'Verification failed.'), data.ok ? 'ok' : 'err');
+      } catch (e) {
+        setMsg(msg, 'Error: ' + e.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function saveControllers(btn) {
+      const msg = document.getElementById('controllersMsg');
+      const controllers = [];
+      const rows = document.querySelectorAll('#controllerRows .controller-row');
+      for (const row of rows) {
+        const name = row.querySelector('.ctl-name').value.trim();
+        const host = row.querySelector('.ctl-host').value.trim();
+        const segsRaw = row.querySelector('.ctl-segments').value.trim();
+        if (!name && !host) continue;
+        let segments = null;
+        if (segsRaw) {
+          try {
+            segments = JSON.parse(segsRaw);
+          } catch (e) {
+            setMsg(msg, 'Invalid segments JSON for "' + (name || host) + '".', 'err');
+            return;
+          }
+        }
+        controllers.push({name: name, host: host, segments: segments});
+      }
+      btn.disabled = true;
+      setMsg(msg, 'Saving...', 'info');
+      try {
+        const saved = await postJson('/api/settings', {controllers: controllers});
+        if (!saved.ok) {
+          setMsg(msg, saved.error || 'Save failed.', 'err');
+          return;
+        }
+        setMsg(msg, 'Saved. Reloading fleet...', 'info');
+        const reloaded = await postJson('/api/settings/reload', {});
+        if (reloaded.ok) {
+          const names = (reloaded.controllers || []).join(', ') || 'none';
+          setMsg(msg, 'Saved & reloaded: ' + names, 'ok');
+        } else {
+          setMsg(msg, reloaded.error || 'Reload failed.', 'err');
+        }
+      } catch (e) {
+        setMsg(msg, 'Error: ' + e.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function audioSourceChanged() {
+      const v = document.getElementById('setAudioSource').value;
+      document.getElementById('micDeviceRow').style.display = (v === 'monitor') ? 'none' : '';
+    }
+
+    async function saveAudioSettings(btn) {
+      const msg = document.getElementById('audioMsg');
+      const body = {
+        audio_source: document.getElementById('setAudioSource').value,
+        mic_device: document.getElementById('setMicDevice').value.trim() || null
+      };
+      btn.disabled = true;
+      setMsg(msg, 'Saving...', 'info');
+      try {
+        const data = await postJson('/api/settings', body);
+        setMsg(msg, data.ok ? 'Audio settings saved.' : (data.error || 'Save failed.'), data.ok ? 'ok' : 'err');
+      } catch (e) {
+        setMsg(msg, 'Error: ' + e.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
     // Init
     initLedStrip();
     stripRafId = requestAnimationFrame(updateStripFrame);
@@ -2358,6 +3158,8 @@ HTML_TEMPLATE = """<!doctype html>
     refreshSmartSuggestions();
     setInterval(refreshSmartSuggestions, 30000);
     listSchedule();
+    loadFiretvState();
+    loadMusicDirectorState();
 
     // Extra wiring for top visualizers + creative features
     const orbEl2 = document.getElementById('energyOrb');
@@ -2377,6 +3179,602 @@ HTML_TEMPLATE = """<!doctype html>
         else vz.textContent = audioReactiveRunning || musicModeRunning ? 'active' : 'idle';
       }, 900);
     }
+  </script>
+</body>
+</html>
+"""
+
+
+TV_AMBIENT_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>WLED Wall Ambient</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #000;
+      overflow: hidden;
+      cursor: none;
+    }
+    #stage {
+      position: fixed;
+      inset: 0;
+      display: block;
+    }
+    #footer {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 2.2vh;
+      height: 1.6em;
+      overflow: hidden;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      font-size: clamp(11px, 1.5vh, 16px);
+      font-weight: 500;
+      letter-spacing: .22em;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, .34);
+      text-shadow: 0 0 8px rgba(0, 0, 0, .9);
+      white-space: nowrap;
+      pointer-events: none;
+    }
+    #marquee {
+      display: inline-block;
+      padding-left: 100vw;
+      will-change: transform;
+      animation: marquee 26s linear infinite;
+    }
+    #marquee.still {
+      padding-left: 0;
+      width: 100%;
+      text-align: center;
+      animation: none;
+    }
+    @keyframes marquee {
+      from { transform: translateX(0); }
+      to   { transform: translateX(-100%); }
+    }
+    #dot {
+      position: fixed;
+      top: 14px;
+      right: 16px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #2f6;
+      opacity: .35;
+      transition: background-color .5s, opacity .5s;
+      pointer-events: none;
+    }
+    #dot.bad {
+      background: #f44;
+      opacity: .8;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <div id="footer"><span id="marquee" class="still"></span></div>
+  <div id="dot"></div>
+  <script>
+  'use strict';
+  // Four luminous columns rise out of a dark room, mirroring the physical
+  // wall: far-left, middle-left, middle-right, far-right. /api/state is
+  // polled twice a second; the canvas eases toward each sample so motion
+  // stays liquid at ~60fps. Energy (brightness + color deltas between
+  // polls) drives pulse, shimmer and particles, so the page breathes with
+  // the audio-reactive wall.
+  const WALL_ORDER = ['far-left', 'middle-left', 'middle-right', 'far-right'];
+  const AUDIO_FX = new Set([68, 132, 135, 136, 137, 139, 143, 144, 145,
+    155, 156, 157, 158, 159, 175, 185]);
+  const POLL_MS = 500;
+  const MUSIC_MS = 10000;
+  const MAX_DPR = 1.5;
+
+  const canvas = document.getElementById('stage');
+  const ctx = canvas.getContext('2d');
+  const marquee = document.getElementById('marquee');
+  const dot = document.getElementById('dot');
+
+  let W = 0, H = 0, DPR = 1;
+  let vignette = null, grain = null, grainPat = null;
+
+  function clampByte(v) {
+    v = Math.round(Number(v) || 0);
+    return v < 0 ? 0 : (v > 255 ? 255 : v);
+  }
+
+  function mixColor(a, b, t) {
+    return [a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t];
+  }
+
+  function css(c, alpha) {
+    return 'rgba(' + Math.round(c[0]) + ',' + Math.round(c[1]) + ',' +
+      Math.round(c[2]) + ',' + alpha + ')';
+  }
+
+  // Per-column render state: current values ease toward targets each frame.
+  const cols = WALL_ORDER.map(function (name) {
+    return {
+      name: name,
+      cur: [[0, 0, 0], [0, 0, 0], [0, 0, 0]],
+      tgt: [[0, 0, 0], [0, 0, 0], [0, 0, 0]],
+      bri: 0, tgtBri: 0,
+      fx: 0, on: false, audio: false,
+      energy: 0,        // decaying pulse derived from poll deltas
+      phase: Math.random() * Math.PI * 2,
+      particles: []
+    };
+  });
+
+  function buildGrain() {
+    grain = document.createElement('canvas');
+    grain.width = 96;
+    grain.height = 96;
+    const g = grain.getContext('2d');
+    const img = g.createImageData(96, 96);
+    for (let i = 0; i < img.data.length; i += 4) {
+      const v = (Math.random() * 255) | 0;
+      img.data[i] = v;
+      img.data[i + 1] = v;
+      img.data[i + 2] = v;
+      img.data[i + 3] = 255;
+    }
+    g.putImageData(img, 0, 0);
+    grainPat = ctx.createPattern(grain, 'repeat');
+  }
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+    W = Math.round(window.innerWidth * DPR);
+    H = Math.round(window.innerHeight * DPR);
+    canvas.width = W;
+    canvas.height = H;
+    canvas.style.width = window.innerWidth + 'px';
+    canvas.style.height = window.innerHeight + 'px';
+    vignette = document.createElement('canvas');
+    vignette.width = W;
+    vignette.height = H;
+    const v = vignette.getContext('2d');
+    const rg = v.createRadialGradient(W / 2, H * 0.45, Math.min(W, H) * 0.35,
+      W / 2, H * 0.5, Math.max(W, H) * 0.75);
+    rg.addColorStop(0, 'rgba(0,0,0,0)');
+    rg.addColorStop(1, 'rgba(0,0,0,0.55)');
+    v.fillStyle = rg;
+    v.fillRect(0, 0, W, H);
+  }
+
+  function parseSegColors(seg, briScale) {
+    const out = [];
+    const raw = seg && Array.isArray(seg.col) ? seg.col : [];
+    for (let i = 0; i < 3; i++) {
+      const col = Array.isArray(raw[i]) ? raw[i] : (Array.isArray(raw[0]) ? raw[0] : [0, 0, 0]);
+      const w = clampByte(col[3] || 0);
+      out.push([
+        clampByte((col[0] || 0) + w) * briScale,
+        clampByte((col[1] || 0) + w) * briScale,
+        clampByte((col[2] || 0) + w) * briScale
+      ]);
+    }
+    return out;
+  }
+
+  function applyState(data) {
+    const state = (data && data.state) || {};
+    const channels = (data && data.channels) || {};
+    const single = 'seg' in state || 'on' in state;
+    for (const col of cols) {
+      let cst = null, segId = 0;
+      const mapping = channels[col.name];
+      if (!single && Array.isArray(mapping) && state[mapping[0]]) {
+        cst = state[mapping[0]];
+        segId = Number(mapping[1]) || 0;
+      } else if (single) {
+        cst = state;
+      }
+      const segs = (cst && Array.isArray(cst.seg)) ? cst.seg : [];
+      const seg = segs[segId] || segs[0] || null;
+      const on = cst ? cst.on !== false : false;
+      const bri = seg && seg.bri != null ? seg.bri
+        : (cst && cst.bri != null ? cst.bri : 255);
+      const scale = on ? Math.max(0, Math.min(1, bri / 255)) : 0;
+      const next = parseSegColors(seg, scale);
+      // Pulse energy: how far the sample jumped since the last target.
+      let delta = Math.abs(scale - col.tgtBri) * 255;
+      for (let i = 0; i < 3; i++) {
+        delta += Math.abs(next[i][0] - col.tgt[i][0]) +
+                 Math.abs(next[i][1] - col.tgt[i][1]) +
+                 Math.abs(next[i][2] - col.tgt[i][2]);
+      }
+      col.energy = Math.max(col.energy, Math.min(1, delta / 220));
+      col.tgt = next;
+      col.tgtBri = scale;
+      col.fx = seg && seg.fx != null ? Number(seg.fx) || 0 : 0;
+      col.on = !!on;
+      col.audio = AUDIO_FX.has(col.fx);
+    }
+    refreshIdleFooter();
+  }
+
+  function refreshIdleFooter() {
+    if (currentTrack) return;
+    const text = cols.map(function (c) {
+      return c.name + '  \u00b7  fx ' + c.fx;
+    }).join('      ');
+    setFooter(text, false);
+  }
+
+  let currentTrack = null;
+  let footerText = '';
+  function setFooter(text, scroll) {
+    if (text === footerText) return;
+    footerText = text;
+    marquee.textContent = text;
+    marquee.className = scroll ? '' : 'still';
+  }
+
+  // Rotating ticker: while a track plays the footer cycles through the
+  // now-playing line and the AI trivia items, one line per marquee pass.
+  const TRIVIA_MS = 30000;
+  let trivia = { artist: null, items: [] };
+  let nowLine = '';
+  let rotList = [];
+  let rotIdx = 0;
+
+  function showRotItem() {
+    if (!rotList.length) return;
+    footerText = rotList[rotIdx % rotList.length];
+    marquee.textContent = footerText;
+    // Restart the scroll so each line gets a full pass across the screen.
+    marquee.className = '';
+    marquee.style.animation = 'none';
+    void marquee.offsetWidth;
+    marquee.style.animation = '';
+  }
+
+  function rebuildRotation(reset) {
+    if (!currentTrack) return;
+    rotList = [nowLine].concat(trivia.items);
+    if (reset || rotIdx >= rotList.length) rotIdx = 0;
+    if (reset) showRotItem();
+  }
+
+  marquee.addEventListener('animationiteration', function () {
+    if (!rotList.length) return;
+    rotIdx = (rotIdx + 1) % rotList.length;
+    showRotItem();
+  });
+
+  async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 5000) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, Object.assign({}, options, { signal: controller.signal }));
+      return await res.json();
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async function pollTrivia() {
+    if (!currentTrack) return;   // no trivia fetches while idle
+    try {
+      const data = await fetchJsonWithTimeout('/api/tv-trivia');
+      if (data && data.ok && Array.isArray(data.items)) {
+        trivia = {
+          artist: data.artist || null,
+          items: data.items.filter(function (s) {
+            return typeof s === 'string' && s;
+          })
+        };
+        rebuildRotation(false);
+      }
+    } catch (err) {
+      /* trivia is best-effort */
+    }
+  }
+
+  async function pollState() {
+    try {
+      const data = await fetchJsonWithTimeout('/api/state');
+      if (data && data.ok !== false) {
+        dot.classList.remove('bad');
+        applyState(data);
+      } else {
+        dot.classList.add('bad');
+      }
+    } catch (err) {
+      dot.classList.add('bad');
+    }
+  }
+
+  async function pollMusic() {
+    try {
+      const data = await fetchJsonWithTimeout('/api/music-director');
+      const st = (data && data.status) || {};
+      if (st.running && st.track) {
+        const isNew = st.track !== currentTrack;
+        currentTrack = st.track;
+        nowLine = '\u266a  ' + st.track + (st.mood ? '   \u00b7   ' + st.mood : '');
+        rebuildRotation(isNew);
+        if (isNew) pollTrivia();
+      } else {
+        currentTrack = null;
+        trivia = { artist: null, items: [] };
+        rotList = [];
+        rotIdx = 0;
+        refreshIdleFooter();
+      }
+    } catch (err) {
+      /* keep the last footer on failure */
+    }
+  }
+
+  function spawnParticles(col, cx, colW, floorY, topY, dt) {
+    if (!col.audio && col.energy < 0.25) return;
+    const rate = (col.audio ? 14 : 4) * (0.3 + col.energy) * dt;
+    if (Math.random() < rate && col.particles.length < 34) {
+      col.particles.push({
+        x: cx + (Math.random() - 0.5) * colW * 0.8,
+        y: floorY - Math.random() * (floorY - topY) * 0.25,
+        vy: -(20 + Math.random() * 55) * DPR,
+        life: 1,
+        decay: 0.35 + Math.random() * 0.5,
+        r: (0.8 + Math.random() * 1.8) * DPR
+      });
+    }
+  }
+
+  function drawColumn(col, idx, t, dt) {
+    const cx = W * (idx + 0.5) / 4;
+    const colW = Math.min(W * 0.085, 110 * DPR);
+    const floorY = H * 0.86;
+    const topY = H * 0.07;
+    const height = floorY - topY;
+    const glow = Math.max(0, Math.min(1, col.bri)) * (1 + col.energy * 0.55);
+    if (glow < 0.004) return;
+
+    // Plasma drift: the three sampled colors slide past each other so the
+    // gradient is never static even when the wall holds a steady look.
+    const drift = (Math.sin(t * 0.6 + col.phase) + 1) / 2;
+    const drift2 = (Math.sin(t * 0.9 + col.phase * 1.7) + 1) / 2;
+    const c0 = mixColor(col.cur[0], col.cur[1], drift * 0.35);
+    const c1 = mixColor(col.cur[1], col.cur[2], drift2 * 0.4);
+    const c2 = mixColor(col.cur[2], col.cur[0], drift * 0.3);
+    const a = Math.min(1, 0.28 + glow * 0.72);
+
+    // Column body: gradient rising from the floor, dissolving at the top.
+    const grad = ctx.createLinearGradient(0, floorY, 0, topY);
+    grad.addColorStop(0, css(c0, a));
+    grad.addColorStop(0.45, css(c1, a * 0.9));
+    grad.addColorStop(0.8, css(c2, a * 0.55));
+    grad.addColorStop(1, css(c2, 0));
+    ctx.fillStyle = grad;
+    const wobble = Math.sin(t * 1.3 + col.phase) * colW * 0.04;
+    ctx.beginPath();
+    ctx.moveTo(cx - colW / 2 + wobble, floorY);
+    ctx.lineTo(cx - colW / 2, topY);
+    ctx.lineTo(cx + colW / 2, topY);
+    ctx.lineTo(cx + colW / 2 + wobble, floorY);
+    ctx.closePath();
+    ctx.fill();
+
+    // Ceiling bend: a soft fan of light rolling back over the ceiling.
+    ctx.save();
+    ctx.translate(cx, topY + H * 0.005);
+    ctx.scale(2.6, 0.55);
+    const bend = ctx.createRadialGradient(0, 0, 0, 0, 0, colW * 1.15);
+    bend.addColorStop(0, css(c2, 0.30 * glow));
+    bend.addColorStop(1, css(c2, 0));
+    ctx.fillStyle = bend;
+    ctx.beginPath();
+    ctx.arc(0, 0, colW * 1.15, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // Floor pool: light spilling onto the ground beneath the column.
+    ctx.save();
+    ctx.translate(cx, floorY + H * 0.012);
+    ctx.scale(1.9, 0.28);
+    const pool = ctx.createRadialGradient(0, 0, 0, 0, 0, colW);
+    pool.addColorStop(0, css(c0, 0.35 * glow));
+    pool.addColorStop(1, css(c0, 0));
+    ctx.fillStyle = pool;
+    ctx.beginPath();
+    ctx.arc(0, 0, colW, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // Audio-reactive shimmer: bright beads racing up the column.
+    if (col.audio || col.energy > 0.2) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const streaks = col.audio ? 3 : 1;
+      for (let s = 0; s < streaks; s++) {
+        const sy = topY + height *
+          ((Math.sin(t * (2.1 + s * 0.7) + col.phase + s * 2.1) + 1) / 2);
+        const sa = (0.05 + col.energy * 0.22) * glow;
+        if (sa > 0.01) {
+          const sg = ctx.createLinearGradient(0, sy - colW, 0, sy + colW);
+          sg.addColorStop(0, css(c1, 0));
+          sg.addColorStop(0.5, css(mixColor(c1, [255, 255, 255], 0.35), sa));
+          sg.addColorStop(1, css(c1, 0));
+          ctx.fillStyle = sg;
+          ctx.fillRect(cx - colW / 2, sy - colW, colW, colW * 2);
+        }
+      }
+      // Particles: sparse rising sparks, additive, tightly capped.
+      spawnParticles(col, cx, colW, floorY, topY, dt);
+      for (let i = col.particles.length - 1; i >= 0; i--) {
+        const p = col.particles[i];
+        p.y += p.vy * dt;
+        p.life -= p.decay * dt;
+        if (p.life <= 0 || p.y < topY) {
+          col.particles.splice(i, 1);
+          continue;
+        }
+        ctx.fillStyle = css(mixColor(c1, [255, 255, 255], 0.4),
+          0.5 * p.life * glow);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    } else if (col.particles.length) {
+      col.particles.length = 0;
+    }
+  }
+
+  // Dynamic background: instead of clearing to flat black, the canvas is
+  // filled from the columns' own eased state. (1) An ambient wash mixes
+  // the average active color into a vertical gradient held near-black so
+  // the columns still pop. (2) Three aurora blobs drift on slow Lissajous
+  // paths, each tinted from a different column, blended additively. (3)
+  // Both breathe with the average column energy (beat pulse). An emphasis
+  // mode — wash / aurora / pulse dominant — rotates every ~45s with a
+  // ~5s smoothstep crossfade.
+  const BG_MODE_S = 45;
+  const BG_FADE_S = 5;
+  const blobs = [];
+  for (let i = 0; i < 3; i++) {
+    blobs.push({
+      fx: 0.045 + i * 0.013,   // Lissajous frequencies, cycles per second
+      fy: 0.060 + i * 0.011,
+      px: Math.random() * Math.PI * 2,
+      py: Math.random() * Math.PI * 2,
+      r: 0.30 + i * 0.07       // base radius as a fraction of min(W, H)
+    });
+  }
+
+  function bgWeights(t) {
+    const pos = (t % (BG_MODE_S * 3)) / BG_MODE_S;
+    const idx = Math.floor(pos) % 3;
+    const frac = pos - Math.floor(pos);
+    const fadeFrac = BG_FADE_S / BG_MODE_S;
+    let blend = 0;
+    if (frac > 1 - fadeFrac) {
+      blend = (frac - (1 - fadeFrac)) / fadeFrac;
+      blend = blend * blend * (3 - 2 * blend);   // smoothstep crossfade
+    }
+    const w = [0, 0, 0];
+    w[idx] = 1 - blend;
+    w[(idx + 1) % 3] = blend;
+    return w;
+  }
+
+  function drawBackground(t) {
+    // Average the eased colors and energy of every lit column.
+    let ar = 0, ag = 0, ab = 0, n = 0, energy = 0, lit = 0;
+    for (const col of cols) {
+      const glow = Math.max(0, Math.min(1, col.bri));
+      if (!col.on || glow < 0.004) continue;
+      lit++;
+      energy += col.energy;
+      for (let i = 0; i < 3; i++) {
+        ar += col.cur[i][0];
+        ag += col.cur[i][1];
+        ab += col.cur[i][2];
+        n++;
+      }
+    }
+    const avg = n ? [ar / n, ag / n, ab / n] : [0, 0, 0];
+    energy = lit ? energy / lit : 0;
+
+    const w = bgWeights(t);
+    const washBoost = 0.55 + 0.75 * w[0];
+    const auroraBoost = 0.5 + 0.9 * w[1];
+    const pulse = energy * (0.35 + 1.1 * w[2]);
+
+    // (1) Ambient wash: the average color scaled to ~8-14% brightness,
+    // slightly darker toward the floor. Black when nothing is lit.
+    const ws = Math.min(0.14, (0.08 + 0.05 * pulse) * washBoost);
+    const wash = ctx.createLinearGradient(0, 0, 0, H);
+    wash.addColorStop(0, css([avg[0] * ws, avg[1] * ws, avg[2] * ws], 1));
+    wash.addColorStop(1, css([avg[0] * ws * 0.5, avg[1] * ws * 0.5,
+      avg[2] * ws * 0.5], 1));
+    ctx.fillStyle = wash;
+    ctx.fillRect(0, 0, W, H);
+
+    // (2) Aurora blobs, (3) radii and alpha breathing with the pulse.
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < blobs.length; i++) {
+      const b = blobs[i];
+      const col = cols[i % cols.length];
+      const glow = Math.max(0, Math.min(1, col.bri));
+      if (!col.on || glow < 0.004) continue;
+      const tint = mixColor(mixColor(col.cur[0], col.cur[1], 0.5),
+        col.cur[2], 0.35);
+      const bx = W * (0.5 + 0.38 * Math.sin(t * b.fx * Math.PI * 2 + b.px));
+      const by = H * (0.48 + 0.34 * Math.sin(t * b.fy * Math.PI * 2 + b.py));
+      const rad = Math.min(W, H) * b.r * (0.6 + 0.4 * glow) *
+        (1 + 0.3 * pulse);
+      const alpha = (0.05 + 0.08 * pulse) * auroraBoost * glow;
+      if (alpha < 0.008) continue;
+      const g = ctx.createRadialGradient(bx, by, 0, bx, by, rad);
+      g.addColorStop(0, css(tint, alpha));
+      g.addColorStop(1, css(tint, 0));
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(bx, by, rad, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  let last = performance.now();
+  let frame = 0;
+  function tick(now) {
+    const dt = Math.min(0.1, (now - last) / 1000);
+    last = now;
+    const t = now / 1000;
+    frame++;
+
+    // Ease current colors/brightness toward the latest poll targets. The
+    // ~0.9s time constant turns mood switches into crossfades, never cuts.
+    const k = Math.min(1, dt * 3.2);
+    for (const col of cols) {
+      for (let i = 0; i < 3; i++) {
+        col.cur[i] = mixColor(col.cur[i], col.tgt[i], k);
+      }
+      col.bri += (col.tgtBri - col.bri) * k;
+      col.energy *= Math.pow(0.25, dt); // decay to a quarter per second
+    }
+
+    drawBackground(t);
+    for (let i = 0; i < cols.length; i++) {
+      drawColumn(cols[i], i, t, dt);
+    }
+
+    // Vignette every frame (single drawImage), grain every third frame.
+    if (vignette) ctx.drawImage(vignette, 0, 0);
+    if (grainPat && frame % 3 === 0) {
+      ctx.save();
+      ctx.globalAlpha = 0.045;
+      ctx.translate(-((Math.random() * 96) | 0), -((Math.random() * 96) | 0));
+      ctx.fillStyle = grainPat;
+      ctx.fillRect(0, 0, W + 96, H + 96);
+      ctx.restore();
+    }
+
+    requestAnimationFrame(tick);
+  }
+
+  window.addEventListener('resize', resize);
+  resize();
+  buildGrain();
+  pollState();
+  pollMusic();
+  setInterval(pollState, POLL_MS);
+  setInterval(pollMusic, MUSIC_MS);
+  setInterval(pollTrivia, TRIVIA_MS);
+  refreshIdleFooter();
+  requestAnimationFrame(tick);
   </script>
 </body>
 </html>
