@@ -371,6 +371,18 @@ class HexColorTests(unittest.TestCase):
             lightctl.hex_to_rgbw("ggg")
 
 
+def test_verified_column_geometry_defaults_to_40_pixels():
+    assert lightctl.LEDS_PER_COLUMN == 40
+    assert lightctl.COLUMN_LENGTH_M == 2.0
+    assert lightctl.zone_bounds("bottom half") == (0, 20)
+    assert lightctl.zone_bounds("top half") == (20, 40)
+
+
+def test_downward_orientation_flips_top_and_bottom():
+    assert lightctl.zone_bounds("top half", orientation="down") == (0, 20)
+    assert lightctl.zone_bounds("bottom half", orientation="down") == (20, 40)
+
+
 class RandomSceneTests(unittest.TestCase):
     def test_random_scene_is_builtin(self):
         payload = lightctl.random_scene_payload()

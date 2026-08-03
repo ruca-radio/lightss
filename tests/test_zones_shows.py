@@ -8,8 +8,8 @@ per-LED" contract in docs/superpowers/specs/2026-08-01-wled-fleet-segments-desig
 - mcp_light tools: set_zone, set_segment_bounds, delete_segment, set_leds,
   start_show, stop_show, show_status
 
-Zone math convention asserted here (length=50, orientation="up", LED 0 at the
-bottom): fraction sizes use floor division (half=25, third=16, quarter=12),
+Zone math convention asserted here (length=40, orientation="up", LED 0 at the
+bottom): fraction sizes use floor division (half=20, third=13, quarter=10),
 "bottom" anchors at LED 0, "top" at the high end, "middle" is centered, and
 orientation="down" mirrors every range as (length - stop, length - start).
 """
@@ -86,28 +86,28 @@ class ZoneBoundsTests(unittest.TestCase):
 
     def test_halves_orientation_up(self):
         # LED 0 at the bottom: "top" maps to the high indices.
-        self.assertEqual(lightctl.zone_bounds("bottom half"), (0, 25))
-        self.assertEqual(lightctl.zone_bounds("top half"), (25, 50))
+        self.assertEqual(lightctl.zone_bounds("bottom half"), (0, 20))
+        self.assertEqual(lightctl.zone_bounds("top half"), (20, 40))
         start, stop = lightctl.zone_bounds("middle half")
-        self.assertLessEqual(abs((stop - start) - 25), 1)
+        self.assertLessEqual(abs((stop - start) - 20), 1)
         # centered: symmetric margins on both ends
-        self.assertLessEqual(abs(start - (50 - stop)), 1)
+        self.assertLessEqual(abs(start - (40 - stop)), 1)
 
     def test_thirds_and_quarters(self):
         for word, fraction in (("third", 3), ("quarter", 4)):
             bottom = lightctl.zone_bounds(f"bottom {word}")
             top = lightctl.zone_bounds(f"top {word}")
             middle = lightctl.zone_bounds(f"middle {word}")
-            # floor or rounded division of 50 LEDs are both acceptable sizes
-            self.assertIn(bottom[1] - bottom[0], (50 // fraction, round(50 / fraction)))
-            self.assertIn(top[1] - top[0], (50 // fraction, round(50 / fraction)))
+            # floor or rounded division of 40 LEDs are both acceptable sizes
+            self.assertIn(bottom[1] - bottom[0], (40 // fraction, round(40 / fraction)))
+            self.assertIn(top[1] - top[0], (40 // fraction, round(40 / fraction)))
             self.assertEqual(bottom[0], 0)
-            self.assertEqual(top[1], 50)
-            self.assertLessEqual(abs((middle[1] - middle[0]) - 50 / fraction), 1)
+            self.assertEqual(top[1], 40)
+            self.assertLessEqual(abs((middle[1] - middle[0]) - 40 / fraction), 1)
             self.assertGreater(middle[0], 0)
-            self.assertLess(middle[1], 50)
+            self.assertLess(middle[1], 40)
             # middle is centered: symmetric margins
-            self.assertLessEqual(abs(middle[0] - (50 - middle[1])), 1)
+            self.assertLessEqual(abs(middle[0] - (40 - middle[1])), 1)
 
     def test_every_named_zone_is_accepted(self):
         for position in ("top", "middle", "bottom"):
@@ -123,7 +123,7 @@ class ZoneBoundsTests(unittest.TestCase):
                 zone = f"{position} {fraction}"
                 up_start, up_stop = lightctl.zone_bounds(zone, orientation="up")
                 down_start, down_stop = lightctl.zone_bounds(zone, orientation="down")
-                self.assertEqual((down_start, down_stop), (50 - up_stop, 50 - up_start))
+                self.assertEqual((down_start, down_stop), (40 - up_stop, 40 - up_start))
 
     def test_orientation_down_top_equals_up_bottom(self):
         self.assertEqual(
@@ -154,7 +154,7 @@ class ZonePayloadTests(unittest.TestCase):
         payload = lightctl.zone_payload([{"zone": "top half", "fx": 9, "pal": 0}])
         self.assertEqual(
             payload,
-            {"seg": [{"start": 25, "stop": 50, "fx": 9, "pal": 0}]},
+            {"seg": [{"start": 20, "stop": 40, "fx": 9, "pal": 0}]},
         )
 
     def test_zone_key_is_not_leaked_into_segment(self):
@@ -173,10 +173,10 @@ class ZonePayloadTests(unittest.TestCase):
         ])
         first, second = payload["seg"]
         self.assertEqual(first["id"], 3)
-        self.assertEqual((first["start"], first["stop"]), (0, 25))
+        self.assertEqual((first["start"], first["stop"]), (0, 20))
         self.assertTrue(first["rev"])
         self.assertNotIn("id", second)
-        self.assertEqual((second["start"], second["stop"]), (25, 50))
+        self.assertEqual((second["start"], second["stop"]), (20, 40))
 
     def test_seg_fields_pass_through(self):
         payload = lightctl.zone_payload([{
@@ -203,7 +203,7 @@ class ZonePayloadTests(unittest.TestCase):
     def test_orientation_down_flips_bounds(self):
         payload = lightctl.zone_payload([{"zone": "top half"}], orientation="down")
         seg = payload["seg"][0]
-        self.assertEqual((seg["start"], seg["stop"]), (0, 25))
+        self.assertEqual((seg["start"], seg["stop"]), (0, 20))
 
     def test_multiple_zones_preserve_order(self):
         payload = lightctl.zone_payload([

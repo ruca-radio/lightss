@@ -31,12 +31,12 @@ class RecordingClient(lightctl.LightClient):
 
 def make_fleet() -> fleet.LightFleet:
     controllers = [
-        fleet.ControllerConfig("right", "http://10.27.27.110", {0: "far-right", 1: "middle-right"}),
-        fleet.ControllerConfig("left", "http://10.27.27.112", {0: "middle-left", 1: "far-left"}),
+        fleet.ControllerConfig("left", "http://10.27.27.110", {0: "far-left", 1: "middle-left"}),
+        fleet.ControllerConfig("right", "http://10.27.27.112", {0: "far-right", 1: "middle-right"}),
     ]
     clients = {
-        "right": RecordingClient("http://10.27.27.110"),
-        "left": RecordingClient("http://10.27.27.112"),
+        "left": RecordingClient("http://10.27.27.110"),
+        "right": RecordingClient("http://10.27.27.112"),
     }
     return fleet.LightFleet(clients, controllers)
 
@@ -93,6 +93,9 @@ class ChaseTests(unittest.TestCase):
         result = columns.chase(fleet_, 28)
 
         self.assertIsInstance(result, dict)
+        # verified install: .110 is the left controller, .112 the right one
+        self.assertEqual(fleet_.clients["left"].host, "http://10.27.27.110")
+        self.assertEqual(fleet_.clients["right"].host, "http://10.27.27.112")
         left_segs = segs_by_id(fleet_.clients["left"].payloads[0])
         right_segs = segs_by_id(fleet_.clients["right"].payloads[0])
         for seg in list(left_segs.values()) + list(right_segs.values()):
@@ -100,14 +103,14 @@ class ChaseTests(unittest.TestCase):
             self.assertIn("of", seg)
 
         # physical wall order: far-left, middle-left, middle-right, far-right
+        # four 40-pixel columns, chase phase step = LEDS_PER_COLUMN // 4 = 10
         offsets = [
-            left_segs[1]["of"],   # left
-            left_segs[0]["of"],   # middle-left
+            left_segs[0]["of"],   # far-left
+            left_segs[1]["of"],   # middle-left
             right_segs[1]["of"],  # middle-right
-            right_segs[0]["of"],  # right
+            right_segs[0]["of"],  # far-right
         ]
-        self.assertEqual(len(set(offsets)), 4)
-        self.assertEqual(offsets, sorted(offsets))
+        self.assertEqual(offsets, [0, 10, 20, 30])
 
 
 class LeftVsRightTests(unittest.TestCase):
@@ -145,21 +148,21 @@ class SetChannelTests(unittest.TestCase):
 
         left = fleet_.clients["left"]
         self.assertEqual(len(left.payloads), 1)
-        self.assertEqual(left.payloads[0], {"seg": [{"id": 0, "col": [[255, 0, 0, 0]]}], "udpn": {"nn": True}})
+        self.assertEqual(left.payloads[0], {"seg": [{"id": 1, "col": [[255, 0, 0, 0]]}], "udpn": {"nn": True}})
 
     def test_set_channel_accepts_hex_color_string(self):
         fleet_ = make_fleet()
         columns.set_channel(fleet_, "middle-left", col="FF8800")
 
         left = fleet_.clients["left"]
-        self.assertEqual(left.payloads[0], {"seg": [{"id": 0, "col": [[255, 136, 0]]}], "udpn": {"nn": True}})
+        self.assertEqual(left.payloads[0], {"seg": [{"id": 1, "col": [[255, 136, 0]]}], "udpn": {"nn": True}})
 
     def test_set_channel_wraps_flat_rgb_list_as_single_color(self):
         fleet_ = make_fleet()
         columns.set_channel(fleet_, "middle-left", col=[255, 0, 0])
 
         left = fleet_.clients["left"]
-        self.assertEqual(left.payloads[0], {"seg": [{"id": 0, "col": [[255, 0, 0]]}], "udpn": {"nn": True}})
+        self.assertEqual(left.payloads[0], {"seg": [{"id": 1, "col": [[255, 0, 0]]}], "udpn": {"nn": True}})
 
 
 if __name__ == "__main__":

@@ -354,8 +354,9 @@ def merge_payloads(*payloads: WledPayload) -> WledPayload:
 # ---------------------------------------------------------------------------
 
 # Physical model: each channel is one vertical bar, COLUMN_LENGTH_M meters tall,
-# with LEDS_PER_COLUMN addressable WS2811 IC units (~4 cm per LED).
-LEDS_PER_COLUMN = 50
+# with LEDS_PER_COLUMN addressable WS2811 IC pixels (20 addressable WS2811 IC
+# pixels/m; 40 per 2 m column; 720 visible COB LEDs/m; pixel 0 at the bottom).
+LEDS_PER_COLUMN = 40
 COLUMN_LENGTH_M = 2.0
 
 _ZONE_POSITIONS = ("top", "middle", "bottom")

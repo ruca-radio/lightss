@@ -494,8 +494,8 @@ class ZoneBoundsTests(unittest.TestCase):
     def test_zone_name_path_ignores_stray_start_stop_keys(self):
         # start/stop must not silently override the computed zone bounds.
         payload = lightctl.zone_payload([{"zone": "top half", "start": 0, "stop": 5}])
-        self.assertEqual(payload["seg"][0]["start"], 25)
-        self.assertEqual(payload["seg"][0]["stop"], 50)
+        self.assertEqual(payload["seg"][0]["start"], 20)
+        self.assertEqual(payload["seg"][0]["stop"], 40)
 
     def test_zone_bounds_rejects_empty_range(self):
         # Per WLED, stop <= start deletes the segment; never emit empty bounds.

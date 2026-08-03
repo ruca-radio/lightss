@@ -132,13 +132,13 @@ def mirror(fleet: LightFleet, fx: int, pal: int | None = None, **seg_opts) -> di
 def chase(fleet: LightFleet, fx: int, pal: int | None = None, **seg_opts) -> dict:
     """Same fx on all channels, effect offsets staggered along the wall.
 
-    seg_opts may include offset_step (default 12); it is consumed here and not
-    sent to WLED. Channel i gets of = i * offset_step. Note: WLED wraps `of`
-    modulo the segment length (json.cpp: of %= len), so a step >= the segment
-    length is a no-op — the default 12 spreads one ~50-LED effect period
-    across the 4 columns (0/12/24/36).
+    seg_opts may include offset_step (default LEDS_PER_COLUMN // 4 = 10); it is
+    consumed here and not sent to WLED. Channel i gets of = i * offset_step.
+    Note: WLED wraps `of` modulo the segment length (json.cpp: of %= len), so a
+    step >= the segment length is a no-op — the default 10 spreads one 40-pixel
+    effect period across the 4 columns (0/10/20/30).
     """
-    offset_step = int(seg_opts.pop("offset_step", 12))
+    offset_step = int(seg_opts.pop("offset_step", lightctl.LEDS_PER_COLUMN // 4))
 
     def entry_for_index(index: int) -> dict:
         entry = _seg_entry(fx, pal, seg_opts)
