@@ -655,5 +655,39 @@ class SurfaceTests(unittest.TestCase):
         self.assertEqual(result["content"][0]["text"], "Set color to RGBW(0, 0, 255, 0).")
 
 
+def test_device_snapshot_text_contains_physical_topology_and_all_segments():
+    snapshot = {
+        "topology": {
+            "installation": {
+                "wall_order": ["far-left", "middle-left", "middle-right", "far-right"],
+                "spacing_inches": 30, "orientation": "vertical",
+                "pixel_zero": "bottom", "column_length_m": 2.0,
+                "pixels_per_meter": 20, "visible_leds_per_meter": 720,
+                "color_order": "BRG",
+            },
+            "controllers": [{
+                "name": "left", "host": "http://10.27.27.110",
+                "segments": {
+                    "0": {"channel": "far-left", "gpio": 16, "pixels": 40},
+                    "1": {"channel": "middle-left", "gpio": 2, "pixels": 40},
+                },
+            }],
+        },
+        "devices": {
+            "left": {"state": {"on": True, "bri": 80, "seg": [
+                {"id": 0, "start": 0, "stop": 40, "fx": 9, "rev": False},
+                {"id": 1, "start": 40, "stop": 80, "fx": 67, "rev": True},
+            ]}, "info": {"name": "wled-1", "ver": "16.0.1"}},
+        },
+    }
+    text = light_gui.device_snapshot_text(snapshot)
+    for expected in (
+        "four vertical columns", "30 inches", "40 addressable pixels",
+        "LED 0 at the bottom", "BRG", "far-left", "middle-left",
+        "segment 0", "segment 1", "fx=9", "fx=67",
+    ):
+        assert expected in text
+
+
 if __name__ == "__main__":
     unittest.main()

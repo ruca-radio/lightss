@@ -387,15 +387,19 @@ class LightFleet:
         return states
 
     def get_fleet_snapshot(self) -> dict:
-        """Per-controller labeled device snapshots for AI consumption."""
-        snapshot: dict[str, dict] = {}
+        """Topology plus per-controller device snapshots for AI consumption.
+
+        Returns {"topology": self.topology_dict(), "devices": {name: snapshot}};
+        a dead controller becomes a {"error": ...} entry under "devices".
+        """
+        devices: dict[str, dict] = {}
         for name in self.names():
             try:
-                snapshot[name] = self.clients[name].get_device_snapshot()
+                devices[name] = self.clients[name].get_device_snapshot()
             except Exception as exc:
                 _warn(f"snapshot of controller {name!r} failed: {exc}")
-                snapshot[name] = {"error": str(exc)}
-        return snapshot
+                devices[name] = {"error": str(exc)}
+        return {"topology": self.topology_dict(), "devices": devices}
 
     def effect_ids(self, controller: str) -> set[int] | None:
         """Live effect id set for a controller (indices of /json/eff), cached; None on failure."""

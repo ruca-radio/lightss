@@ -54,17 +54,19 @@ class FailingClient(RecordingClient):
 
 def default_controllers() -> list[fleet.ControllerConfig]:
     return [
-        fleet.ControllerConfig("right", "http://10.27.27.110",
-                               {0: fleet.SegmentConfig("far-right"), 1: fleet.SegmentConfig("middle-right")}),
-        fleet.ControllerConfig("left", "http://10.27.27.112",
-                               {0: fleet.SegmentConfig("middle-left"), 1: fleet.SegmentConfig("far-left")}),
+        fleet.ControllerConfig("left", "http://10.27.27.110",
+                               {0: fleet.SegmentConfig("far-left", gpio=16, pixels=40),
+                                1: fleet.SegmentConfig("middle-left", gpio=2, pixels=40)}),
+        fleet.ControllerConfig("right", "http://10.27.27.112",
+                               {0: fleet.SegmentConfig("far-right", gpio=2, pixels=40),
+                                1: fleet.SegmentConfig("middle-right", gpio=16, pixels=40)}),
     ]
 
 
 def make_fleet(left_client=None, right_client=None) -> fleet.LightFleet:
     clients = {
-        "right": right_client or RecordingClient("http://10.27.27.110"),
-        "left": left_client or RecordingClient("http://10.27.27.112"),
+        "left": left_client or RecordingClient("http://10.27.27.110"),
+        "right": right_client or RecordingClient("http://10.27.27.112"),
     }
     return fleet.LightFleet(clients, default_controllers())
 
@@ -173,16 +175,16 @@ class FleetResolutionTests(unittest.TestCase):
         self.fleet = make_fleet()
 
     def test_names_returns_controller_names(self):
-        self.assertEqual(self.fleet.names(), ["right", "left"])
+        self.assertEqual(self.fleet.names(), ["left", "right"])
 
     def test_channels_map_to_controller_and_segment_id(self):
         self.assertEqual(
             self.fleet.channels(),
             {
+                "far-left": ("left", 0),
+                "middle-left": ("left", 1),
                 "far-right": ("right", 0),
                 "middle-right": ("right", 1),
-                "middle-left": ("left", 0),
-                "far-left": ("left", 1),
             },
         )
 
@@ -194,7 +196,7 @@ class FleetResolutionTests(unittest.TestCase):
         self.assertEqual(self.fleet.resolve("right"), [("right", None)])
 
     def test_resolve_channel_name(self):
-        self.assertEqual(self.fleet.resolve("middle-left"), [("left", 0)])
+        self.assertEqual(self.fleet.resolve("middle-left"), [("left", 1)])
         self.assertEqual(self.fleet.resolve("middle-right"), [("right", 1)])
 
     def test_resolve_all_is_case_insensitive(self):
@@ -266,7 +268,7 @@ class FleetFanOutTests(unittest.TestCase):
         self.assertEqual(fleet_.clients["right"].payloads, [])
 
     def test_partial_failure_is_reported_not_raised(self):
-        fleet_ = make_fleet(left_client=FailingClient("http://10.27.27.112"))
+        fleet_ = make_fleet(left_client=FailingClient("http://10.27.27.110"))
         result = fleet_.post_state(lightctl.on_payload(True))
         self.assertTrue(result["right"]["ok"])
         self.assertFalse(result["left"]["ok"])
@@ -278,7 +280,7 @@ class FleetFanOutTests(unittest.TestCase):
         fleet_ = make_fleet()
         result = fleet_.post_state({"seg": [{"fx": 9, "sx": 180}]}, target="middle-left")
         self.assertEqual(set(result), {"left"})
-        self.assertEqual(fleet_.clients["left"].payloads, [{"seg": [{"id": 0, "fx": 9, "sx": 180}], "udpn": {"nn": True}}])
+        self.assertEqual(fleet_.clients["left"].payloads, [{"seg": [{"id": 1, "fx": 9, "sx": 180}], "udpn": {"nn": True}}])
         self.assertEqual(fleet_.clients["right"].payloads, [])
 
     def test_channel_target_injects_into_every_seg_entry(self):
@@ -312,7 +314,7 @@ class FleetFanOutTests(unittest.TestCase):
         self.assertEqual(result["right"]["bri"], 128)
 
     def test_get_state_partial_failure_is_reported(self):
-        fleet_ = make_fleet(left_client=FailingClient("http://10.27.27.112"))
+        fleet_ = make_fleet(left_client=FailingClient("http://10.27.27.110"))
         result = fleet_.get_state()
         self.assertEqual(result["right"]["bri"], 128)
         self.assertIn("error", str(result["left"]).lower())
@@ -322,15 +324,15 @@ class FleetSnapshotTests(unittest.TestCase):
     def test_snapshot_is_labeled_per_controller(self):
         fleet_ = make_fleet()
         snapshot = fleet_.get_fleet_snapshot()
-        self.assertEqual(set(snapshot), {"right", "left"})
-        for name in ("right", "left"):
-            self.assertIsInstance(snapshot[name], dict)
+        self.assertEqual(set(snapshot["devices"]), {"left", "right"})
+        for name in ("left", "right"):
+            self.assertIsInstance(snapshot["devices"][name], dict)
 
     def test_snapshot_includes_device_snapshot_data(self):
         fleet_ = make_fleet()
         snapshot = fleet_.get_fleet_snapshot()
-        self.assertIn("http://10.27.27.110", json.dumps(snapshot["right"]))
-        self.assertIn("http://10.27.27.112", json.dumps(snapshot["left"]))
+        self.assertIn("http://10.27.27.112", json.dumps(snapshot["devices"]["right"]))
+        self.assertIn("http://10.27.27.110", json.dumps(snapshot["devices"]["left"]))
 
 
 class FleetEffectIdsTests(unittest.TestCase):
@@ -342,7 +344,7 @@ class FleetEffectIdsTests(unittest.TestCase):
         self.assertEqual(fleet_.clients["right"].effects_calls, 1)
 
     def test_effect_ids_returns_none_on_failure(self):
-        fleet_ = make_fleet(left_client=FailingClient("http://10.27.27.112"))
+        fleet_ = make_fleet(left_client=FailingClient("http://10.27.27.110"))
         self.assertIsNone(fleet_.effect_ids("left"))
 
 
@@ -355,6 +357,16 @@ class FromConfigTests(unittest.TestCase):
         self.assertEqual(fleet_.names(), ["left", "right"])
         for client in fleet_.clients.values():
             self.assertTrue(client.dry_run)
+
+
+def test_fleet_snapshot_labels_live_devices_with_topology():
+    fleet_ = make_fleet()
+    snapshot = fleet_.get_fleet_snapshot()
+    assert snapshot["topology"]["installation"]["spacing_inches"] == 30
+    assert snapshot["topology"]["controllers"][0]["segments"]["0"] == {
+        "channel": "far-left", "gpio": 16, "pixels": 40
+    }
+    assert set(snapshot["devices"]) == {"left", "right"}
 
 
 def test_builtin_topology_matches_verified_wall():

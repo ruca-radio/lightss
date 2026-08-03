@@ -174,11 +174,88 @@ def catalog_text_for_prompt(effects: list, fxdata: list) -> str:
     return atmospheres.catalog_text(list(effects), list(fxdata))
 
 
+_NUMBER_WORDS = {
+    1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six",
+    7: "seven", 8: "eight", 9: "nine", 10: "ten", 11: "eleven", 12: "twelve",
+}
+
+
+def _segment_sort_key(seg_id: object) -> tuple[int, object]:
+    text = str(seg_id)
+    return (0, int(text)) if text.isdigit() else (1, text)
+
+
+def _format_number(value: object) -> str:
+    """Compact number rendering: 30.0 -> '30', 2.5 -> '2.5'."""
+    try:
+        return f"{float(value):g}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def topology_text(topology: dict) -> str:
+    """Deterministic natural-language header describing the physical installation."""
+    installation = topology.get("installation") if isinstance(topology.get("installation"), dict) else {}
+    wall_order = installation.get("wall_order") if isinstance(installation.get("wall_order"), list) else []
+    count = _NUMBER_WORDS.get(len(wall_order), str(len(wall_order)))
+    lines = [
+        "Physical installation:",
+        (
+            f"{count} {installation.get('orientation', '?')} columns "
+            f"(wall order: {', '.join(str(channel) for channel in wall_order)}), "
+            f"spaced {_format_number(installation.get('spacing_inches', '?'))} inches apart; "
+            f"each column is {_format_number(installation.get('column_length_m', '?'))} m at "
+            f"{installation.get('pixels_per_meter', '?')} addressable pixels/m "
+            f"({installation.get('visible_leds_per_meter', '?')} visible LEDs/m), "
+            f"LED 0 at the {installation.get('pixel_zero', '?')}, "
+            f"color order {installation.get('color_order', '?')}."
+        ),
+    ]
+    controllers = topology.get("controllers") if isinstance(topology.get("controllers"), list) else []
+    for controller in controllers:
+        if not isinstance(controller, dict):
+            continue
+        segments = controller.get("segments") if isinstance(controller.get("segments"), dict) else {}
+        segment_texts = []
+        for seg_id, segment in sorted(segments.items(), key=lambda item: _segment_sort_key(item[0])):
+            if not isinstance(segment, dict):
+                continue
+            details = [f"channel {segment.get('channel', '?')}"]
+            if segment.get("gpio") is not None:
+                details.append(f"gpio {segment['gpio']}")
+            if segment.get("pixels") is not None:
+                details.append(f"{segment['pixels']} addressable pixels")
+            segment_texts.append(f"segment {seg_id} = {', '.join(details)}")
+        lines.append(
+            f"Controller '{controller.get('name', '?')}' ({controller.get('host', '?')}): "
+            + ("; ".join(segment_texts) if segment_texts else "no segments configured")
+        )
+    return "\n".join(lines)
+
+
 def device_snapshot_text(snapshot: dict | None, include_catalog: bool = True) -> str:
     if not snapshot:
         return "Current WLED device snapshot: unavailable."
+    topology = snapshot.get("topology") if isinstance(snapshot, dict) else None
+    devices = snapshot.get("devices") if isinstance(snapshot, dict) else None
+    if isinstance(topology, dict) and isinstance(devices, dict):
+        # Fleet envelope ({"topology": ..., "devices": ...}) — topology header,
+        # then each controller; include the (identical) effect catalog only once.
+        parts = [topology_text(topology)]
+        for name, sub in devices.items():
+            if isinstance(sub, dict) and "error" in sub:
+                parts.append(f"=== Controller '{name}' ===\nSnapshot unavailable: {sub['error']}")
+            else:
+                parts.append(f"=== Controller '{name}' ===\n{device_snapshot_text(sub, include_catalog=False)}")
+        for sub in devices.values():
+            effects = sub.get("effects") if isinstance(sub, dict) else None
+            fxdata = sub.get("fxdata") if isinstance(sub, dict) else None
+            if isinstance(effects, list) and effects:
+                parts.append(catalog_text_for_prompt(effects, fxdata if isinstance(fxdata, list) else []))
+                break
+        return "\n\n".join(parts)
     if "state" not in snapshot and all(isinstance(value, dict) for value in snapshot.values()):
-        # Fleet snapshot ({controller_name: snapshot}) — render each controller,
+        # Legacy fleet snapshot ({controller_name: snapshot}) — render each controller,
         # but include the (identical) effect catalog only once.
         parts = [
             f"=== Controller '{name}' ===\n{device_snapshot_text(sub, include_catalog=False)}"
@@ -198,7 +275,6 @@ def device_snapshot_text(snapshot: dict | None, include_catalog: bool = True) ->
     palettes = snapshot.get("palettes") if isinstance(snapshot.get("palettes"), list) else []
     fxdata = snapshot.get("fxdata") if isinstance(snapshot.get("fxdata"), list) else []
     presets_raw = snapshot.get("presets") if isinstance(snapshot.get("presets"), dict) else {}
-    seg = state.get("seg", [{}])[0] if state.get("seg") else {}
     leds = info.get("leds", {}) if isinstance(info.get("leds"), dict) else {}
     light_cfg = config.get("light", {}) if isinstance(config.get("light"), dict) else {}
     transition_cfg = light_cfg.get("tr", {}) if isinstance(light_cfg.get("tr"), dict) else {}
@@ -213,12 +289,17 @@ def device_snapshot_text(snapshot: dict | None, include_catalog: bool = True) ->
         f"Device: {info.get('name', 'unknown')} WLED {info.get('ver', '?')} at {info.get('ip', '?')}",
         f"LEDs: count={leds.get('count', '?')}, rgbw={leds.get('rgbw', '?')}, cct={leds.get('cct', '?')}, maxseg={leds.get('maxseg', '?')}",
         f"State: power={'on' if state.get('on') else 'off'}, bri={state.get('bri', '?')}, transition={state.get('transition', '?')}, preset={state.get('ps', '?')}, playlist={state.get('pl', '?')}",
-        (
-            "Active segment: "
-            f"fx={seg.get('fx', '?')}, sx={seg.get('sx', '?')}, ix={seg.get('ix', '?')}, pal={seg.get('pal', '?')}, "
-            f"cct={seg.get('cct', '?')}, colors={seg.get('col', [])}, on={seg.get('on', '?')}, "
-            f"freeze={seg.get('frz', '?')}, reverse={seg.get('rev', '?')}, mirror={seg.get('mi', '?')}"
-        ),
+    ]
+    for segment in state.get("seg", []):
+        lines.append(
+            "Segment "
+            f"{segment.get('id', '?')}: start={segment.get('start', '?')}, "
+            f"stop={segment.get('stop', '?')}, on={segment.get('on', '?')}, "
+            f"bri={segment.get('bri', '?')}, fx={segment.get('fx', '?')}, "
+            f"pal={segment.get('pal', '?')}, colors={segment.get('col', [])}, "
+            f"reverse={segment.get('rev', '?')}, mirror={segment.get('mi', '?')}"
+        )
+    lines.extend([
         f"Nightlight state: {state.get('nl', {})}",
         f"UDP sync state: {state.get('udpn', {})}",
         f"AudioReactive state: {state.get('AudioReactive', {})}; config: {audio_reactive_cfg}",
@@ -227,7 +308,7 @@ def device_snapshot_text(snapshot: dict | None, include_catalog: bool = True) ->
         f"Effects available: {len(effects)} total — full catalog below (🚫 = forbidden).",
         "All palettes (use id number when setting palette):\n  "
         + "\n  ".join(f"{i}: {name}" for i, name in enumerate(palettes)),
-    ]
+    ])
     if effects and include_catalog:
         lines.append(catalog_text_for_prompt(effects, fxdata))
     fx_hints = _parse_fxdata_hints(fxdata)
