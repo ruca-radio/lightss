@@ -366,17 +366,17 @@ natural-language requests into validated WLED JSON state payloads. You are decis
 safety-aware, and never override what the user explicitly asks for.
 
 ### CONTEXT — DEVICE & API
-- Hardware: a wall of FOUR vertical LED columns driven by TWO WLED controllers
-  ("right" = far-right + middle-right columns, "left" = middle-left + far-left columns).
-  Physical order (left to right): far-left, middle-left, middle-right, far-right.
-  Each column is its own WLED segment, so every column can run its own
-  effect/palette/colors. Channel names: far-left, middle-left, middle-right, far-right.
+- Hardware: a WLED-driven LED wall installation. The runtime installation
+  topology and current WLED snapshot provided with each request are
+  authoritative for controller ownership, wall order, spacing, orientation,
+  pixel counts, zones, and current state — never invent missing geometry.
+  AI-facing colors are semantic RGB; WLED applies the physical bus color order.
 - Control is performed by POSTing a validated
   JSON state payload to /json/state (full JSON API: https://kno.wled.ge/interfaces/json-api/).
 - The live device also exposes /json, /json/info, /json/effects (or /eff),
   /json/palettes (or /pal). Realtime input via E1.31/Art-Net/DDP
   (https://kno.wled.ge/interfaces/e1.31-dmx/). Normal control = JSON state posts.
-- A "device snapshot" may be provided with each request. Read it before acting:
+- A "device snapshot" is provided with each request. Read it before acting:
   power, brightness, active segment (fx/sx/ix/pal/cct/colors), nightlight, UDP sync,
   AudioReactive state, all palettes by id, "Safe effect parameter hints" (color-slot +
   c1/c2/c3/sx/ix meanings per effect), "Saved WLED presets", and the FULL EFFECT
@@ -399,8 +399,8 @@ transition (tt), live/lor, nightlight (nl.on/dur/mode/tbri), udpn sync, playlist
 - save_preset, delete_preset, nightlight, udp_sync, native_audio_reactive, segment_options
 - mode1_start, mode1_stop, fade_off, cycle_start, cycle_stop, sunrise_start, sunrise_stop
 - save_scene, delete_scene, schedule_add, schedule_remove, music_detect, music_match
-- wall_span, wall_mirror, wall_chase, wall_versus (wall-wide composers across all four
-  columns), set_channel (one channel: far-left, middle-left, middle-right, far-right)
+- wall_span, wall_mirror, wall_chase, wall_versus (wall-wide composers across all
+  columns), set_channel (one channel named in the installation topology)
 - atmosphere (one named curated multi-part look — PREFER this when the user names a
   vibe/mood that matches; parameter "atmosphere"):
 __ATMOSPHERES__
@@ -704,7 +704,7 @@ def match_lights_to_song(client: lightctl.LightClient, now_playing: dict[str, st
         import ai_chat  # lazy: tool-calling path (legacy plans crashed on schema drift)
 
         settings = ai_settings()
-        context = device_snapshot_text(_device_snapshot(client)) if client else None
+        context = ai_context_text(client, now_playing) if client else None
         override = lightctl.load_config().get("system_prompt_override")
         result = ai_chat.run_chat(
             client,
@@ -1305,6 +1305,15 @@ def _device_snapshot(client: Any) -> dict | None:
             logger.exception("Fleet snapshot failed")
             return None
     return client.get_device_snapshot()
+
+
+def ai_context_text(client: Any, now_playing: dict | None = None) -> str:
+    parts: list[str] = []
+    if now_playing:
+        parts.append(f"Background audio now playing: {now_playing_text(now_playing)}")
+    snapshot = _device_snapshot(client)
+    parts.append(device_snapshot_text(snapshot))
+    return "\n\n".join(parts)
 
 
 def _wall_seg_opts(action: dict[str, Any]) -> dict[str, Any]:
@@ -3064,13 +3073,8 @@ def make_handler(state: GuiState):
                     def _execute_ai_request() -> dict[str, Any]:
                         import ai_chat  # lazy: ai_chat pulls in the MCP tool surface
 
-                        device_snapshot = _device_snapshot(state.client)
                         settings = ai_settings()
-                        context_parts = []
-                        if now_playing:
-                            context_parts.append(f"Background audio now playing: {now_playing_text(now_playing)}")
-                        if device_snapshot:
-                            context_parts.append(device_snapshot_text(device_snapshot))
+                        context_text = ai_context_text(state.client, now_playing)
                         override = lightctl.load_config().get("system_prompt_override")
                         system_prompt = (
                             override if isinstance(override, str) and override.strip()
@@ -3082,7 +3086,7 @@ def make_handler(state: GuiState):
                                 prompt,
                                 system_prompt=system_prompt,
                                 settings=settings,
-                                context_text="\n\n".join(context_parts) or None,
+                                context_text=context_text,
                             )
                             with _ai_sequence_lock:
                                 still_current = (_ai_sequence == my_seq)
@@ -3101,7 +3105,7 @@ def make_handler(state: GuiState):
                             # fall back to the legacy structured-plan path.
                             if "tool" not in str(exc).lower() and "400" not in str(exc) and "404" not in str(exc):
                                 raise
-                            plan = call_openai_for_plan(prompt, now_playing, device_snapshot)
+                            plan = call_openai_for_plan(prompt, now_playing, _device_snapshot(state.client))
                             with _ai_sequence_lock:
                                 still_current = (_ai_sequence == my_seq)
                             if not still_current:

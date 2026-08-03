@@ -282,5 +282,13 @@ class RunChatTests(unittest.TestCase):
         self.assertEqual(len(result["log"]), 3)
 
 
+def test_static_tool_prompt_has_no_invented_geometry():
+    prompt = ai_chat.TOOL_CHAT_SYSTEM_PROMPT
+    assert "50 individually addressable" not in prompt
+    assert "LEDs 0-24" not in prompt
+    assert "L-shaped" not in prompt
+    assert "device snapshot" in prompt.lower()
+
+
 if __name__ == "__main__":
     unittest.main()

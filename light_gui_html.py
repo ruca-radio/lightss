@@ -1512,7 +1512,7 @@ HTML_TEMPLATE = """<!doctype html>
         const res = await fetchJsonWithTimeout('/api/ai', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({prompt, now_playing: song, async: true})
+          body: JSON.stringify({prompt, now_playing: song, target: currentTarget, async: true})
         }, 180000);
         let data = res;
         if (data.ok && data.job_id) {

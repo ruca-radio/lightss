@@ -257,10 +257,20 @@ class MusicDirector(threading.Thread):
             "vibe you created."
         )
         try:
+            import light_gui  # lazy: shared AI context builder lives with the GUI
+
+            try:
+                context_text = light_gui.ai_context_text(
+                    self.fleet, {"artist": artist, "title": title, "status": "Playing"}
+                )
+            except Exception as exc:  # context must never kill the composer
+                logger.info("Music director: AI context unavailable for %r: %s", title, exc)
+                context_text = None
             result = ai_chat.run_chat(
                 self.fleet,
                 prompt,
                 settings=self.ai_settings,
+                context_text=context_text,
                 max_rounds=4,
                 timeout=15.0,
             )

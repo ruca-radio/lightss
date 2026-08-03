@@ -1,13 +1,18 @@
+import http.client
 import json
 import threading
 import tomllib
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from http.server import ThreadingHTTPServer
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import actions
+import ai_chat
 import light_gui
 import mcp_light
+import music_director
 
 
 class FakeClient:
@@ -28,6 +33,51 @@ class FakeClient:
             "palettes": ["Default"],
             "config": {},
         }
+
+
+def make_topology_snapshot():
+    """Fleet envelope ({"topology", "devices"}) with the verified wall layout."""
+    return {
+        "topology": {
+            "installation": {
+                "wall_order": ["far-left", "middle-left", "middle-right", "far-right"],
+                "spacing_inches": 30, "orientation": "vertical",
+                "pixel_zero": "bottom", "column_length_m": 2.0,
+                "pixels_per_meter": 20, "visible_leds_per_meter": 720,
+                "color_order": "BRG",
+            },
+            "controllers": [{
+                "name": "left", "host": "http://10.27.27.110",
+                "segments": {
+                    "0": {"channel": "far-left", "gpio": 16, "pixels": 40},
+                    "1": {"channel": "middle-left", "gpio": 2, "pixels": 40},
+                },
+            }],
+        },
+        "devices": {
+            "left": {"state": {"on": True, "bri": 80, "seg": [
+                {"id": 0, "start": 0, "stop": 40, "fx": 9, "rev": False},
+                {"id": 1, "start": 40, "stop": 80, "fx": 67, "rev": True},
+            ]}, "info": {"name": "wled-1", "ver": "16.0.1"}},
+        },
+    }
+
+
+class FakeFleetClient:
+    """Client exposing the fleet snapshot envelope (LightFleet shape)."""
+
+    def __init__(self):
+        self.payloads = []
+
+    def post_state(self, payload):
+        self.payloads.append(payload)
+
+    def get_fleet_snapshot(self):
+        return make_topology_snapshot()
+
+
+# Physical-topology facts + live per-segment state every planner context must carry.
+TOPOLOGY_MARKERS = ("far-left", "30 inches", "40 addressable pixels", "fx=9")
 
 
 class SurfaceTests(unittest.TestCase):
@@ -435,6 +485,25 @@ class SurfaceTests(unittest.TestCase):
 
         self.assertLess(send_body.index("stopMusicMode();"), send_body.index("postAction(action, values)"))
         self.assertLess(ai_body.index("stopMusicMode();"), ai_body.index("fetchJsonWithTimeout('/api/ai'"))
+        self.assertIn("sendBeatUpdate", html)
+
+    def test_ai_request_body_carries_selected_target(self):
+        html = light_gui.render_html()
+        ai_start = html.index("async function askAI()")
+        ai_end = html.index("async function waitForAiJob", ai_start)
+        ai_body = html[ai_start:ai_end]
+
+        self.assertIn("target: currentTarget", ai_body)
+
+    def test_beat_updates_never_stop_music_mode(self):
+        # Beat updates are the coalesced Music Mode path — they must never
+        # wrest ownership back by stopping the mode they belong to.
+        html = light_gui.render_html()
+        beat_start = html.index("async function sendBeatUpdate")
+        beat_end = html.index("function optimisticPreviewFromAction", beat_start)
+        beat_body = html[beat_start:beat_end]
+
+        self.assertNotIn("stopMusicMode", beat_body)
 
     def test_vision_analysis_request_uses_responses_image_input(self):
         request = light_gui.build_openai_vision_analysis_request(
@@ -687,6 +756,172 @@ def test_device_snapshot_text_contains_physical_topology_and_all_segments():
         "segment 0", "segment 1", "fx=9", "fx=67",
     ):
         assert expected in text
+
+
+class PlannerContextTests(unittest.TestCase):
+    """Every AI planner path must receive the live wall topology + state."""
+
+    def assert_topology_context(self, text: str) -> None:
+        for marker in TOPOLOGY_MARKERS:
+            self.assertIn(marker, text)
+
+    @staticmethod
+    def _ai_settings() -> dict:
+        return {"base_url": "https://example.test/v1", "model": "m", "api_key_env": "UNSET_KEY"}
+
+    def test_ai_context_text_combines_now_playing_and_topology(self):
+        text = light_gui.ai_context_text(
+            FakeFleetClient(),
+            {"artist": "M83", "title": "Midnight City", "status": "Playing"},
+        )
+
+        self.assertIn("Background audio now playing: M83 - Midnight City (Playing)", text)
+        self.assert_topology_context(text)
+
+    def test_api_ai_sends_topology_context(self):
+        captured = {}
+
+        def fake_run_chat(client, prompt, **kwargs):
+            captured.update(kwargs)
+            return {"text": "done", "log": [], "rounds": 1}
+
+        state = SimpleNamespace(client=FakeFleetClient())
+        server = ThreadingHTTPServer(("127.0.0.1", 0), light_gui.make_handler(state))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with (
+                patch.object(light_gui, "ai_settings", return_value=self._ai_settings()),
+                patch.object(light_gui.lightctl, "load_config", return_value={}),
+                patch.object(ai_chat, "run_chat", side_effect=fake_run_chat),
+            ):
+                conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+                conn.request(
+                    "POST",
+                    "/api/ai",
+                    body=json.dumps({
+                        "prompt": "make it blue",
+                        "now_playing": {"artist": "M83", "title": "Midnight City"},
+                        "async": False,
+                    }),
+                    headers={"Content-Type": "application/json"},
+                )
+                payload = json.loads(conn.getresponse().read().decode("utf-8"))
+                conn.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        self.assertTrue(payload["ok"])
+        context = captured.get("context_text") or ""
+        self.assertIn("Background audio now playing: M83 - Midnight City", context)
+        self.assert_topology_context(context)
+
+    def test_match_lights_to_song_sends_topology_context(self):
+        captured = {}
+
+        def fake_run_chat(client, prompt, **kwargs):
+            captured.update(kwargs)
+            return {"text": "matched", "log": ["set_effect"], "rounds": 1}
+
+        with (
+            patch.object(light_gui, "ai_settings", return_value=self._ai_settings()),
+            patch.object(light_gui.lightctl, "load_config", return_value={}),
+            patch.object(ai_chat, "run_chat", side_effect=fake_run_chat),
+        ):
+            result = light_gui.match_lights_to_song(
+                FakeFleetClient(),
+                now_playing={"artist": "M83", "title": "Midnight City"},
+            )
+
+        self.assertTrue(result["ok"])
+        context = captured.get("context_text") or ""
+        self.assertIn("Background audio now playing: M83 - Midnight City", context)
+        self.assert_topology_context(context)
+
+    def test_music_director_composer_sends_topology_context(self):
+        captured = {}
+
+        def fake_run_chat(client, prompt, **kwargs):
+            captured.update(kwargs)
+            return {"text": "show", "log": ["start_show"], "rounds": 1}
+
+        director = music_director.MusicDirector(
+            FakeFleetClient(), poll_s=60, ai_settings=self._ai_settings()
+        )
+        with patch.object(ai_chat, "run_chat", side_effect=fake_run_chat):
+            director._compose_ai_show("M83", "Midnight City", generation=director._generation)
+
+        self.assert_topology_context(captured.get("context_text") or "")
+
+    def test_generate_mood_for_song_passes_topology_snapshot(self):
+        captured = {}
+
+        def fake_plan(prompt, now_playing=None, device_snapshot=None):
+            captured["now_playing"] = now_playing
+            captured["device_snapshot"] = device_snapshot
+            return {"response": "", "confirmations": [], "actions": [{"action": "effect", "effect": 28}]}
+
+        with patch.object(light_gui, "call_openai_for_plan", side_effect=fake_plan):
+            payload = light_gui.generate_mood_for_song(
+                FakeFleetClient(), {"title": "Midnight City", "artist": "M83"}
+            )
+
+        self.assertEqual(payload, {"seg": [{"fx": 28, "sx": 140}]})
+        self.assertEqual(captured["now_playing"]["title"], "Midnight City")
+        self.assert_topology_context(light_gui.device_snapshot_text(captured["device_snapshot"]))
+
+    def test_autonomous_mode_show_passes_topology_snapshot(self):
+        captured = {}
+
+        def fake_plan(prompt, now_playing=None, device_snapshot=None):
+            captured["now_playing"] = now_playing
+            captured["device_snapshot"] = device_snapshot
+            return {"response": "", "confirmations": [], "actions": []}
+
+        mode = light_gui.AutonomousMode(FakeFleetClient())
+        with (
+            patch.object(light_gui, "call_openai_for_plan", side_effect=fake_plan),
+            patch.object(light_gui, "apply_ai_plan", return_value={"response": ""}),
+        ):
+            mode._apply_song_show({"title": "Midnight City", "artist": "M83"})
+
+        self.assertEqual(captured["now_playing"]["title"], "Midnight City")
+        self.assert_topology_context(light_gui.device_snapshot_text(captured["device_snapshot"]))
+
+    def test_vision_planner_passes_topology_snapshot(self):
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {"output": [{"content": [{"text": "Dim room with warm wall spill."}]}]}
+                ).encode("utf-8")
+
+        def fake_plan(prompt, now_playing=None, device_snapshot=None):
+            captured["device_snapshot"] = device_snapshot
+            return {"response": "ok", "confirmations": [], "client_actions": [], "actions": []}
+
+        with patch.dict(light_gui.os.environ, {"OPENAI_API_KEY": "test-key", "LIGHT_AI_MODEL": "gpt-main-test"}):
+            with patch.object(light_gui.urllib.request, "urlopen", return_value=FakeResponse()):
+                with patch.object(light_gui, "call_openai_for_plan", side_effect=fake_plan):
+                    light_gui.call_openai_vision_for_plan("abc123", FakeFleetClient())
+
+        self.assert_topology_context(light_gui.device_snapshot_text(captured["device_snapshot"]))
+
+    def test_system_knowledge_prompt_defers_geometry_to_snapshot(self):
+        prompt = light_gui.system_knowledge_prompt()
+
+        self.assertNotIn("FOUR vertical LED columns", prompt)
+        self.assertNotIn("50 individually addressable", prompt)
+        self.assertNotIn("L-shaped", prompt)
+        self.assertIn("device snapshot", prompt.lower())
 
 
 if __name__ == "__main__":
