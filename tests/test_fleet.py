@@ -11,6 +11,8 @@ import os
 import unittest
 from unittest.mock import patch
 
+import pytest
+
 import fleet
 import lightctl
 
@@ -52,8 +54,10 @@ class FailingClient(RecordingClient):
 
 def default_controllers() -> list[fleet.ControllerConfig]:
     return [
-        fleet.ControllerConfig("right", "http://10.27.27.110", {0: "far-right", 1: "middle-right"}),
-        fleet.ControllerConfig("left", "http://10.27.27.112", {0: "middle-left", 1: "far-left"}),
+        fleet.ControllerConfig("right", "http://10.27.27.110",
+                               {0: fleet.SegmentConfig("far-right"), 1: fleet.SegmentConfig("middle-right")}),
+        fleet.ControllerConfig("left", "http://10.27.27.112",
+                               {0: fleet.SegmentConfig("middle-left"), 1: fleet.SegmentConfig("far-left")}),
     ]
 
 
@@ -75,14 +79,20 @@ class LoadControllersTests(unittest.TestCase):
 
     def test_builtin_default_is_the_two_known_controllers(self):
         controllers = fleet.load_controllers({})
-        self.assertEqual([c.name for c in controllers], ["right", "left"])
+        self.assertEqual([c.name for c in controllers], ["left", "right"])
         self.assertEqual(controllers[0].host, "http://10.27.27.110")
         self.assertEqual(controllers[1].host, "http://10.27.27.112")
 
     def test_default_segment_mapping_matches_wall_channels(self):
         controllers = {c.name: c for c in fleet.load_controllers({})}
-        self.assertEqual(controllers["right"].segments, {0: "far-right", 1: "middle-right"})
-        self.assertEqual(controllers["left"].segments, {0: "middle-left", 1: "far-left"})
+        self.assertEqual(controllers["left"].segments, {
+            0: fleet.SegmentConfig("far-left", gpio=16, pixels=40),
+            1: fleet.SegmentConfig("middle-left", gpio=2, pixels=40),
+        })
+        self.assertEqual(controllers["right"].segments, {
+            0: fleet.SegmentConfig("far-right", gpio=2, pixels=40),
+            1: fleet.SegmentConfig("middle-right", gpio=16, pixels=40),
+        })
 
     def test_config_controllers_win_and_parse_string_seg_keys(self):
         config = {
@@ -95,8 +105,9 @@ class LoadControllersTests(unittest.TestCase):
         }
         controllers = fleet.load_controllers(config)
         self.assertEqual([c.name for c in controllers], ["right", "left"])
-        # JSON string keys must become int segment ids
-        self.assertEqual(controllers[0].segments, {0: "far-right", 1: "middle-right"})
+        # JSON string keys must become int segment ids, string values become SegmentConfig
+        self.assertEqual(controllers[0].segments,
+                         {0: fleet.SegmentConfig("far-right"), 1: fleet.SegmentConfig("middle-right")})
 
     def test_config_file_controllers_win_over_env(self):
         config = {
@@ -146,7 +157,7 @@ class LoadControllersTests(unittest.TestCase):
         config = {"controllers": [{"name": "no-host"}]}
         with patch.object(fleet, "_warn"):
             controllers = fleet.load_controllers(config)
-        self.assertEqual([c.name for c in controllers], ["right", "left"])
+        self.assertEqual([c.name for c in controllers], ["left", "right"])
 
     def test_wall_order_constant(self):
         self.assertEqual(fleet.WALL_ORDER, ["far-left", "middle-left", "middle-right", "far-right"])
@@ -204,8 +215,8 @@ class FleetResolutionTests(unittest.TestCase):
 class FleetDuplicateNameTests(unittest.TestCase):
     def test_duplicate_channel_names_warn_and_keep_first(self):
         controllers = [
-            fleet.ControllerConfig("a", "http://1.1.1.1", {0: "dup"}),
-            fleet.ControllerConfig("b", "http://2.2.2.2", {0: "dup"}),
+            fleet.ControllerConfig("a", "http://1.1.1.1", {0: fleet.SegmentConfig("dup")}),
+            fleet.ControllerConfig("b", "http://2.2.2.2", {0: fleet.SegmentConfig("dup")}),
         ]
         clients = {"a": RecordingClient("http://1.1.1.1"), "b": RecordingClient("http://2.2.2.2")}
         with patch.object(fleet, "_warn") as warn:
@@ -214,7 +225,7 @@ class FleetDuplicateNameTests(unittest.TestCase):
         self.assertEqual(fleet_.channels(), {"dup": ("a", 0)})
 
     def test_channel_named_like_a_controller_warns_and_is_ignored(self):
-        controllers = [fleet.ControllerConfig("a", "http://1.1.1.1", {0: "b"})]
+        controllers = [fleet.ControllerConfig("a", "http://1.1.1.1", {0: fleet.SegmentConfig("b")})]
         clients = {"a": RecordingClient("http://1.1.1.1"), "b": RecordingClient("http://2.2.2.2")}
         with patch.object(fleet, "_warn") as warn:
             fleet_ = fleet.LightFleet(clients, controllers)
@@ -223,8 +234,8 @@ class FleetDuplicateNameTests(unittest.TestCase):
 
     def test_duplicate_controller_names_warn(self):
         controllers = [
-            fleet.ControllerConfig("a", "http://1.1.1.1", {0: "x"}),
-            fleet.ControllerConfig("a", "http://1.1.1.1", {1: "y"}),
+            fleet.ControllerConfig("a", "http://1.1.1.1", {0: fleet.SegmentConfig("x")}),
+            fleet.ControllerConfig("a", "http://1.1.1.1", {1: fleet.SegmentConfig("y")}),
         ]
         clients = {"a": RecordingClient("http://1.1.1.1")}
         with patch.object(fleet, "_warn") as warn:
@@ -341,9 +352,51 @@ class FromConfigTests(unittest.TestCase):
             with patch.dict(os.environ, {}, clear=False):
                 os.environ.pop("LIGHT_HOSTS", None)
                 fleet_ = fleet.LightFleet.from_config(dry_run=True)
-        self.assertEqual(fleet_.names(), ["right", "left"])
+        self.assertEqual(fleet_.names(), ["left", "right"])
         for client in fleet_.clients.values():
             self.assertTrue(client.dry_run)
+
+
+def test_builtin_topology_matches_verified_wall():
+    installation, controllers = fleet.load_topology({})
+    assert installation.wall_order == [
+        "far-left", "middle-left", "middle-right", "far-right"
+    ]
+    assert installation.spacing_inches == 30
+    assert installation.pixel_zero == "bottom"
+    assert installation.column_length_m == 2.0
+    assert installation.pixels_per_meter == 20
+    assert installation.visible_leds_per_meter == 720
+    assert installation.color_order == "BRG"
+    by_host = {controller.host: controller for controller in controllers}
+    assert by_host["http://10.27.27.110"].segments == {
+        0: fleet.SegmentConfig("far-left", gpio=16, pixels=40),
+        1: fleet.SegmentConfig("middle-left", gpio=2, pixels=40),
+    }
+    assert by_host["http://10.27.27.112"].segments == {
+        0: fleet.SegmentConfig("far-right", gpio=2, pixels=40),
+        1: fleet.SegmentConfig("middle-right", gpio=16, pixels=40),
+    }
+
+
+def test_legacy_string_segment_schema_remains_supported():
+    config = {"controllers": [{
+        "name": "solo", "host": "http://1.2.3.4", "segments": {"0": "bar"}
+    }]}
+    _installation, controllers = fleet.load_topology(config)
+    assert controllers[0].segments[0] == fleet.SegmentConfig("bar")
+
+
+def test_duplicate_wall_channel_is_rejected():
+    config = {
+        "installation": {"wall_order": ["same", "same"]},
+        "controllers": [{
+            "name": "solo", "host": "http://1.2.3.4",
+            "segments": {"0": {"channel": "same", "pixels": 40}},
+        }],
+    }
+    with pytest.raises(ValueError, match="duplicate wall channel"):
+        fleet.load_topology(config)
 
 
 if __name__ == "__main__":

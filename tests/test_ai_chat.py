@@ -229,10 +229,10 @@ class RunChatTests(unittest.TestCase):
         self.assertEqual(result["text"], "Far left is now blue.")
         self.assertEqual(len(result["log"]), 1)
         self.assertIn("set_color", result["log"][0])
-        # far-left -> left controller, segment 1
+        # far-left -> left controller, segment 0
         self.assertEqual(len(fleet_.clients["left"].payloads), 1)
         seg = fleet_.clients["left"].payloads[0]["seg"][0]
-        self.assertEqual(seg["id"], 1)
+        self.assertEqual(seg["id"], 0)
         self.assertEqual(seg["col"][0][:3], [0, 0, 255])
         self.assertEqual(fleet_.clients["right"].payloads, [])
 

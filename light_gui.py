@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import functools
 import json
 import logging
@@ -2251,7 +2252,11 @@ def current_settings(config: dict | None = None) -> dict:
         import fleet as fleet_mod  # lazy: fleet imports lightctl
 
         controllers = [
-            {"name": c.name, "host": c.host, "segments": c.segments}
+            {
+                "name": c.name,
+                "host": c.host,
+                "segments": {str(seg_id): dataclasses.asdict(seg) for seg_id, seg in c.segments.items()},
+            }
             for c in fleet_mod.load_controllers(config)
         ]
     return {
