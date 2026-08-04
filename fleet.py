@@ -197,8 +197,12 @@ def load_topology(config: dict | None = None) -> tuple[InstallationConfig, list[
                 parsed.append(_parse_controller(entry))
             except ValueError as exc:
                 _warn(f"skipping malformed controllers entry: {exc}")
-        if parsed:
-            controllers = parsed
+        if not parsed:
+            raise ValueError(
+                "config 'controllers' list is non-empty but every entry is malformed; "
+                "refusing to fall back to env/built-in defaults"
+            )
+        controllers = parsed
 
     if controllers is None:
         env_hosts = os.environ.get("LIGHT_HOSTS", "").strip()

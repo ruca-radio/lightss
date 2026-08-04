@@ -365,7 +365,7 @@ def build_tools() -> list[dict]:
                 "name": "set_zone",
                 "description": (
                     "Light one named zone of a single column (channel), e.g. the top half of far-left. "
-                    "Each column is a 2 m bar of 50 addressable LEDs; the rest of the column keeps its current look."
+                    "The installation's runtime topology gives per-column pixel counts; the rest of the column keeps its current look."
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -394,7 +394,7 @@ def build_tools() -> list[dict]:
                 "name": "set_segment_bounds",
                 "description": (
                     "Set explicit LED bounds and grouping for a segment: carve a column into arbitrary "
-                    "sub-segments. start/stop are LED indices within the 50-LED column."
+                    "sub-segments. start/stop are LED indices within the column; the runtime installation topology gives per-column pixel counts."
                 ),
                 "inputSchema": {
                     "type": "object",

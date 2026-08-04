@@ -155,11 +155,12 @@ class LoadControllersTests(unittest.TestCase):
         self.assertEqual([c.name for c in controllers], ["good"])
         self.assertEqual(warn.call_count, 4)
 
-    def test_all_malformed_entries_fall_back_to_builtin_default(self):
+    def test_all_malformed_entries_raise_instead_of_falling_back(self):
         config = {"controllers": [{"name": "no-host"}]}
         with patch.object(fleet, "_warn"):
-            controllers = fleet.load_controllers(config)
-        self.assertEqual([c.name for c in controllers], ["left", "right"])
+            with self.assertRaises(ValueError) as ctx:
+                fleet.load_controllers(config)
+        self.assertIn("malformed", str(ctx.exception))
 
     def test_wall_order_constant(self):
         self.assertEqual(fleet.WALL_ORDER, ["far-left", "middle-left", "middle-right", "far-right"])

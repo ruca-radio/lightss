@@ -244,6 +244,16 @@ class SettingsApiHttpTest(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertEqual(self._read_config(), before)
 
+    def test_all_malformed_controllers_rejected_without_touching_config(self) -> None:
+        before = self._read_config()
+        controllers = ["not-a-dict", {"name": "no-host"}, {"host": "http://1.2.3.4"}]
+
+        status, payload = self._post("/api/settings", {"controllers": controllers})
+
+        self.assertEqual(status, 400)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(self._read_config(), before)
+
     def test_post_settings_reload_rebuilds_fleet(self) -> None:
         status, payload = self._post("/api/settings/reload")
 

@@ -296,6 +296,8 @@ def device_snapshot_text(snapshot: dict | None, include_catalog: bool = True) ->
             f"{segment.get('id', '?')}: start={segment.get('start', '?')}, "
             f"stop={segment.get('stop', '?')}, on={segment.get('on', '?')}, "
             f"bri={segment.get('bri', '?')}, fx={segment.get('fx', '?')}, "
+            f"sx={segment.get('sx', '?')}, ix={segment.get('ix', '?')}, "
+            f"cct={segment.get('cct', '?')}, frz={segment.get('frz', '?')}, "
             f"pal={segment.get('pal', '?')}, colors={segment.get('col', [])}, "
             f"reverse={segment.get('rev', '?')}, mirror={segment.get('mi', '?')}"
         )
