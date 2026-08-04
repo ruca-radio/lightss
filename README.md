@@ -1,17 +1,23 @@
 # Bedroom LED Controller
 
 Controller for a small fleet of Wi-Fi WLED controllers driving the bedroom wall
-strips. The default installation is two GLEDOPTO GL-C-310WL controllers, each
-with two 50-LED WS2811 buses exposed as WLED segments:
+columns. The verified installation is four vertical 2.0 m BTF-LIGHTING WS2811
+FCOB RGB columns spaced 30 inches apart, each column carrying 40 addressable IC
+pixels (20 px/m, 720 visible COB LEDs per meter) with LED/pixel 0 at the bottom
+(bottom-up orientation). Two WLED 16.x controllers drive two columns each:
 
-- **Controller `right`** — `http://10.27.27.110` (WLED 0.15.4, 187 effects)
-  - Segment 0 → channel **right**
-  - Segment 1 → channel **middle-right**
-- **Controller `left`** — `http://10.27.27.112` (WLED 16.0.1, 220 effects)
-  - Segment 0 → channel **middle-left**
-  - Segment 1 → channel **left**
+- **Controller `left`** — `http://10.27.27.110`
+  - Segment 0 → channel **far-left** (GPIO 16)
+  - Segment 1 → channel **middle-left** (GPIO 2)
+- **Controller `right`** — `http://10.27.27.112`
+  - Segment 0 → channel **far-right** (GPIO 2)
+  - Segment 1 → channel **middle-right** (GPIO 16)
 
-Physical wall order (left → right): `far-left`, `middle-left`, `middle-right`, `far-right`.
+Physical wall order (left → right): `far-left`, `middle-left`, `middle-right`,
+`far-right`. The LED buses use physical **BRG** color order (WLED color order
+enum 2); that mapping lives only at the WLED bus layer, so API colors on every
+surface remain semantic RGB.
+
 Every surface (CLI, GUI, tray, MCP) can target `all` controllers (default), a
 single controller, or a single channel/segment.
 
@@ -20,6 +26,29 @@ single controller, or a single channel/segment.
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
+```
+
+## WLED Topology Migration
+
+`scripts/migrate_wled_topology.py` migrates the two live controllers to the
+verified topology described above: two WS2811 buses of 40 pixels each per
+controller (starts 0 and 40, BRG color order), with segments repaired to
+(0, 40) / (40, 80). The utility is backup-first — every run saves `/json/cfg`,
+`/json/state`, `/json/info`, `/json/eff`, and `/json/pal` for both hosts
+before anything else — and dry-run is the default; writes require `--apply`.
+
+Preview the migration (dry-run + backup, no writes):
+
+```bash
+backup_dir="/tmp/lightss-wled-backups/$(date +%Y%m%d-%H%M%S)"
+python scripts/migrate_wled_topology.py --backup-dir "$backup_dir"
+python scripts/migrate_wled_topology.py --backup-dir "$backup_dir" --apply
+```
+
+Roll back from a backup directory:
+
+```bash
+python scripts/migrate_wled_topology.py --restore "$backup_dir"
 ```
 
 ## Environment Variables
@@ -284,20 +313,39 @@ Scenes, schedules, and settings are persisted in `~/.config/lightss/`:
 
 The controller fleet is defined in `config.json` under `controllers` (written
 on first run if absent). Each controller lists its host and a map of WLED
-segment id → channel name:
+segment id → segment config (channel name, GPIO pin, pixel count):
 
 ```json
 {
   "controllers": [
-    {"name": "right", "host": "http://10.27.27.110", "segments": {"0": "far-right", "1": "middle-right"}},
-    {"name": "left",  "host": "http://10.27.27.112", "segments": {"0": "middle-left", "1": "far-left"}}
+    {"name": "left",  "host": "http://10.27.27.110", "segments": {"0": {"channel": "far-left", "gpio": 16, "pixels": 40}, "1": {"channel": "middle-left", "gpio": 2, "pixels": 40}}},
+    {"name": "right", "host": "http://10.27.27.112", "segments": {"0": {"channel": "far-right", "gpio": 2, "pixels": 40}, "1": {"channel": "middle-right", "gpio": 16, "pixels": 40}}}
   ]
 }
 ```
 
 Resolution order: config file `controllers` → `LIGHT_HOSTS` env (comma-separated
 hosts named `light-1`, `light-2`, … with no channel aliases) → the built-in
-two-controller default above.
+two-controller default above. A plain channel-name string per segment (e.g.
+`"0": "far-left"`) still works for custom fleets without GPIO/pixel data.
+
+An optional `installation` block records the physical wall geometry (defaults
+shown match the verified installation):
+
+```json
+{
+  "installation": {
+    "wall_order": ["far-left", "middle-left", "middle-right", "far-right"],
+    "spacing_inches": 30.0,
+    "orientation": "vertical",
+    "pixel_zero": "bottom",
+    "column_length_m": 2.0,
+    "pixels_per_meter": 20,
+    "visible_leds_per_meter": 720,
+    "color_order": "BRG"
+  }
+}
+```
 
 `config.json` also holds `audio_source` for music/beat capture: `"monitor"`
 (default, system output monitor), `"mic"`, or a device name; `LIGHT_AUDIO_SOURCE`
