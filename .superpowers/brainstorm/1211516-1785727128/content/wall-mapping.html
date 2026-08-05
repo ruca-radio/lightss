@@ -1,0 +1,35 @@
+<h2>Confirm the four-column wall mapping</h2>
+<p class="subtitle">Viewed from the room, left to right. Every bar is vertical, about 2 m tall, and should contain 40 addressable WS2811 pixels.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Physical wall — 30 inches between adjacent bars</div>
+  <div class="mockup-body" style="display:flex;justify-content:center;align-items:flex-end;gap:56px;min-height:420px;padding:30px 20px">
+    <div style="text-align:center">
+      <div style="height:300px;width:30px;border-radius:16px;background:linear-gradient(to top,#ff4e50,#f9d423,#38ef7d,#00c6ff,#8e2de2);box-shadow:0 0 25px #8e2de2"></div>
+      <h3>Far-left</h3><p>.110 · segment 0<br>GPIO 16 · 40 pixels<br>LED 0 at bottom</p>
+    </div>
+    <div style="text-align:center">
+      <div style="height:300px;width:30px;border-radius:16px;background:linear-gradient(to top,#ff4e50,#f9d423,#38ef7d,#00c6ff,#8e2de2);box-shadow:0 0 25px #00c6ff"></div>
+      <h3>Middle-left</h3><p>.110 · segment 1<br>GPIO 2 · 40 pixels<br>LED 0 at bottom</p>
+    </div>
+    <div style="text-align:center">
+      <div style="height:300px;width:30px;border-radius:16px;background:linear-gradient(to top,#ff4e50,#f9d423,#38ef7d,#00c6ff,#8e2de2);box-shadow:0 0 25px #38ef7d"></div>
+      <h3>Middle-right</h3><p>.112 · segment 1<br>GPIO 16 · 40 pixels<br>LED 0 at bottom</p>
+    </div>
+    <div style="text-align:center">
+      <div style="height:300px;width:30px;border-radius:16px;background:linear-gradient(to top,#ff4e50,#f9d423,#38ef7d,#00c6ff,#8e2de2);box-shadow:0 0 25px #f9d423"></div>
+      <h3>Far-right</h3><p>.112 · segment 0<br>GPIO 2 · 40 pixels<br>LED 0 at bottom</p>
+    </div>
+  </div>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="mapping-correct" onclick="toggleSelect(this)">
+    <div class="letter">✓</div>
+    <div class="content"><h3>Mapping is correct</h3><p>Use this geometry as the controller and AI source of truth.</p></div>
+  </div>
+  <div class="option" data-choice="mapping-needs-change" onclick="toggleSelect(this)">
+    <div class="letter">✎</div>
+    <div class="content"><h3>Something needs changing</h3><p>Tell me which label, segment, orientation, length, or spacing is wrong.</p></div>
+  </div>
+</div>
