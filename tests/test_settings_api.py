@@ -55,8 +55,8 @@ class SettingsApiHttpTest(unittest.TestCase):
                         "name": "right",
                         "host": "http://10.0.0.1",
                         "segments": {
-                            "0": {"channel": "far-right", "gpio": 2, "pixels": 40},
-                            "1": {"channel": "middle-right", "gpio": 16, "pixels": 40},
+                            "0": {"channel": "far-right", "gpio": 2, "pixels": 40, "start": 47, "stop": 87},
+                            "1": {"channel": "middle-right", "gpio": 16, "pixels": 47, "start": 0, "stop": 47},
                         },
                     },
                     {
@@ -165,7 +165,7 @@ class SettingsApiHttpTest(unittest.TestCase):
     def test_installation_settings_roundtrip_preserves_metadata(self):
         installation = {
             "wall_order": ["far-left", "middle-left", "middle-right", "far-right"],
-            "spacing_inches": 30,
+            "spacing_inches": 32,
             "orientation": "vertical",
             "pixel_zero": "bottom",
             "column_length_m": 2.0,
@@ -185,7 +185,7 @@ class SettingsApiHttpTest(unittest.TestCase):
                 "name": "right",
                 "host": "http://10.0.0.1",
                 "segments": {
-                    "0": {"channel": "far-right", "gpio": 2, "pixels": 40, "notes": "window side"},
+                    "0": {"channel": "far-right", "gpio": 2, "pixels": 40, "start": 47, "stop": 87, "notes": "window side"},
                     "1": {"channel": "middle-right", "gpio": 16, "pixels": 40},
                 },
             },
@@ -425,9 +425,10 @@ class AiSettingsPrecedenceTest(unittest.TestCase):
         self.assertFalse(settings["api_key_set"])
 
     def test_openai_model_env_still_works_without_config_ai(self) -> None:
-        with patch.dict(light_gui.os.environ, {"OPENAI_MODEL": "legacy-env-model", "LIGHT_AI_MODEL": ""}):
-            self.assertEqual(light_gui.ai_settings({})["model"], "legacy-env-model")
-            request = light_gui.build_openai_request("make it warm")
+        with patch.object(lightctl, "load_config", return_value={}):
+            with patch.dict(light_gui.os.environ, {"OPENAI_MODEL": "legacy-env-model", "LIGHT_AI_MODEL": ""}):
+                self.assertEqual(light_gui.ai_settings({})["model"], "legacy-env-model")
+                request = light_gui.build_openai_request("make it warm")
         self.assertEqual(request["model"], "legacy-env-model")
 
     def test_build_openai_request_defaults_without_config_or_env(self) -> None:

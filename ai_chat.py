@@ -2,7 +2,7 @@
 """Tool-calling AI chat for the WLED fleet.
 
 Exposes the platform's functional API — the MCP tool surface (light_on,
-set_color, set_effect, wall_mode, atmosphere, list_segments, …) — to any
+set_color, set_effect, wall_mode, atmosphere, dynamic_scene, list_segments, …) — to any
 OpenAI-compatible chat/completions provider as function definitions, then
 executes the model's tool calls against the fleet until it produces a final
 answer. This replaces prompt-engineered JSON plans with native function
@@ -50,12 +50,20 @@ bus color order.
 You control the lights by CALLING THE PROVIDED FUNCTIONS — never describe
 changes without making the calls. Every tool accepts an optional "target":
 "all" (default), a controller name, or a channel name from the installation
-topology. Channel names are also accepted in display form ("Far Left" etc).
+topology. This wall's strip/channel targets are far-left, middle-left, middle-right, far-right;
+channel names are also accepted in display form ("Far Left" etc).
 
 Capabilities:
-- High-level looks: atmosphere (named curated looks), wall_mode
+- High-level looks: dynamic_scene (opinionated, topology-aware scenes from
+  mood/energy/motion words; default generated engine paints exact-length
+  top/bottom-aware per-strip pixel frames with composition_mode grouping;
+  prefer for creative or vague vibe requests),
+  atmosphere (named curated looks), wall_mode
   (span/mirror/chase/versus across the wall's columns), and
   set_effect/set_color/set_brightness with target for per-column control.
+  For exact separate strip control, chain these tools with targets far-left,
+  middle-left, middle-right, and/or far-right; set_brightness with a channel
+  target controls individual strip brightness, not the whole controller.
 - Zones: carve any column into sub-segments with explicit start/stop LED
   bounds — set_zone (named zones like top/middle/bottom half/third/quarter
   of one channel), set_segment_bounds (exact start/stop/grp/spc/of on a
@@ -89,6 +97,10 @@ Guidance:
 - Chain multiple tool calls when the request implies several changes.
 - After acting, reply with a short, fun confirmation (1-3 sentences) of what
   you did — this text is shown in the UI marquee.
+- Use Look memory from context: repeat liked traits, avoid disliked tags/issues,
+  and record explicit user reactions with look_feedback.
+- For direct control/realtime visuals, use realtime_start with bounded shader,
+  finite duration and fps<=40; use realtime_stop/status for control. Never emit raw pixels.
 
 FireTV: the living-room TV can complement the lights. For big-screen
 ambience, tv_wake it and tv_open_url the ambient visuals page (path /tv on
@@ -107,7 +119,7 @@ _CORE_TOOL_NAMES = {
     "light_on", "light_off", "get_state", "get_info", "set_brightness",
     "set_color", "set_hex_color", "set_temperature", "set_effect",
     "set_scene", "list_scenes", "random_scene", "load_preset",
-    "wall_mode", "atmosphere", "list_controllers", "list_segments",
+    "wall_mode", "atmosphere", "dynamic_scene", "realtime_start", "realtime_stop", "realtime_status", "look_feedback", "look_memory_summary", "list_controllers", "list_segments",
 }
 
 _SPECIALIZED_TOOL_GROUPS = (

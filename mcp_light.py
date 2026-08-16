@@ -13,9 +13,12 @@ import threading
 from typing import Any
 
 import atmospheres
+import dynamic_scenes
 import columns
 import fleet
 import lightctl
+import look_memory
+import realtime
 import music_recognizer
 import shows
 logger = logging.getLogger("mcp_light")
@@ -79,7 +82,11 @@ def _transition_schema() -> dict:
 def _target_schema() -> dict:
     return {
         "type": "string",
-        "description": "Target: 'all' (default), a controller name, or a channel name",
+        "description": (
+            "Target: 'all' (default), a controller name, or one strip/channel name: "
+            "far-left, middle-left, middle-right, or far-right. Use channel targets "
+            "for independent strip control."
+        ),
         "default": "all",
     }
 
@@ -119,7 +126,7 @@ def build_tools() -> list[dict]:
         },
         {
             "name": "set_brightness",
-            "description": "Set LED brightness from 0 to 255.",
+            "description": "Set LED brightness from 0 to 255. With a channel target, this sets only that strip's segment brightness.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -351,6 +358,59 @@ def build_tools() -> list[dict]:
                 "additionalProperties": False,
             },
         },
+        {
+            "name": "dynamic_scene",
+            "description": "Apply an opinionated, topology-aware, safe dynamic scene from mood/energy/motion words. Prefer for creative or vague vibe requests; no raw fx/pal passthrough.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "mood": {"type": "string", "description": "Mood words, e.g. dreamy, ocean, dark, cozy"},
+                    "energy": {"type": "string", "description": "Energy words, e.g. calm, bright, party"},
+                    "motion": {"type": "string", "description": "Motion words, e.g. rise, flow, chase"},
+                    "strategy": {"type": "string", "enum": ["quiet_gradient", "split_temperature", "mirror", "center_out", "left_to_right", "chase", "vertical_rise", "top_glow", "bottom_glow", "center_bloom", "shimmer"]},
+                    "engine": {"type": "string", "enum": ["generated", "effect"], "description": "generated paints exact-length per-strip pixel frames; effect uses safe stock WLED effects"},
+                    "composition_mode": {"type": "string", "enum": ["unison", "independent", "pairs", "center_vs_outer", "left_vs_right", "alternating", "random_groups"]},
+                    "seed": {"type": ["integer", "string"], "description": "Optional deterministic seed"},
+                    "intensity": {"type": "number", "minimum": 0, "maximum": 1},
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "look_feedback",
+            "description": "Record user feedback on the last/current lighting look so future AI scene choices improve.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "score": {"type": "integer", "minimum": -1, "maximum": 1},
+                    "notes": {"type": "string"},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                    "look_id": {"type": "string"},
+                    "applies_to": {"type": "string", "enum": ["last"]},
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "look_memory_summary",
+            "description": "Show concise remembered lighting feedback/preferences.",
+            "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False},
+        },
+        {
+            "name": "realtime_start",
+            "description": "Start bounded AI-directed realtime DDP shader renderer (finite duration/FPS, no raw pixels).",
+            "inputSchema": {"type": "object", "properties": {
+                "shader": {"type": "string", "enum": ["red_rocks", "aurora_flow", "bass_bloom", "liquid_gradient", "center_wave", "vertical_scan"]},
+                "mood": {"type": "string"},
+                "composition_mode": {"type": "string", "enum": ["unison", "independent", "pairs", "center_vs_outer", "left_vs_right", "alternating", "random_groups"]},
+                "intensity": {"type": "number", "minimum": 0, "maximum": 1},
+                "fps": {"type": "integer", "minimum": 1, "maximum": 40},
+                "duration_s": {"type": "number", "minimum": 0.1, "maximum": 900},
+                "seed": {"type": ["integer", "string"]},
+            }, "additionalProperties": False},
+        },
+        {"name": "realtime_stop", "description": "Stop realtime DDP rendering.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
+        {"name": "realtime_status", "description": "Realtime DDP renderer status.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
     ]
     # Fleet args: every tool accepts an optional target; seg-emitting tools also accept a segment id.
     for tool in tools:
@@ -534,7 +594,7 @@ def build_tools() -> list[dict]:
                 "Mood-matching music mode: a background director watches now-playing "
                 "(MPRIS) and applies audio-reactive looks so the wall follows the mood "
                 "of the music (beat handling is done by the controller hardware). "
-                "Falls back to an idle atmosphere when the music stops."
+                "When music stops, it leaves the current look alone by default."
             ),
             "inputSchema": {
                 "type": "object",
@@ -573,6 +633,10 @@ def _get_state(client: Any, target: str) -> dict:
     if _is_fleet(client):
         return client.get_state(target=target)
     return client.get_state()
+
+
+def _is_channel_target(client: Any, target: str) -> bool:
+    return _is_fleet(client) and target in client.channels()
 
 
 def _with_fleet_status(message: str, result: dict[str, dict] | None) -> str:
@@ -619,7 +683,7 @@ def _segments_info(client: Any) -> dict:
     for channel, (ctrl, seg_id) in channels.items():
         controllers.setdefault(ctrl, {})[str(seg_id)] = channel
     return {
-        "wall_order": list(fleet.WALL_ORDER),
+        "wall_order": list(getattr(getattr(client, "installation", None), "wall_order", fleet.WALL_ORDER)),
         "controllers": controllers,
         "channels": {ch: [ctrl, seg_id] for ch, (ctrl, seg_id) in channels.items()},
         "valid_targets": list(dict.fromkeys([fleet.DEFAULT_TARGET, *client.names(), *channels])),
@@ -751,7 +815,13 @@ def call_tool(
         return text_result(json.dumps(state, indent=2))
     if name == "set_brightness":
         brightness = int(args["brightness"])
-        result = _post_state(client, lightctl.brightness_payload(brightness, transition_ms=transition_ms), target)
+        if _is_channel_target(client, target):
+            payload = lightctl.segment_payload([{"bri": lightctl.clamp_byte(brightness)}])
+            if transition_ms > 0:
+                payload["transition"] = lightctl._transition_units(transition_ms)
+        else:
+            payload = lightctl.brightness_payload(brightness, transition_ms=transition_ms)
+        result = _post_state(client, payload, target)
         return text_result(_with_fleet_status(f"Set brightness to {lightctl.clamp_byte(brightness)}.", result))
     if name == "set_color":
         red = int(args.get("red", 0))
@@ -964,6 +1034,33 @@ def call_tool(
         if not _is_fleet(client):
             raise ValueError("atmosphere requires fleet mode (run without --host).")
         return text_result(f"Applied atmosphere: {atmospheres.apply_atmosphere(client, args['name'])}")
+    if name == "dynamic_scene":
+        if not _is_fleet(client):
+            raise ValueError("dynamic_scene requires fleet mode (run without --host).")
+        scene_args = dict(args)
+        scene_args.pop("target", None)  # dynamic scenes are wall-wide/topology-aware.
+        result = dynamic_scenes.apply_dynamic_scene(client, **scene_args)
+        return text_result(f"Applied dynamic scene: {result}")
+    if name == "look_feedback":
+        look_id = look_memory.add_feedback(
+            look_id=args.get("look_id"),
+            score=args.get("score"),
+            tags=args.get("tags"),
+            notes=str(args.get("notes") or ""),
+            applies_to=str(args.get("applies_to") or "last"),
+        )
+        return text_result(f"Recorded feedback for look {look_id or 'none'}.")
+    if name == "look_memory_summary":
+        return text_result(look_memory.memory_summary(int(args.get("limit") or 8)))
+    if name == "realtime_start":
+        if not _is_fleet(client):
+            raise ValueError("realtime_start requires fleet mode (run without --host).")
+        scene_args = dict(args); scene_args.pop("target", None)
+        return text_result(realtime.realtime_start(client, **scene_args))
+    if name == "realtime_stop":
+        return text_result(realtime.realtime_stop())
+    if name == "realtime_status":
+        return text_result(json.dumps(realtime.realtime_status(), indent=2))
     if name == "set_zone":
         return text_result(_set_zone(client, args))
     if name == "set_segment_bounds":

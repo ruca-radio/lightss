@@ -257,6 +257,36 @@ class ServerHttpTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertIn("Restart command sent", payload["message"])
 
+    def test_look_feedback_and_memory_summary_actions(self) -> None:
+        with (
+            patch.object(light_gui.look_memory, "add_feedback", return_value="look-123") as add_feedback,
+            patch.object(light_gui.look_memory, "memory_summary", return_value="Look memory summary text") as summary,
+        ):
+            feedback_request = urllib.request.Request(
+                f"http://127.0.0.1:{self.port}/api/action",
+                data=json.dumps({"action": "look_feedback", "score": 1, "notes": "worked", "tags": ["warm"]}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(feedback_request, timeout=5) as response:
+                feedback_payload = json.loads(response.read().decode("utf-8"))
+
+            summary_request = urllib.request.Request(
+                f"http://127.0.0.1:{self.port}/api/action",
+                data=json.dumps({"action": "look_memory_summary", "limit": 5}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(summary_request, timeout=5) as response:
+                summary_payload = json.loads(response.read().decode("utf-8"))
+
+        add_feedback.assert_called_once()
+        self.assertTrue(feedback_payload["ok"])
+        self.assertIn("Recorded feedback", feedback_payload["message"])
+        summary.assert_called_once_with(limit=5)
+        self.assertTrue(summary_payload["ok"])
+        self.assertEqual(summary_payload["message"], "Look memory summary text")
+
 
 if __name__ == "__main__":
     unittest.main()

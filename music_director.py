@@ -5,7 +5,8 @@ The WLED controllers already handle the beat via their own FFT (AudioReactive
 UDP sound sync), so this module only handles *mood*: it polls the now-playing
 track over MPRIS and, whenever the track identity changes, applies one
 curated audio-reactive look chosen from MOOD_LOOKS. When the music pauses or
-stops, it falls back to a calm idle atmosphere.
+stops, it leaves the current wall look alone by default. Callers may opt into
+an idle atmosphere explicitly.
 
 Looks reuse the shows.py look model: {"atmosphere": name} or
 {"wall_mode": "span|mirror|chase|versus", ...kwargs} applied via
@@ -166,14 +167,15 @@ class MusicDirector(threading.Thread):
     """Daemon thread polling MPRIS and steering the wall's mood.
 
     On a track identity change (artist + title) the matched look is applied
-    exactly once. When now_playing_mpris() reports nothing Playing for
-    _IDLE_STRIKES consecutive polls, the idle atmosphere is applied once and
-    polling continues. stop() is cooperative: it interrupts the poll sleep
-    and the thread exits after any in-flight post returns.
+    exactly once. When now_playing_mpris() reports nothing Playing, the
+    current wall look is left alone by default. If idle_atmosphere is
+    explicitly configured, then after _IDLE_STRIKES consecutive idle polls
+    that idle atmosphere is applied once. stop() is cooperative: it interrupts
+    the poll sleep and the thread exits after any in-flight post returns.
     """
 
     def __init__(self, fleet: LightFleet, poll_s: float = 8.0,
-                 idle_atmosphere: str = "candlelit", ai_settings: dict | None = None):
+                 idle_atmosphere: str | None = None, ai_settings: dict | None = None):
         super().__init__(daemon=True, name="lightss-music-director")
         self.fleet = fleet
         self.poll_s = float(poll_s)
@@ -292,7 +294,13 @@ class MusicDirector(threading.Thread):
                     title, len(result["log"]), result["text"][:120])
 
     def _handle_idle(self) -> None:
-        """No track playing: after _IDLE_STRIKES polls, idle once."""
+        """No track playing: leave current look alone unless idle is opt-in."""
+        if not self.idle_atmosphere:
+            self._idle_strikes += 1
+            self._last_key = None
+            self.current_track = None
+            self.current_mood = None
+            return
         self._idle_strikes += 1
         if self._idle_strikes < _IDLE_STRIKES or self._idle_applied:
             return
@@ -367,7 +375,8 @@ def start_director(fleet: LightFleet, **kwargs) -> str:
     if old is not None:
         old.join(timeout=5.0)
     director.start()
-    return f"Music director started (poll every {director.poll_s:g}s, idle {director.idle_atmosphere!r})."
+    idle = repr(director.idle_atmosphere) if director.idle_atmosphere else "disabled"
+    return f"Music director started (poll every {director.poll_s:g}s, idle {idle})."
 
 
 def stop_director() -> str:

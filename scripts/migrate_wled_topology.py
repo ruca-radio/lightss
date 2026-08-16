@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Backup-first live WLED 16.x topology migration utility.
 
-Migrates the two verified controllers to two WS2811 buses of 40 pixels
-each (starts 0 and 40, BRG color order) and repairs the segments to
-(0, 40) / (40, 80).
+Migrates the two verified controllers to the calibrated far-wall topology:
+.110 has far-left 34 px on GPIO 16 then middle-left 48 px on GPIO 2;
+.112 has far-right as WLED segment 0 on GPIO 2 (bus start 47, len 40)
+and middle-right as WLED segment 1 on GPIO 16 (bus start 0, len 47).
+Segments are repaired to the confirmed live WLED segment IDs; bus starts remain
+calibrated separately from physical wall order.
 
 Safety invariants:
 - never POST without a complete validated backup of /json/cfg, /json/state,
@@ -35,24 +38,33 @@ from pathlib import Path
 # WLED 16 authoritative color-order enum (wled00/const.h): COL_ORDER_BRG = 2.
 WLED_BRG_ORDER = 2
 
-BUS_LENGTH = 40
-TOTAL_PIXELS = 80
-BUS_STARTS = (0, 40)
-
-HOST_PINS = {
-    "http://10.27.27.110": [16, 2],
-    "http://10.27.27.112": [2, 16],
+HOST_BUSES = {
+    "http://10.27.27.110": [(16, 0, 34), (2, 34, 48)],
+    "http://10.27.27.112": [(16, 0, 47), (2, 47, 40)],
 }
+HOST_PINS = {host: [pin for pin, _start, _length in buses] for host, buses in HOST_BUSES.items()}
+HOST_TOTALS = {host: sum(length for _pin, _start, length in buses) for host, buses in HOST_BUSES.items()}
 
 SEGMENT_PAYLOAD = {
     "seg": [
-        {"id": 0, "start": 0, "stop": 40, "on": True, "fx": 0},
-        {"id": 1, "start": 40, "stop": 80, "on": True, "fx": 0},
+        {"id": 0, "start": 0, "stop": 34, "on": True, "fx": 0},
+        {"id": 1, "start": 34, "stop": 82, "on": True, "fx": 0},
     ],
     "udpn": {"nn": True},
 }
 
 BACKUP_ENDPOINTS = ("/json/cfg", "/json/state", "/json/info", "/json/eff", "/json/pal")
+
+HOST_SEGMENT_PAYLOADS = {
+    "http://10.27.27.110": SEGMENT_PAYLOAD,
+    "http://10.27.27.112": {
+        "seg": [
+            {"id": 0, "start": 47, "stop": 87, "on": True, "fx": 0},
+            {"id": 1, "start": 0, "stop": 47, "on": True, "fx": 0},
+        ],
+        "udpn": {"nn": True},
+    },
+}
 
 WAIT_ATTEMPTS = 30
 WAIT_DELAY_S = 1.0
@@ -87,11 +99,14 @@ def _host_tag(host: str) -> str:
     return host.split("://", 1)[1]
 
 
-def _pin_starts(pins) -> list[tuple[int, int]]:
-    return [(pin, idx * BUS_LENGTH) for idx, pin in enumerate(pins)]
+def _pin_starts(pins) -> list[tuple[int, int, int]]:
+    for buses in HOST_BUSES.values():
+        if [pin for pin, _start, _length in buses] == list(pins):
+            return list(buses)
+    return [(pin, idx * 40, 40) for idx, pin in enumerate(pins)]
 
 
-def build_config_payload(cfg: dict, pin_starts: list[tuple[int, int]]) -> dict:
+def build_config_payload(cfg: dict, pin_starts: list[tuple]) -> dict:
     """Build the partial /json/cfg envelope for the target topology.
 
     Buses are matched by verified GPIO (pin[0]), never by array position.
@@ -104,7 +119,8 @@ def build_config_payload(cfg: dict, pin_starts: list[tuple[int, int]]) -> dict:
     except (KeyError, TypeError) as exc:
         raise RuntimeError(f"config missing hw.led.ins: {exc}") from exc
 
-    wanted = dict(pin_starts)
+    normalized = [(item[0], item[1], item[2] if len(item) > 2 else 40) for item in pin_starts]
+    wanted = {pin: (start, length) for pin, start, length in normalized}
     by_gpio = {}
     for bus in buses:
         gpio = bus.get("pin", [None])[0]
@@ -120,13 +136,13 @@ def build_config_payload(cfg: dict, pin_starts: list[tuple[int, int]]) -> dict:
         )
 
     new_ins = []
-    for gpio, start in pin_starts:
+    for gpio, start, length in normalized:
         if gpio in by_gpio:
             bus = copy.deepcopy(by_gpio[gpio])
         else:
             bus = {"pin": [gpio]}
         bus["start"] = start
-        bus["len"] = BUS_LENGTH
+        bus["len"] = length
         bus["order"] = WLED_BRG_ORDER
         new_ins.append(bus)
 
@@ -135,25 +151,26 @@ def build_config_payload(cfg: dict, pin_starts: list[tuple[int, int]]) -> dict:
     return {"hw": {"led": new_led}}
 
 
-def verify_config(cfg: dict, expected_pins) -> None:
-    """Require two buses: starts [0, 40], len 40, BRG order, expected pins."""
+def verify_config(cfg: dict, expected_pins, expected_buses=None) -> None:
+    """Require calibrated bus starts/lengths, BRG order, expected pins."""
     try:
         buses = cfg["hw"]["led"]["ins"]
     except (KeyError, TypeError) as exc:
         raise RuntimeError(f"readback mismatch: config missing hw.led.ins ({exc})") from exc
 
     problems = []
-    if len(buses) != len(BUS_STARTS):
-        problems.append(f"expected {len(BUS_STARTS)} buses, got {len(buses)}")
+    expected_buses = expected_buses or _pin_starts(expected_pins)
+    if len(buses) != len(expected_buses):
+        problems.append(f"expected {len(expected_buses)} buses, got {len(buses)}")
     else:
         by_start = {bus.get("start"): bus for bus in buses}
-        for start, pin in zip(BUS_STARTS, expected_pins):
+        for pin, start, length in expected_buses:
             bus = by_start.get(start)
             if bus is None:
                 problems.append(f"no bus at start {start}")
                 continue
-            if bus.get("len") != BUS_LENGTH:
-                problems.append(f"bus@{start} len={bus.get('len')} (want {BUS_LENGTH})")
+            if bus.get("len") != length:
+                problems.append(f"bus@{start} len={bus.get('len')} (want {length})")
             if bus.get("order") != WLED_BRG_ORDER:
                 problems.append(
                     f"bus@{start} order={bus.get('order')} (want {WLED_BRG_ORDER})"
@@ -164,22 +181,22 @@ def verify_config(cfg: dict, expected_pins) -> None:
         raise RuntimeError("readback mismatch: " + "; ".join(problems))
 
 
-def verify_state(state: dict) -> None:
-    """Require exactly the repaired segments (0, 40) and (40, 80)."""
-    expected = [(seg["start"], seg["stop"]) for seg in SEGMENT_PAYLOAD["seg"]]
+def verify_state(state: dict, expected_payload: dict = SEGMENT_PAYLOAD) -> None:
+    """Require exactly the repaired calibrated segments."""
+    expected = [(seg["start"], seg["stop"]) for seg in expected_payload["seg"]]
     segs = state.get("seg") or []
     actual = [(s.get("start"), s.get("stop")) for s in segs]
-    if sorted(actual) != expected:
+    if sorted(actual) != sorted(expected):
         raise RuntimeError(
             f"readback mismatch: segments {actual} (want {expected})"
         )
 
 
-def verify_info(info: dict) -> None:
+def verify_info(info: dict, total_pixels: int) -> None:
     count = (info.get("leds") or {}).get("count")
-    if count != TOTAL_PIXELS:
+    if count != total_pixels:
         raise RuntimeError(
-            f"readback mismatch: info.leds.count={count} (want {TOTAL_PIXELS})"
+            f"readback mismatch: info.leds.count={count} (want {total_pixels})"
         )
 
 
@@ -229,9 +246,9 @@ def readback_verify(transport, host: str, pins) -> None:
     cfg = transport.get(host, "/json/cfg")
     state = transport.get(host, "/json/state")
     info = transport.get(host, "/json/info")
-    verify_config(cfg, expected_pins=pins)
-    verify_state(state)
-    verify_info(info)
+    verify_config(cfg, expected_pins=pins, expected_buses=HOST_BUSES[host])
+    verify_state(state, HOST_SEGMENT_PAYLOADS[host])
+    verify_info(info, HOST_TOTALS[host])
 
 
 def print_plan(host: str, cfg: dict, payload: dict) -> None:
@@ -256,10 +273,7 @@ def migrate(transport, backup_dir, apply: bool = False) -> None:
     print(f"backups complete and validated under {backup_dir}")
 
     cfgs = {host: transport.get(host, "/json/cfg") for host in HOST_PINS}
-    payloads = {
-        host: build_config_payload(cfgs[host], _pin_starts(pins))
-        for host, pins in HOST_PINS.items()
-    }
+    payloads = {host: build_config_payload(cfgs[host], HOST_BUSES[host]) for host in HOST_PINS}
 
     if not apply:
         for host in HOST_PINS:
@@ -270,7 +284,7 @@ def migrate(transport, backup_dir, apply: bool = False) -> None:
     for host, pins in HOST_PINS.items():
         transport.post(host, "/json/cfg", payloads[host])
         wait_for_device(transport, host)
-        transport.post(host, "/json/state", copy.deepcopy(SEGMENT_PAYLOAD))
+        transport.post(host, "/json/state", copy.deepcopy(HOST_SEGMENT_PAYLOADS[host]))
         readback_verify(transport, host, pins)
         print(f"{host} migrated and verified")
 

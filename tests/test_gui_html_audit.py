@@ -83,6 +83,34 @@ class GuiHtmlAuditTests(unittest.TestCase):
         self.assertIn("fetchJsonWithTimeout('/api/mood/control'", html)
         self.assertIn("fetchJsonWithTimeout('/api/suggestions'", html)
 
+    def test_dynamic_scene_controls_are_visible(self):
+        html = light_gui.render_html()
+
+        for marker in (
+            "Dynamic AI Scenes",
+            "dynEngine",
+            "dynComposition",
+            "Generated mode is not a stock WLED effect",
+            "Apply Dynamic Scene",
+            "send('dynamic_scene'",
+        ):
+            self.assertIn(marker, html)
+
+    def test_realtime_and_feedback_controls_are_visible(self):
+        html = light_gui.render_html()
+
+        for marker in (
+            "Realtime Direct Mode",
+            "send('realtime_start'",
+            "send('realtime_stop'",
+            "refreshRealtimeStatus()",
+            "That worked",
+            "look_feedback",
+            "look_memory_summary",
+            "Show memory summary",
+        ):
+            self.assertIn(marker, html)
+
     def test_tv_page_pollers_have_timeouts(self):
         tv = light_gui_html.TV_AMBIENT_HTML
 

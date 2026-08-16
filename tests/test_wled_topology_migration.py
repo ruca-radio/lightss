@@ -19,12 +19,12 @@ spec.loader.exec_module(migration)
 
 EXPECTED = {
     "http://10.27.27.110": [
-        {"start": 0, "len": 40, "pin": [16], "order": 2, "type": 22},
-        {"start": 40, "len": 40, "pin": [2], "order": 2, "type": 22},
+        {"start": 0, "len": 34, "pin": [16], "order": 2, "type": 22},
+        {"start": 34, "len": 48, "pin": [2], "order": 2, "type": 22},
     ],
     "http://10.27.27.112": [
-        {"start": 0, "len": 40, "pin": [2], "order": 2, "type": 22},
-        {"start": 40, "len": 40, "pin": [16], "order": 2, "type": 22},
+        {"start": 0, "len": 47, "pin": [16], "order": 2, "type": 22},
+        {"start": 47, "len": 40, "pin": [2], "order": 2, "type": 22},
     ],
 }
 
@@ -49,7 +49,7 @@ def make_bus(pin, start=0, length=80, order=0):
 
 def make_cfg(pins):
     return {
-        "hw": {"led": {"ins": [make_bus(pin) for pin in pins], "total": 80}},
+        "hw": {"led": {"ins": [make_bus(pin) for pin in pins], "total": sum(length for _pin, _start, length in migration.HOST_BUSES[next(h for h, ps in migration.HOST_PINS.items() if ps == list(pins))]) if list(pins) in migration.HOST_PINS.values() else 80}},
         "name": "wled-test",
     }
 
@@ -108,9 +108,9 @@ def test_build_bus_payload_preserves_unrelated_bus_fields():
         "rev": False, "skip": 0, "ref": False, "rgbwm": 0,
         "freq": 0, "maxpwr": 0, "ledma": 30, "drv": 0,
     }]}}}
-    payload = migration.build_config_payload(cfg, [(16, 0), (2, 40)])
+    payload = migration.build_config_payload(cfg, [(16, 0, 34), (2, 34, 48)])
     first = payload["hw"]["led"]["ins"][0]
-    assert first["len"] == 40
+    assert first["len"] == 34
     assert first["order"] == 2
     assert first["ledma"] == 30
 
@@ -122,7 +122,7 @@ def test_apply_refuses_without_complete_backup(tmp_path):
     assert transport.posts == []
 
 
-def test_readback_requires_80_total_pixels_and_brg():
+def test_readback_requires_calibrated_pixels_and_brg():
     with pytest.raises(RuntimeError, match="readback mismatch"):
         migration.verify_config({"hw": {"led": {"ins": [
             {"start": 0, "len": 40, "pin": [16], "order": 1},
@@ -133,7 +133,7 @@ def test_readback_requires_80_total_pixels_and_brg():
 def test_build_bus_payload_matches_expected_topology():
     for host, pins in migration.HOST_PINS.items():
         cfg = make_cfg(pins)
-        pin_starts = [(pin, idx * 40) for idx, pin in enumerate(pins)]
+        pin_starts = migration.HOST_BUSES[host]
         payload = migration.build_config_payload(cfg, pin_starts)
         buses = payload["hw"]["led"]["ins"]
         assert len(buses) == len(EXPECTED[host])
@@ -147,13 +147,13 @@ def test_build_bus_payload_rejects_unverified_gpio():
         {"start": 0, "len": 80, "pin": [4], "order": 0},
     ]}}}
     with pytest.raises(RuntimeError, match="verified GPIO"):
-        migration.build_config_payload(cfg, [(16, 0), (2, 40)])
+        migration.build_config_payload(cfg, [(16, 0, 34), (2, 34, 48)])
 
 
 def test_verify_config_accepts_expected_readback():
     cfg = {"hw": {"led": {"ins": [
-        {"start": 0, "len": 40, "pin": [16], "order": 2},
-        {"start": 40, "len": 40, "pin": [2], "order": 2},
+        {"start": 0, "len": 34, "pin": [16], "order": 2},
+        {"start": 34, "len": 48, "pin": [2], "order": 2},
     ]}}}
     migration.verify_config(cfg, expected_pins=[16, 2])
 
@@ -186,8 +186,8 @@ def test_apply_posts_expected_payloads_and_verifies(tmp_path):
             for key, value in expected_bus.items():
                 assert actual_bus[key] == value
     state_posts = [p for p in transport.posts if p[1] == "/json/state"]
-    for _, _, payload in state_posts:
-        assert payload == migration.SEGMENT_PAYLOAD
+    for host, _, payload in state_posts:
+        assert payload == migration.HOST_SEGMENT_PAYLOADS[host]
 
 
 def test_restore_replays_backup_and_verifies(tmp_path):

@@ -31,7 +31,7 @@
 
 - [ ] **Step 1: Write failing tests for the verified defaults and metadata**
 
-Add tests that require `.110` to own the left pair, `.112` to own the right pair, and every channel to expose 40 pixels plus its GPIO:
+Add tests that require `.110` to own the left pair, `.112` to own the right pair, and every channel to expose calibrated pixels plus its GPIO:
 
 ```python
 def test_builtin_topology_matches_verified_wall():
@@ -51,7 +51,7 @@ def test_builtin_topology_matches_verified_wall():
         1: fleet.SegmentConfig("middle-left", gpio=2, pixels=40),
     }
     assert by_host["http://10.27.27.112"].segments == {
-        0: fleet.SegmentConfig("far-right", gpio=2, pixels=40),
+        0: fleet.SegmentConfig("far-right", gpio=2, pixels=40, start=47, stop=87),
         1: fleet.SegmentConfig("middle-right", gpio=16, pixels=40),
     }
 
@@ -127,15 +127,15 @@ _BUILTIN_CONTROLLERS = [
     {
         "name": "left", "host": "http://10.27.27.110",
         "segments": {
-            "0": {"channel": "far-left", "gpio": 16, "pixels": 40},
-            "1": {"channel": "middle-left", "gpio": 2, "pixels": 40},
+            "0": {"channel": "far-left", "gpio": 16, "pixels": 34, "start": 0, "stop": 34},
+            "1": {"channel": "middle-left", "gpio": 2, "pixels": 48, "start": 34, "stop": 82},
         },
     },
     {
         "name": "right", "host": "http://10.27.27.112",
         "segments": {
-            "0": {"channel": "far-right", "gpio": 2, "pixels": 40},
-            "1": {"channel": "middle-right", "gpio": 16, "pixels": 40},
+            "0": {"channel": "far-right", "gpio": 2, "pixels": 40, "start": 47, "stop": 87},
+            "1": {"channel": "middle-right", "gpio": 16, "pixels": 47, "start": 0, "stop": 47},
         },
     },
 ]
@@ -291,7 +291,7 @@ def test_device_snapshot_text_contains_physical_topology_and_all_segments():
         "topology": {
             "installation": {
                 "wall_order": ["far-left", "middle-left", "middle-right", "far-right"],
-                "spacing_inches": 30, "orientation": "vertical",
+                "spacing_inches": 32, "orientation": "vertical",
                 "pixel_zero": "bottom", "column_length_m": 2.0,
                 "pixels_per_meter": 20, "visible_leds_per_meter": 720,
                 "color_order": "BRG",
@@ -299,8 +299,8 @@ def test_device_snapshot_text_contains_physical_topology_and_all_segments():
             "controllers": [{
                 "name": "left", "host": "http://10.27.27.110",
                 "segments": {
-                    "0": {"channel": "far-left", "gpio": 16, "pixels": 40},
-                    "1": {"channel": "middle-left", "gpio": 2, "pixels": 40},
+                    "0": {"channel": "far-left", "gpio": 16, "pixels": 34, "start": 0, "stop": 34},
+                    "1": {"channel": "middle-left", "gpio": 2, "pixels": 48, "start": 34, "stop": 82},
                 },
             }],
         },
@@ -313,7 +313,7 @@ def test_device_snapshot_text_contains_physical_topology_and_all_segments():
     }
     text = light_gui.device_snapshot_text(snapshot)
     for expected in (
-        "four vertical columns", "30 inches", "40 addressable pixels",
+        "four vertical columns", "32 inches", "40 addressable pixels",
         "LED 0 at the bottom", "BRG", "far-left", "middle-left",
         "segment 0", "segment 1", "fx=9", "fx=67",
     ):
@@ -399,7 +399,7 @@ def test_static_tool_prompt_has_no_invented_geometry():
     assert "device snapshot" in prompt.lower()
 ```
 
-Patch `ai_chat.run_chat` in tests for `/api/ai`, `match_lights_to_song()`, and the autonomous planner, then assert each received `context_text` includes `far-left`, `30 inches`, `40 addressable pixels`, and the current per-segment state. For the legacy and vision paths, inspect the user input passed to `build_openai_request()` / `call_openai_for_plan()`.
+Patch `ai_chat.run_chat` in tests for `/api/ai`, `match_lights_to_song()`, and the autonomous planner, then assert each received `context_text` includes `far-left`, `32 inches`, `40 addressable pixels`, and the current per-segment state. For the legacy and vision paths, inspect the user input passed to `build_openai_request()` / `call_openai_for_plan()`.
 
 Retain and strengthen the existing browser ownership contract:
 
@@ -491,7 +491,7 @@ Add `installation` to the temporary config and assert GET/POST preservation:
 def test_installation_settings_roundtrip_preserves_metadata(self):
     installation = {
         "wall_order": ["far-left", "middle-left", "middle-right", "far-right"],
-        "spacing_inches": 30,
+        "spacing_inches": 32,
         "orientation": "vertical",
         "pixel_zero": "bottom",
         "column_length_m": 2.0,
@@ -657,7 +657,7 @@ git commit -m "feat: add safe WLED topology migration"
 
 - [ ] **Step 1: Update installation documentation**
 
-Document the exact verified mapping, four 2 m columns, 30-inch spacing, 40 addressable IC pixels per column, bottom-up orientation, 720 visible LEDs/m, and physical BRG bus order. State clearly that API colors remain RGB.
+Document the exact verified mapping, four 2 m columns, 32-inch spacing, non-uniform calibrated addressable IC pixel counts (34/48/47/40), bottom-up orientation, 720 visible LEDs/m, and physical BRG bus order. State clearly that API colors remain RGB.
 
 Document dry-run and apply commands:
 
@@ -691,7 +691,7 @@ Confirm line by line:
 
 - correct `.110` left-pair and `.112` right-pair mapping;
 - 40 pixels per 2 m column;
-- 30-inch spacing and bottom-up orientation;
+- 32-inch spacing and bottom-up orientation;
 - BRG only at the WLED bus layer;
 - topology and all live segments in every AI path;
 - tool chat, legacy fallback, vision, song, and autonomous coverage;

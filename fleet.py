@@ -26,15 +26,15 @@ _BUILTIN_CONTROLLERS = [
     {
         "name": "left", "host": "http://10.27.27.110",
         "segments": {
-            "0": {"channel": "far-left", "gpio": 16, "pixels": 40},
-            "1": {"channel": "middle-left", "gpio": 2, "pixels": 40},
+            "0": {"channel": "far-left", "gpio": 16, "pixels": 34, "start": 0, "stop": 34},
+            "1": {"channel": "middle-left", "gpio": 2, "pixels": 48, "start": 34, "stop": 82},
         },
     },
     {
         "name": "right", "host": "http://10.27.27.112",
         "segments": {
-            "0": {"channel": "far-right", "gpio": 2, "pixels": 40},
-            "1": {"channel": "middle-right", "gpio": 16, "pixels": 40},
+            "0": {"channel": "far-right", "gpio": 2, "pixels": 40, "start": 47, "stop": 87},
+            "1": {"channel": "middle-right", "gpio": 16, "pixels": 47, "start": 0, "stop": 47},
         },
     },
 ]
@@ -48,13 +48,14 @@ _BUILTIN_CONTROLLERS = [
 class InstallationConfig:
     name: str = "bedroom-wall"
     wall_order: list[str] = field(default_factory=lambda: list(WALL_ORDER))
-    spacing_inches: float = 30.0
+    spacing_inches: float = 32.0
     orientation: str = "vertical"
     pixel_zero: str = "bottom"
     column_length_m: float = 2.0
     pixels_per_meter: int = 20
     visible_leds_per_meter: int = 720
     color_order: str = "BRG"
+    addressable_pixel_physical_leds: int = 5
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,8 @@ class SegmentConfig:
     channel: str
     gpio: int | None = None
     pixels: int | None = None
+    start: int | None = None
+    stop: int | None = None
 
 
 @dataclass
@@ -99,13 +102,14 @@ def _parse_installation(config: dict) -> InstallationConfig:
     return InstallationConfig(
         name=str(raw.get("name") or "bedroom-wall"),
         wall_order=wall_order,
-        spacing_inches=float(raw.get("spacing_inches") or 30.0),
+        spacing_inches=float(raw.get("spacing_inches") or 32.0),
         orientation=orientation,
         pixel_zero=pixel_zero,
         column_length_m=float(raw.get("column_length_m") or 2.0),
         pixels_per_meter=int(raw.get("pixels_per_meter") or 20),
         visible_leds_per_meter=int(raw.get("visible_leds_per_meter") or 720),
         color_order=str(raw.get("color_order") or "BRG"),
+        addressable_pixel_physical_leds=int(raw.get("addressable_pixel_physical_leds") or 5),
     )
 
 
@@ -117,6 +121,8 @@ def _parse_segment(value: object, controller_name: str, seg_id: object) -> Segme
         channel = str(value.get("channel") or "").strip()
         gpio = value.get("gpio")
         pixels = value.get("pixels")
+        start = value.get("start")
+        stop = value.get("stop")
         if gpio is not None and (not isinstance(gpio, int) or isinstance(gpio, bool)):
             raise ValueError(
                 f"controller {controller_name!r} segment {seg_id!r} has a non-integer gpio in {value!r}"
@@ -125,7 +131,12 @@ def _parse_segment(value: object, controller_name: str, seg_id: object) -> Segme
             raise ValueError(
                 f"controller {controller_name!r} segment {seg_id!r} has a non-integer pixels in {value!r}"
             )
-        return SegmentConfig(channel=channel, gpio=gpio, pixels=pixels)
+        for key, number in (("start", start), ("stop", stop)):
+            if number is not None and (not isinstance(number, int) or isinstance(number, bool)):
+                raise ValueError(
+                    f"controller {controller_name!r} segment {seg_id!r} has a non-integer {key} in {value!r}"
+                )
+        return SegmentConfig(channel=channel, gpio=gpio, pixels=pixels, start=start, stop=stop)
     raise ValueError(
         f"controller {controller_name!r} segment {seg_id!r} must be a channel name or object, got {value!r}"
     )
@@ -175,6 +186,17 @@ def _validate_topology(
                 raise ValueError(
                     f"controller {controller.name!r} segment {seg_id} has nonpositive pixels {segment.pixels}"
                 )
+            if segment.start is not None and segment.start < 0:
+                raise ValueError(f"controller {controller.name!r} segment {seg_id} has negative start {segment.start}")
+            if segment.stop is not None and segment.stop <= 0:
+                raise ValueError(f"controller {controller.name!r} segment {seg_id} has nonpositive stop {segment.stop}")
+            if segment.start is not None and segment.stop is not None:
+                if segment.stop <= segment.start:
+                    raise ValueError(f"controller {controller.name!r} segment {seg_id} has invalid bounds {segment.start}..{segment.stop}")
+                if segment.pixels is not None and segment.stop - segment.start != segment.pixels:
+                    raise ValueError(
+                        f"controller {controller.name!r} segment {seg_id} bounds {segment.start}..{segment.stop} do not match pixels {segment.pixels}"
+                    )
     if enforce_coverage:
         missing = [channel for channel in installation.wall_order if channel not in seen]
         if missing:

@@ -13,7 +13,7 @@ and firmware details in the 2026-08-01 fleet design.
 ## Verified installation
 
 The wall contains four vertical 2.0 m BTF-LIGHTING WS2811 FCOB RGB strips,
-spaced 30 inches apart. LED/pixel 0 is at the bottom and indices rise upward.
+spaced 32 inches apart. LED/pixel 0 is at the bottom and indices rise upward.
 
 The product is the 12 V, 12 mm, 720-visible-LED/m model, ASIN B0C38QYR53. A
 5 m reel contains 100 WS2811 ICs and has 50 mm cut intervals. WLED therefore
@@ -24,9 +24,9 @@ The physical mapping was verified interactively by isolating each live segment:
 
 | Wall position | Controller | WLED segment | GPIO | Logical pixels |
 |---|---|---:|---:|---:|
-| far-left | `10.27.27.110` | 0 | 16 | 40 |
-| middle-left | `10.27.27.110` | 1 | 2 | 40 |
-| middle-right | `10.27.27.112` | 1 | 16 | 40 |
+| far-left | `10.27.27.110` | 0 | 16 | 34 |
+| middle-left | `10.27.27.110` | 1 | 2 | 48 |
+| middle-right | `10.27.27.112` | 1 | 16 | 47 |
 | far-right | `10.27.27.112` | 0 | 2 | 40 |
 
 Both controllers reported WLED 16.0.1 during the 2026-08-02 live query.
@@ -69,7 +69,7 @@ with enough metadata to render a complete AI context. The canonical values are:
   "installation": {
     "name": "bedroom-wall",
     "wall_order": ["far-left", "middle-left", "middle-right", "far-right"],
-    "spacing_inches": 30,
+    "spacing_inches": 32,
     "orientation": "vertical",
     "pixel_zero": "bottom",
     "column_length_m": 2.0,
@@ -82,16 +82,16 @@ with enough metadata to render a complete AI context. The canonical values are:
       "name": "left",
       "host": "http://10.27.27.110",
       "segments": {
-        "0": {"channel": "far-left", "gpio": 16, "pixels": 40},
-        "1": {"channel": "middle-left", "gpio": 2, "pixels": 40}
+        "0": {"channel": "far-left", "gpio": 16, "pixels": 34, "start": 0, "stop": 34},
+        "1": {"channel": "middle-left", "gpio": 2, "pixels": 48, "start": 34, "stop": 82}
       }
     },
     {
       "name": "right",
       "host": "http://10.27.27.112",
       "segments": {
-        "0": {"channel": "far-right", "gpio": 2, "pixels": 40},
-        "1": {"channel": "middle-right", "gpio": 16, "pixels": 40}
+        "0": {"channel": "far-right", "gpio": 2, "pixels": 40, "start": 47, "stop": 87},
+        "1": {"channel": "middle-right", "gpio": 16, "pixels": 47, "start": 0, "stop": 47}
       }
     }
   ]
@@ -109,7 +109,7 @@ topology and labeled live controller snapshots. A deterministic formatter will
 turn the same object into concise model context. It will state:
 
 - four vertical columns and their physical left-to-right order;
-- two-meter height, 30-inch spacing, and 40 addressable pixels per column;
+- two-meter height, 32-inch spacing, and non-uniform calibrated addressable pixel counts (34/48/47/40);
 - LED 0 at the bottom, including top/bottom zone and motion-direction meaning;
 - exact controller, GPIO, and segment ownership for each channel;
 - BRG device color order while keeping AI-facing colors semantic RGB;
@@ -196,7 +196,7 @@ Implementation follows test-driven development. Required regression coverage:
 
 1. new and legacy config parsing;
 2. exact verified host/segment/channel/GPIO mapping;
-3. four 40-pixel vertical columns, 30-inch spacing, and bottom-up zone math;
+3. four 40-pixel vertical columns, 32-inch spacing, and bottom-up zone math;
 4. topology-labeled fleet snapshots with partial controller failure;
 5. identical physical context in tool chat, legacy planner, vision-to-planner,
    song matching, and autonomous planning;

@@ -25,6 +25,7 @@ import uuid
 import actions
 import light_gui_html
 import lightctl
+import look_memory
 import mood_orchestrator
 import music_recognizer
 from light_gui_html import HTML_TEMPLATE
@@ -37,7 +38,7 @@ AI_ACTIONS = actions.ai_action_names()
 CLIENT_ACTIONS = actions.CLIENT_ACTIONS
 
 # Wall-wide composers + per-channel control; routed through columns.py (fleet mode only).
-WALL_ACTIONS = {"wall_span", "wall_mirror", "wall_chase", "wall_versus", "set_channel", "atmosphere"}
+WALL_ACTIONS = {"wall_span", "wall_mirror", "wall_chase", "wall_versus", "set_channel", "atmosphere", "dynamic_scene", "realtime_start", "realtime_stop", "realtime_status"}
 
 API_GET_PATHS = {
     "/",
@@ -119,6 +120,9 @@ def ai_action_reference() -> str:
         "- wall_versus: left pair vs right pair with fx_left/fx_right and optional pal_left/pal_right.\n"
         "- set_channel: one channel only (channel: far-left, middle-left, middle-right, or far-right) "
         "with optional effect/palette/colors.\n"
+        "- dynamic_scene: opinionated topology-aware scene from mood/energy/motion/strategy; default engine generated paints exact-length per-strip pixel frames with top/bottom awareness and per-strip brightness. Optional engine effect uses safe stock WLED effects. Prefer for creative/vague vibe requests; use explicit actions for exact values.\n"
+        "- look_feedback: record feedback about the last generated look (score -1/0/1, notes, tags, optional look_id).\n"
+        "- realtime_start/realtime_stop/realtime_status: bounded AI-directed DDP renderer (finite duration/FPS, safe local shaders).\n"
         "- Every action accepts an optional target: all (default), a controller name, or a channel name.\n"
         "One-shot examples:\n"
         "- 'soft ocean for 20 minutes then off' -> scene ocean, nightlight on duration 20 target brightness 0.\n"
@@ -204,9 +208,12 @@ def topology_text(topology: dict) -> str:
             f"{count} {installation.get('orientation', '?')} columns "
             f"(wall order: {', '.join(str(channel) for channel in wall_order)}), "
             f"spaced {_format_number(installation.get('spacing_inches', '?'))} inches apart; "
+            "controller/data inputs are at the bottom of each strip; "
             f"each column is {_format_number(installation.get('column_length_m', '?'))} m at "
             f"{installation.get('pixels_per_meter', '?')} addressable pixels/m "
             f"({installation.get('visible_leds_per_meter', '?')} visible LEDs/m), "
+            f"one addressable pixel/logical LED equals one "
+            f"{installation.get('addressable_pixel_physical_leds', 5)}-LED physical Smart IC block, "
             f"LED 0 at the {installation.get('pixel_zero', '?')}, "
             f"color order {installation.get('color_order', '?')}."
         ),
@@ -225,6 +232,8 @@ def topology_text(topology: dict) -> str:
                 details.append(f"gpio {segment['gpio']}")
             if segment.get("pixels") is not None:
                 details.append(f"{segment['pixels']} addressable pixels")
+            if segment.get("start") is not None and segment.get("stop") is not None:
+                details.append(f"bounds {segment['start']}..{segment['stop']}")
             segment_texts.append(f"segment {seg_id} = {', '.join(details)}")
         lines.append(
             f"Controller '{controller.get('name', '?')}' ({controller.get('host', '?')}): "
@@ -406,6 +415,19 @@ transition (tt), live/lor, nightlight (nl.on/dur/mode/tbri), udpn sync, playlist
 - atmosphere (one named curated multi-part look — PREFER this when the user names a
   vibe/mood that matches; parameter "atmosphere"):
 __ATMOSPHERES__
+- dynamic_scene: PREFER this for creative/vague requests like "make it dreamy",
+  "something moody", "give me a tasteful party vibe", or mood/energy/motion words.
+  Default engine="generated" paints exact-length static pixel frames for each strip
+  (top/bottom aware, per-strip brightness, no segment bound rewrites). Use
+  composition_mode for unison/independent/pairs/center_vs_outer/left_vs_right/
+  alternating/random_groups. Optional engine="effect" uses safe stock WLED effects.
+  Use explicit actions instead when the user gives exact values.
+- look_feedback: use when the user says a look worked/didn't work, was too dim,
+  mapped wrong, had wrong strips/orientation, etc. Record score, notes, and tags.
+- realtime_start/realtime_stop/realtime_status: AI-directed realtime DDP renderer.
+  Use only bounded shader/mood/composition_mode/intensity/fps/duration_s/seed; no raw pixels.
+  Shaders: red_rocks, aurora_flow, bass_bloom, liquid_gradient, center_wave, vertical_scan.
+  Use finite duration (max 15 min), fps cap 40. Stop realtime before unrelated normal actions.
 - Any action may include "target": "all" (default), a controller name, or a channel name.
 
 One-shot examples (intent → action):
@@ -447,6 +469,8 @@ Mention the song in your response when it fits.
 3. One action object per response. Every emitted color/effect/palette/preset id must
    exist in the snapshot catalog/lists. If unsure an id is valid, do not
    guess — omit it or pick a known-safe default.
+4. MEMORY: Use Look memory context. Repeat liked traits, avoid disliked tags/issues,
+   and treat mapping/orientation feedback as high priority.
 
 ### OUTPUT FORMAT (strict)
 Respond ONLY with a single JSON object, no prose outside it:
@@ -1020,6 +1044,21 @@ def build_openai_request(
                                         "type": ["string", "null"],
                                         "description": "Named curated look for the atmosphere action (see atmosphere list in prompt)",
                                     },
+                                    "mood": {"type": ["string", "null"], "description": "dynamic_scene mood words"},
+                                    "energy": {"type": ["string", "null"], "description": "dynamic_scene energy words"},
+                                    "motion": {"type": ["string", "null"], "description": "dynamic_scene motion words"},
+                                    "strategy": {"type": ["string", "null"], "enum": ["quiet_gradient", "split_temperature", "mirror", "center_out", "left_to_right", "chase", "vertical_rise", "top_glow", "bottom_glow", "center_bloom", "shimmer", None]},
+                                    "engine": {"type": ["string", "null"], "enum": ["generated", "effect", None], "description": "dynamic_scene engine; generated is default pixel-frame painter"},
+                                    "composition_mode": {"type": ["string", "null"], "enum": ["unison", "independent", "pairs", "center_vs_outer", "left_vs_right", "alternating", "random_groups", None]},
+                                    "seed": {"type": ["integer", "string", "null"], "description": "Optional deterministic dynamic_scene seed"},
+                                    "score": {"type": ["integer", "null"], "minimum": -1, "maximum": 1, "description": "look_feedback score: -1 dislike, 0 neutral/note, 1 like"},
+                                    "notes": {"type": ["string", "null"], "description": "look_feedback user notes"},
+                                    "tags": {"type": ["array", "null"], "items": {"type": "string"}, "description": "look_feedback tags such as too-dim, wrong-strip, liked-colors"},
+                                    "look_id": {"type": ["string", "null"], "description": "Optional look id for feedback; defaults to last look"},
+                                    "applies_to": {"type": ["string", "null"], "enum": ["last", None]},
+                                    "shader": {"type": ["string", "null"], "enum": ["red_rocks", "aurora_flow", "bass_bloom", "liquid_gradient", "center_wave", "vertical_scan", None]},
+                                    "fps": {"type": ["integer", "null"], "minimum": 1, "maximum": 40},
+                                    "duration_s": {"type": ["number", "null"], "minimum": 0.1, "maximum": 900},
                                     "pal_left": {"type": ["integer", "null"], "minimum": 0, "maximum": 70},
                                     "pal_right": {"type": ["integer", "null"], "minimum": 0, "maximum": 70},
                                 },
@@ -1075,6 +1114,21 @@ def build_openai_request(
                                     "pal_left",
                                     "pal_right",
                                     "atmosphere",
+                                    "mood",
+                                    "energy",
+                                    "motion",
+                                    "strategy",
+                                    "engine",
+                                    "composition_mode",
+                                    "seed",
+                                    "score",
+                                    "notes",
+                                    "tags",
+                                    "look_id",
+                                    "applies_to",
+                                    "shader",
+                                    "fps",
+                                    "duration_s",
                                 ],
                             },
                         }
@@ -1313,6 +1367,7 @@ def ai_context_text(client: Any, now_playing: dict | None = None) -> str:
     parts: list[str] = []
     if now_playing:
         parts.append(f"Background audio now playing: {now_playing_text(now_playing)}")
+    parts.append(look_memory.memory_summary(limit=8))
     snapshot = _device_snapshot(client)
     parts.append(device_snapshot_text(snapshot))
     return "\n\n".join(parts)
@@ -1353,6 +1408,43 @@ def _apply_wall_action(client: Any, action: dict[str, Any]) -> str:
     import columns  # lazy: columns imports fleet, which imports lightctl
 
     kind = str(action.get("action", ""))
+    if kind.startswith("realtime_"):
+        import realtime
+        if kind == "realtime_start":
+            return realtime.realtime_start(
+                client,
+                shader=str(action.get("shader") or "liquid_gradient"),
+                mood=str(action.get("mood") or ""),
+                composition_mode=str(action.get("composition_mode") or "unison"),
+                intensity=action.get("intensity") or 0.6,
+                fps=action.get("fps") or 24,
+                duration_s=action.get("duration_s") or 60,
+                seed=action.get("seed"),
+            )
+        if kind == "realtime_stop":
+            return realtime.realtime_stop()
+        return json.dumps(realtime.realtime_status(), indent=2)
+    if kind == "dynamic_scene":
+        try:
+            import realtime
+            realtime.realtime_stop()
+        except Exception:
+            pass
+        import dynamic_scenes
+
+        dynamic_scenes.apply_dynamic_scene(
+            client,
+            mood=str(action.get("mood") or action.get("name") or ""),
+            energy=str(action.get("energy") or ""),
+            motion=str(action.get("motion") or ""),
+            strategy=str(action.get("strategy") or ""),
+            engine=str(action.get("engine") or "generated"),
+            composition_mode=str(action.get("composition_mode") or "unison"),
+            seed=action.get("seed"),
+            intensity=action.get("intensity"),
+        )
+        return "Applied dynamic scene."
+
     if kind == "atmosphere":
         import atmospheres  # lazy: atmospheres builds on columns
 
@@ -1557,6 +1649,16 @@ def apply_ai_actions(client: lightctl.LightClient, actions: list[dict[str, Any]]
         if kind in WALL_ACTIONS:
             _apply_wall_action(client, action)
             applied.append(kind)
+            continue
+        if kind == "look_feedback":
+            look_memory.add_feedback(
+                look_id=action.get("look_id"),
+                score=action.get("score"),
+                tags=action.get("tags"),
+                notes=str(action.get("notes") or ""),
+                applies_to=str(action.get("applies_to") or "last"),
+            )
+            applied.append("look_feedback")
             continue
         if kind == "save_scene":
             payload: lightctl.WledPayload = {}
@@ -3196,6 +3298,19 @@ def make_handler(state: GuiState):
                             return
                         else:
                             message = "Unknown schedule subaction."
+                    elif action == "look_feedback":
+                        look_id = look_memory.add_feedback(
+                            look_id=data.get("look_id"),
+                            score=data.get("score"),
+                            tags=data.get("tags"),
+                            notes=str(data.get("notes") or ""),
+                            applies_to=str(data.get("applies_to") or "last"),
+                        )
+                        message = f"Recorded feedback for look {look_id or 'none'}."
+                    elif action == "look_memory_summary":
+                        limit = int(data.get("limit", 8) or 8)
+                        self.respond_json({"ok": True, "message": look_memory.memory_summary(limit=limit)})
+                        return
                     else:
                         if action in WALL_ACTIONS:
                             message = _apply_wall_action(state.client, {"action": action, **data})

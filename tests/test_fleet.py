@@ -55,11 +55,11 @@ class FailingClient(RecordingClient):
 def default_controllers() -> list[fleet.ControllerConfig]:
     return [
         fleet.ControllerConfig("left", "http://10.27.27.110",
-                               {0: fleet.SegmentConfig("far-left", gpio=16, pixels=40),
-                                1: fleet.SegmentConfig("middle-left", gpio=2, pixels=40)}),
+                               {0: fleet.SegmentConfig("far-left", gpio=16, pixels=34, start=0, stop=34),
+                                1: fleet.SegmentConfig("middle-left", gpio=2, pixels=48, start=34, stop=82)}),
         fleet.ControllerConfig("right", "http://10.27.27.112",
-                               {0: fleet.SegmentConfig("far-right", gpio=2, pixels=40),
-                                1: fleet.SegmentConfig("middle-right", gpio=16, pixels=40)}),
+                               {0: fleet.SegmentConfig("far-right", gpio=2, pixels=40, start=47, stop=87),
+                                1: fleet.SegmentConfig("middle-right", gpio=16, pixels=47, start=0, stop=47)}),
     ]
 
 
@@ -88,12 +88,12 @@ class LoadControllersTests(unittest.TestCase):
     def test_default_segment_mapping_matches_wall_channels(self):
         controllers = {c.name: c for c in fleet.load_controllers({})}
         self.assertEqual(controllers["left"].segments, {
-            0: fleet.SegmentConfig("far-left", gpio=16, pixels=40),
-            1: fleet.SegmentConfig("middle-left", gpio=2, pixels=40),
+            0: fleet.SegmentConfig("far-left", gpio=16, pixels=34, start=0, stop=34),
+            1: fleet.SegmentConfig("middle-left", gpio=2, pixels=48, start=34, stop=82),
         })
         self.assertEqual(controllers["right"].segments, {
-            0: fleet.SegmentConfig("far-right", gpio=2, pixels=40),
-            1: fleet.SegmentConfig("middle-right", gpio=16, pixels=40),
+            0: fleet.SegmentConfig("far-right", gpio=2, pixels=40, start=47, stop=87),
+            1: fleet.SegmentConfig("middle-right", gpio=16, pixels=47, start=0, stop=47),
         })
 
     def test_config_controllers_win_and_parse_string_seg_keys(self):
@@ -363,9 +363,9 @@ class FromConfigTests(unittest.TestCase):
 def test_fleet_snapshot_labels_live_devices_with_topology():
     fleet_ = make_fleet()
     snapshot = fleet_.get_fleet_snapshot()
-    assert snapshot["topology"]["installation"]["spacing_inches"] == 30
+    assert snapshot["topology"]["installation"]["spacing_inches"] == 32
     assert snapshot["topology"]["controllers"][0]["segments"]["0"] == {
-        "channel": "far-left", "gpio": 16, "pixels": 40
+        "channel": "far-left", "gpio": 16, "pixels": 34, "start": 0, "stop": 34
     }
     assert set(snapshot["devices"]) == {"left", "right"}
 
@@ -375,7 +375,7 @@ def test_builtin_topology_matches_verified_wall():
     assert installation.wall_order == [
         "far-left", "middle-left", "middle-right", "far-right"
     ]
-    assert installation.spacing_inches == 30
+    assert installation.spacing_inches == 32
     assert installation.pixel_zero == "bottom"
     assert installation.column_length_m == 2.0
     assert installation.pixels_per_meter == 20
@@ -383,12 +383,12 @@ def test_builtin_topology_matches_verified_wall():
     assert installation.color_order == "BRG"
     by_host = {controller.host: controller for controller in controllers}
     assert by_host["http://10.27.27.110"].segments == {
-        0: fleet.SegmentConfig("far-left", gpio=16, pixels=40),
-        1: fleet.SegmentConfig("middle-left", gpio=2, pixels=40),
+        0: fleet.SegmentConfig("far-left", gpio=16, pixels=34, start=0, stop=34),
+        1: fleet.SegmentConfig("middle-left", gpio=2, pixels=48, start=34, stop=82),
     }
     assert by_host["http://10.27.27.112"].segments == {
-        0: fleet.SegmentConfig("far-right", gpio=2, pixels=40),
-        1: fleet.SegmentConfig("middle-right", gpio=16, pixels=40),
+        0: fleet.SegmentConfig("far-right", gpio=2, pixels=40, start=47, stop=87),
+        1: fleet.SegmentConfig("middle-right", gpio=16, pixels=47, start=0, stop=47),
     }
 
 

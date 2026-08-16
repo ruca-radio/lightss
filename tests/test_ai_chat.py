@@ -55,7 +55,7 @@ class ChatToolsTests(unittest.TestCase):
         self.assertGreater(len(tools), 20)
         names = {t["function"]["name"] for t in tools}
         for expected in ("light_on", "set_effect", "set_color", "wall_mode",
-                         "atmosphere", "list_segments", "list_controllers"):
+                         "atmosphere", "dynamic_scene", "list_segments", "list_controllers"):
             self.assertIn(expected, names)
         for tool in tools:
             self.assertEqual(tool["type"], "function")
@@ -86,6 +86,14 @@ class ChatToolsTests(unittest.TestCase):
 
         names = {tool["function"]["name"] for tool in ai_chat.chat_tools("delete the ocean scene")}
         self.assertIn("delete_scene", names)
+
+    def test_common_tool_schema_names_all_four_strip_targets(self):
+        tools = {tool["function"]["name"]: tool["function"] for tool in ai_chat.chat_tools("set each strip")}
+        for name in ("set_color", "set_effect", "set_brightness"):
+            target = tools[name]["parameters"]["properties"]["target"]
+            for channel in ("far-left", "middle-left", "middle-right", "far-right"):
+                self.assertIn(channel, target["description"])
+        self.assertIn("channel target", tools["set_brightness"]["description"])
 
 
 class FakeHttpResponse:
@@ -236,6 +244,35 @@ class RunChatTests(unittest.TestCase):
         self.assertEqual(seg["col"][0][:3], [0, 0, 255])
         self.assertEqual(fleet_.clients["right"].payloads, [])
 
+    def test_channel_targeted_brightness_only_hits_center_segment(self):
+        rounds = [
+            tool_call_round("c1", "set_brightness", '{"brightness": 77, "target": "middle-left"}'),
+            text_round("Middle left dimmed."),
+        ]
+        fleet_ = make_fleet()
+        with patch.object(ai_chat, "_chat_round", side_effect=rounds):
+            ai_chat.run_chat(fleet_, "dim only the middle left strip", settings=SETTINGS)
+
+        self.assertEqual(len(fleet_.clients["left"].payloads), 1)
+        self.assertEqual(fleet_.clients["left"].payloads[0], {"seg": [{"id": 1, "bri": 77}], "udpn": {"nn": True}})
+        self.assertEqual(fleet_.clients["right"].payloads, [])
+
+    def test_channel_targeted_color_and_brightness_combo_can_hit_middle_right(self):
+        rounds = [
+            tool_call_round("c1", "set_color", '{"red": 255, "green": 40, "blue": 0, "target": "middle-right"}'),
+            tool_call_round("c2", "set_brightness", '{"brightness": 180, "target": "middle-right"}'),
+            text_round("Middle right is orange and bright."),
+        ]
+        fleet_ = make_fleet()
+        with patch.object(ai_chat, "_chat_round", side_effect=rounds):
+            ai_chat.run_chat(fleet_, "make only middle right orange at 180 brightness", settings=SETTINGS)
+
+        self.assertEqual(fleet_.clients["left"].payloads, [])
+        self.assertEqual(len(fleet_.clients["right"].payloads), 2)
+        self.assertEqual(fleet_.clients["right"].payloads[0]["seg"][0]["id"], 1)
+        self.assertEqual(fleet_.clients["right"].payloads[0]["seg"][0]["col"][0][:3], [255, 40, 0])
+        self.assertEqual(fleet_.clients["right"].payloads[1], {"seg": [{"id": 1, "bri": 180}], "udpn": {"nn": True}})
+
     def test_multiple_tool_calls_then_answer(self):
         rounds = [
             tool_call_round("c1", "atmosphere", '{"name": "ocean"}'),
@@ -288,6 +325,8 @@ def test_static_tool_prompt_has_no_invented_geometry():
     assert "LEDs 0-24" not in prompt
     assert "L-shaped" not in prompt
     assert "device snapshot" in prompt.lower()
+    assert "far-left, middle-left, middle-right, far-right" in prompt
+    assert "set_brightness" in prompt and "individual strip brightness" in prompt
 
 
 if __name__ == "__main__":

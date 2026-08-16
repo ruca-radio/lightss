@@ -1,5 +1,6 @@
 import http.client
 import json
+import re
 import threading
 import tomllib
 import unittest
@@ -11,6 +12,7 @@ from unittest.mock import patch
 import actions
 import ai_chat
 import light_gui
+import light_gui_html
 import mcp_light
 import music_director
 
@@ -41,7 +43,7 @@ def make_topology_snapshot():
         "topology": {
             "installation": {
                 "wall_order": ["far-left", "middle-left", "middle-right", "far-right"],
-                "spacing_inches": 30, "orientation": "vertical",
+                "spacing_inches": 32, "orientation": "vertical",
                 "pixel_zero": "bottom", "column_length_m": 2.0,
                 "pixels_per_meter": 20, "visible_leds_per_meter": 720,
                 "color_order": "BRG",
@@ -49,8 +51,8 @@ def make_topology_snapshot():
             "controllers": [{
                 "name": "left", "host": "http://10.27.27.110",
                 "segments": {
-                    "0": {"channel": "far-left", "gpio": 16, "pixels": 40},
-                    "1": {"channel": "middle-left", "gpio": 2, "pixels": 40},
+                    "0": {"channel": "far-left", "gpio": 16, "pixels": 34, "start": 0, "stop": 34},
+                    "1": {"channel": "middle-left", "gpio": 2, "pixels": 48, "start": 34, "stop": 82},
                 },
             }],
         },
@@ -77,7 +79,17 @@ class FakeFleetClient:
 
 
 # Physical-topology facts + live per-segment state every planner context must carry.
-TOPOLOGY_MARKERS = ("far-left", "30 inches", "40 addressable pixels", "fx=9")
+TOPOLOGY_MARKERS = ("far-left", "32 inches", "34 addressable pixels", "5-LED physical", "fx=9")
+
+
+class RenderedFrontendSyntaxTest(unittest.TestCase):
+    def test_rendered_script_keeps_parse_tag_list_newline_regex_escaped(self):
+        html = light_gui_html.HTML_TEMPLATE
+        script = re.search(r"<script[^>]*>(.*?)</script>", html, flags=re.S | re.I).group(1)
+        body = script[script.index("function parseTagList"):script.index("async function applyDynamicScene")]
+
+        self.assertIn("split(/[\\n,]+/)", body)
+        self.assertNotIn("split(/[\n,]+/)", body)
 
 
 class SurfaceTests(unittest.TestCase):
@@ -148,6 +160,7 @@ class SurfaceTests(unittest.TestCase):
         self.assertIn("set_brightness", tool_names)
         self.assertIn("set_color", tool_names)
         self.assertIn("set_effect", tool_names)
+        self.assertIn("dynamic_scene", tool_names)
 
     def test_mcp_effect_tool_accepts_full_catalog_range(self):
         effect_tool = next(tool for tool in mcp_light.build_tools() if tool["name"] == "set_effect")
@@ -293,6 +306,11 @@ class SurfaceTests(unittest.TestCase):
                 "wall_versus",
                 "set_channel",
                 "atmosphere",
+                "dynamic_scene",
+                "look_feedback",
+                "realtime_start",
+                "realtime_stop",
+                "realtime_status",
             },
         )
         properties = request["text"]["format"]["schema"]["properties"]["actions"]["items"]["properties"]
@@ -729,7 +747,7 @@ def test_device_snapshot_text_contains_physical_topology_and_all_segments():
         "topology": {
             "installation": {
                 "wall_order": ["far-left", "middle-left", "middle-right", "far-right"],
-                "spacing_inches": 30, "orientation": "vertical",
+                "spacing_inches": 32, "orientation": "vertical",
                 "pixel_zero": "bottom", "column_length_m": 2.0,
                 "pixels_per_meter": 20, "visible_leds_per_meter": 720,
                 "color_order": "BRG",
@@ -737,8 +755,8 @@ def test_device_snapshot_text_contains_physical_topology_and_all_segments():
             "controllers": [{
                 "name": "left", "host": "http://10.27.27.110",
                 "segments": {
-                    "0": {"channel": "far-left", "gpio": 16, "pixels": 40},
-                    "1": {"channel": "middle-left", "gpio": 2, "pixels": 40},
+                    "0": {"channel": "far-left", "gpio": 16, "pixels": 34, "start": 0, "stop": 34},
+                    "1": {"channel": "middle-left", "gpio": 2, "pixels": 48, "start": 34, "stop": 82},
                 },
             }],
         },
@@ -751,7 +769,7 @@ def test_device_snapshot_text_contains_physical_topology_and_all_segments():
     }
     text = light_gui.device_snapshot_text(snapshot)
     for expected in (
-        "four vertical columns", "30 inches", "40 addressable pixels",
+        "four vertical columns", "32 inches", "34 addressable pixels", "5-LED physical",
         "LED 0 at the bottom", "BRG", "far-left", "middle-left",
         "segment 0", "segment 1", "fx=9", "fx=67",
     ):
@@ -777,6 +795,21 @@ class PlannerContextTests(unittest.TestCase):
 
         self.assertIn("Background audio now playing: M83 - Midnight City (Playing)", text)
         self.assert_topology_context(text)
+
+    def test_ai_context_text_includes_look_memory(self):
+        with patch.object(light_gui.lightctl, "_SCENE_DIR", self._tmp_memory_dir()):
+            light_gui.look_memory.record_look(summary="calm look", tags=["soft"])
+            light_gui.look_memory.add_feedback(score=1, notes="worked well", tags=["warm"])
+            text = light_gui.ai_context_text(FakeFleetClient())
+        self.assertIn("Look memory", text)
+        self.assertIn("worked well", text)
+
+    def _tmp_memory_dir(self) -> str:
+        import tempfile
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        return tmp.name
 
     def test_api_ai_sends_topology_context(self):
         captured = {}

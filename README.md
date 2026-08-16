@@ -2,16 +2,18 @@
 
 Controller for a small fleet of Wi-Fi WLED controllers driving the bedroom wall
 columns. The verified installation is four vertical 2.0 m BTF-LIGHTING WS2811
-FCOB RGB columns spaced 30 inches apart, each column carrying 40 addressable IC
-pixels (20 px/m, 720 visible COB LEDs per meter) with LED/pixel 0 at the bottom
-(bottom-up orientation). Two WLED 16.x controllers drive two columns each:
+FCOB RGB columns spaced 32 inches apart, with non-uniform calibrated addressable
+pixel counts. LED/pixel 0 and controller/data input are at the bottom of each
+strip (bottom-up orientation). One addressable pixel/logical LED equals one
+5-LED physical Smart IC segment/block. Two WLED 16.x controllers drive two
+columns each:
 
 - **Controller `left`** — `http://10.27.27.110`
-  - Segment 0 → channel **far-left** (GPIO 16)
-  - Segment 1 → channel **middle-left** (GPIO 2)
+  - Segment 0 → channel **far-left** (GPIO 16, 34 addressable pixels)
+  - Segment 1 → channel **middle-left** (GPIO 2, 48 addressable pixels)
 - **Controller `right`** — `http://10.27.27.112`
-  - Segment 0 → channel **far-right** (GPIO 2)
-  - Segment 1 → channel **middle-right** (GPIO 16)
+  - Segment 0 → channel **far-right** (GPIO 2, 40 addressable pixels)
+  - Segment 1 → channel **middle-right** (GPIO 16, 47 addressable pixels)
 
 Physical wall order (left → right): `far-left`, `middle-left`, `middle-right`,
 `far-right`. The LED buses use physical **BRG** color order (WLED color order
@@ -20,6 +22,39 @@ surface remain semantic RGB.
 
 Every surface (CLI, GUI, tray, MCP) can target `all` controllers (default), a
 single controller, or a single channel/segment.
+
+## Opinionated dynamic scenes
+
+The `dynamic_scene` action/tool is a high-level lighting director for creative
+or vague requests (for example, "dreamy calm ocean" or "tasteful party motion").
+By default `engine="generated"` paints exact-length static pixel frames for each
+strip using real wall order, live segment ids, calibrated pixel counts,
+orientation, and bottom-origin direction. Composition modes (`unison`,
+`independent`, `pairs`, `center_vs_outer`, `left_vs_right`, `alternating`,
+`random_groups`) decide whether strips match, differ, or form groups. Optional
+`engine="effect"` preserves the stock safe-effect behavior. Dynamic scenes
+reassert configured segment start/stop bounds in payloads but never mutate WLED
+hardware configuration or create/delete extra segments. Use explicit
+actions (`color`, `effect`, `brightness`, wall modes, etc.) when a request gives
+exact values.
+
+Lightss also keeps a small local look memory in
+`~/.config/lightss/look_memory.json`. Dynamic scenes record compact summaries
+(controllers, segment ids/bounds, brightnesses, frame lengths — not full pixel
+frames), and the `look_feedback` action/MCP tool can mark the last look as liked
+or disliked with notes/tags. Future AI context includes this summary so the
+director can repeat what worked and avoid known issues.
+
+## Realtime direct-control renderer
+
+For direct AI-directed visuals, Lightss includes a bounded local DDP renderer
+(`realtime_start`, `realtime_stop`, `realtime_status`). The AI selects only safe
+parameters — shader (`red_rocks`, `aurora_flow`, `bass_bloom`,
+`liquid_gradient`, `center_wave`, `vertical_scan`), mood, composition mode,
+intensity, FPS, finite duration, and seed. The local renderer derives calibrated
+DDP offsets from topology (including right-controller middle-right at offset 0
+and far-right at offset 47), streams RGB8 DDP packets to port 4048, caps FPS at
+40 and duration at 15 minutes, and never accepts raw pixels or shader code.
 
 ## Setup
 
@@ -31,9 +66,8 @@ python3 -m venv .venv
 ## WLED Topology Migration
 
 `scripts/migrate_wled_topology.py` migrates the two live controllers to the
-verified topology described above: two WS2811 buses of 40 pixels each per
-controller (starts 0 and 40, BRG color order), with segments repaired to
-(0, 40) / (40, 80). The utility is backup-first — every run saves `/json/cfg`,
+verified topology described above: .110 uses starts/stops 0..34 and 34..82;
+.112 uses starts/stops 0..47 and 47..87 (BRG color order). The utility is backup-first — every run saves `/json/cfg`,
 `/json/state`, `/json/info`, `/json/eff`, and `/json/pal` for both hosts
 before anything else — and dry-run is the default; writes require `--apply`.
 
@@ -318,8 +352,8 @@ segment id → segment config (channel name, GPIO pin, pixel count):
 ```json
 {
   "controllers": [
-    {"name": "left",  "host": "http://10.27.27.110", "segments": {"0": {"channel": "far-left", "gpio": 16, "pixels": 40}, "1": {"channel": "middle-left", "gpio": 2, "pixels": 40}}},
-    {"name": "right", "host": "http://10.27.27.112", "segments": {"0": {"channel": "far-right", "gpio": 2, "pixels": 40}, "1": {"channel": "middle-right", "gpio": 16, "pixels": 40}}}
+    {"name": "left",  "host": "http://10.27.27.110", "segments": {"0": {"channel": "far-left", "gpio": 16, "pixels": 34, "start": 0, "stop": 34}, "1": {"channel": "middle-left", "gpio": 2, "pixels": 48, "start": 34, "stop": 82}}},
+    {"name": "right", "host": "http://10.27.27.112", "segments": {"0": {"channel": "far-right", "gpio": 2, "pixels": 40, "start": 47, "stop": 87}, "1": {"channel": "middle-right", "gpio": 16, "pixels": 47, "start": 0, "stop": 47}}}
   ]
 }
 ```
@@ -336,13 +370,14 @@ shown match the verified installation):
 {
   "installation": {
     "wall_order": ["far-left", "middle-left", "middle-right", "far-right"],
-    "spacing_inches": 30.0,
+    "spacing_inches": 32.0,
     "orientation": "vertical",
     "pixel_zero": "bottom",
     "column_length_m": 2.0,
     "pixels_per_meter": 20,
     "visible_leds_per_meter": 720,
-    "color_order": "BRG"
+    "color_order": "BRG",
+    "addressable_pixel_physical_leds": 5
   }
 }
 ```

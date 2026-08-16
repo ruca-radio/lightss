@@ -148,11 +148,11 @@ class LookValidityTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class DirectorThreadTests(unittest.TestCase):
-    def _start(self, fleet_: FakeFleet, mpris, poll_s: float = 0.05):
+    def _start(self, fleet_: FakeFleet, mpris, poll_s: float = 0.05, **kwargs):
         patcher = mock.patch.object(music_recognizer, "now_playing_mpris", mpris)
         patcher.start()
         self.addCleanup(patcher.stop)
-        director = music_director.MusicDirector(fleet_, poll_s=poll_s)
+        director = music_director.MusicDirector(fleet_, poll_s=poll_s, **kwargs)
         director.start()
         self.addCleanup(lambda: (director.stop(), director.join(timeout=3)))
         return director
@@ -186,7 +186,7 @@ class DirectorThreadTests(unittest.TestCase):
     def test_pause_applies_idle_atmosphere_once(self):
         fleet_ = FakeFleet()
         state = {"track": track("Darude", "Sandstorm", "edm")}
-        self._start(fleet_, lambda: state["track"])
+        self._start(fleet_, lambda: state["track"], idle_atmosphere="candlelit")
         self.assertTrue(wait_for(lambda: seg_posts(fleet_) == 2))
         state["track"] = None  # music stopped
         # candlelit idle = one more wall_span = 2 more segment posts
@@ -194,10 +194,19 @@ class DirectorThreadTests(unittest.TestCase):
         time.sleep(0.25)  # stays idle: no reapplication every cycle
         self.assertEqual(seg_posts(fleet_), 4)
 
+    def test_pause_does_not_change_lights_by_default(self):
+        fleet_ = FakeFleet()
+        state = {"track": track("Darude", "Sandstorm", "edm")}
+        self._start(fleet_, lambda: state["track"])
+        self.assertTrue(wait_for(lambda: seg_posts(fleet_) == 2))
+        state["track"] = None  # music stopped
+        time.sleep(0.25)  # several idle polls
+        self.assertEqual(seg_posts(fleet_), 2)
+
     def test_resume_after_idle_applies_look_again(self):
         fleet_ = FakeFleet()
         state = {"track": track("Darude", "Sandstorm", "edm")}
-        director = self._start(fleet_, lambda: state["track"])
+        director = self._start(fleet_, lambda: state["track"], idle_atmosphere="candlelit")
         self.assertTrue(wait_for(lambda: seg_posts(fleet_) == 2))
         state["track"] = None
         self.assertTrue(wait_for(lambda: director.current_track is None))
@@ -225,7 +234,7 @@ class DirectorThreadTests(unittest.TestCase):
         def boom():
             raise RuntimeError("playerctl exploded")
 
-        director = self._start(fleet_, boom)
+        director = self._start(fleet_, boom, idle_atmosphere="candlelit")
         # two failed polls -> idle strikes -> candlelit applied once
         self.assertTrue(wait_for(lambda: seg_posts(fleet_) == 2))
         self.assertTrue(director.is_running())

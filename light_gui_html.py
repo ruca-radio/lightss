@@ -277,6 +277,21 @@ HTML_TEMPLATE = """<!doctype html>
     input[type="number"] { width: 86px; }
     select { min-width: 160px; }
     .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    .card-note { margin: 0 0 12px; font-size: 12px; line-height: 1.45; color: var(--text-secondary); }
+    .status-output { margin-top: 10px; min-height: 18px; font-size: 12px; line-height: 1.45; color: var(--text-secondary); }
+    .memory-output {
+      margin-top: 10px;
+      min-height: 96px;
+      padding: 12px 14px;
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,.10);
+      background: rgba(4,8,20,.52);
+      color: var(--text-secondary);
+      white-space: pre-wrap;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .score-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
     .swatch { width: 44px; height: 44px; border-radius: 16px; border: 1px solid rgba(255,255,255,.28); padding: 0; cursor: pointer; transition: transform .15s ease; box-shadow: 0 0 26px currentColor; }
     .swatch:hover { transform: scale(1.08) rotate(-2deg); }
 
@@ -874,6 +889,139 @@ HTML_TEMPLATE = """<!doctype html>
       </div>
     </div>
     <div class="card">
+      <h2>🧬 Dynamic AI Scenes</h2>
+      <p class="card-note">Generated mode is not a stock WLED effect. It paints the wall directly with exact-length per-strip frames and knows the top/bottom strip layout.</p>
+      <label>Mood
+        <input id="dynMood" type="text" placeholder="ocean calm, smoky neon, soft sunrise" style="width:100%;">
+      </label>
+      <div class="row">
+        <label style="flex:1; margin:0;">Energy
+          <select id="dynEnergy" style="width:100%;">
+            <option value="">Auto</option>
+            <option value="subtle">Subtle</option>
+            <option value="low">Low</option>
+            <option value="medium" selected>Medium</option>
+            <option value="high">High</option>
+            <option value="party">Party</option>
+          </select>
+        </label>
+        <label style="flex:1; margin:0;">Motion
+          <select id="dynMotion" style="width:100%;">
+            <option value="">Auto</option>
+            <option value="still">Still</option>
+            <option value="drift">Drift</option>
+            <option value="flow" selected>Flow</option>
+            <option value="rise">Rise</option>
+            <option value="chase">Chase</option>
+            <option value="pulse">Pulse</option>
+            <option value="shimmer">Shimmer</option>
+          </select>
+        </label>
+      </div>
+      <label>Strategy
+        <input id="dynStrategy" type="text" placeholder="vertical_rise, center_bloom, left_to_right" style="width:100%;">
+      </label>
+      <div class="row">
+        <label style="flex:1; margin:0;">Engine
+          <select id="dynEngine" style="width:100%;">
+            <option value="generated" selected>generated</option>
+            <option value="effect">effect</option>
+          </select>
+        </label>
+        <label style="flex:1; margin:0;">Composition
+          <select id="dynComposition" style="width:100%;">
+            <option value="unison" selected>unison</option>
+            <option value="independent">independent</option>
+            <option value="pairs">pairs</option>
+            <option value="center_vs_outer">center_vs_outer</option>
+            <option value="left_vs_right">left_vs_right</option>
+            <option value="alternating">alternating</option>
+            <option value="random_groups">random_groups</option>
+          </select>
+        </label>
+      </div>
+      <label>Intensity <span id="dynIntensityText">72</span>%
+        <input id="dynIntensity" type="range" min="0" max="100" value="72" oninput="dynIntensityText.textContent=this.value">
+      </label>
+      <div class="row" style="margin-top:8px;">
+        <button onclick="applyDynamicScene()" title="Apply a dynamic AI scene">Apply Dynamic Scene</button>
+      </div>
+      <div class="card-note">Effect mode stays within the safe stock WLED effect surface. Generated mode is the new pixel-frame painter for this wall layout.</div>
+      <div class="status-output" id="dynSceneStatus">Ready.</div>
+    </div>
+    <div class="card">
+      <h2>⚡ Realtime Direct Mode</h2>
+      <p class="card-note">Realtime streams direct pixels over DDP and overrides WLED effects until you stop it or the timeout ends. Keep durations bounded.</p>
+      <div class="row">
+        <label style="flex:1; margin:0;">Shader
+          <select id="rtShader" style="width:100%;">
+            <option value="red_rocks">red_rocks</option>
+            <option value="aurora_flow">aurora_flow</option>
+            <option value="bass_bloom">bass_bloom</option>
+            <option value="liquid_gradient" selected>liquid_gradient</option>
+            <option value="center_wave">center_wave</option>
+            <option value="vertical_scan">vertical_scan</option>
+          </select>
+        </label>
+        <label style="flex:1; margin:0;">Mood
+          <input id="rtMood" type="text" placeholder="nocturne, storm, neon, sunrise" style="width:100%;">
+        </label>
+      </div>
+      <div class="row">
+        <label style="flex:1; margin:0;">Composition
+          <select id="rtComposition" style="width:100%;">
+            <option value="unison" selected>unison</option>
+            <option value="independent">independent</option>
+            <option value="pairs">pairs</option>
+            <option value="center_vs_outer">center_vs_outer</option>
+            <option value="left_vs_right">left_vs_right</option>
+            <option value="alternating">alternating</option>
+            <option value="random_groups">random_groups</option>
+          </select>
+        </label>
+        <label style="flex:1; margin:0;">Intensity <span id="rtIntensityText">60</span>%
+          <input id="rtIntensity" type="range" min="0" max="100" value="60" oninput="rtIntensityText.textContent=this.value">
+        </label>
+      </div>
+      <div class="row">
+        <label style="margin:0;">FPS
+          <input id="rtFps" type="number" min="1" max="40" value="24" style="width:90px;">
+        </label>
+        <label style="margin:0;">Duration (s)
+          <input id="rtDuration" type="number" min="1" max="900" value="60" style="width:100px;">
+        </label>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <button onclick="startRealtime()" title="Start direct DDP realtime rendering">Start Realtime</button>
+        <button class="danger" onclick="stopRealtime()" title="Stop the realtime stream">Stop Realtime</button>
+        <button class="secondary" onclick="refreshRealtimeStatus()" title="Fetch realtime status">Status</button>
+      </div>
+      <div class="status-output" id="realtimeStatus">Idle.</div>
+    </div>
+    <div class="card">
+      <h2>🗣 Feedback & Memory</h2>
+      <p class="card-note">Save a quick reaction so the next generated look can repeat what worked and avoid what missed.</p>
+      <label>Notes
+        <input id="feedbackNotes" type="text" placeholder="too dim on top, loved the teal, wrong strip" style="width:100%;">
+      </label>
+      <label>Tags
+        <input id="feedbackTags" type="text" placeholder="liked-colors, too-dim, wrong-strip" style="width:100%;">
+      </label>
+      <label>Look ID (optional)
+        <input id="feedbackLookId" type="text" placeholder="last look or paste an id" style="width:100%;">
+      </label>
+      <div class="score-row">
+        <button onclick="submitLookFeedback(1)" title="Mark the look as working">That worked</button>
+        <button class="danger" onclick="submitLookFeedback(-1)" title="Mark the look as bad">Bad look</button>
+        <button class="secondary" onclick="submitLookFeedback(0)" title="Send notes without a positive or negative score">Note only</button>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <button class="secondary" onclick="refreshLookMemory()" title="Load the remembered look summary">Show memory summary</button>
+      </div>
+      <div class="status-output" id="feedbackStatus">Ready.</div>
+      <pre class="memory-output" id="lookMemorySummary">No look memory loaded yet.</pre>
+    </div>
+    <div class="card">
       <h2>⏱️ Timers & Simulations</h2>
       <div class="row" style="margin-bottom:8px;">
         <label style="margin:0;">Preset ID (1-250)
@@ -1245,6 +1393,33 @@ HTML_TEMPLATE = """<!doctype html>
       return {state: st[name] || {}, name, segId};
     }
 
+    function fleetConnectionStatus(st) {
+      if (!st || typeof st !== 'object') return {connected: [], total: 0, fleet: false};
+      if ('seg' in st || 'on' in st) {
+        return {connected: st.error ? [] : ['controller'], total: 1, fleet: false};
+      }
+      const names = Object.keys(st);
+      const connected = names.filter(function (name) {
+        const value = st[name];
+        return value && typeof value === 'object' && !value.error;
+      });
+      return {connected, total: names.length, fleet: true};
+    }
+
+    function updateConnectionStatusFromState(st) {
+      const health = fleetConnectionStatus(st);
+      if (health.connected.length) {
+        connIndicator.textContent = health.connected.length === health.total ? '🟢' : '🟡';
+        connText.textContent = health.fleet
+          ? `Connected: ${health.connected.join(', ')}`
+          : 'Connected';
+      } else {
+        connIndicator.textContent = '🔴';
+        connText.textContent = health.fleet ? 'Controllers disconnected' : 'Disconnected';
+      }
+      return health;
+    }
+
     // --- FireTV companion visuals ------------------------------------------
     function firetvMsg(text, kind) {
       const el = document.getElementById('firetvMsg');
@@ -1410,8 +1585,10 @@ HTML_TEMPLATE = """<!doctype html>
       try {
         const data = await postAction(action, values);
         status.textContent = data.ok ? data.message : data.error;
+        return data;
       } catch (err) {
         status.textContent = 'Error: ' + err.message;
+        return {ok: false, error: err.message};
       }
     }
 
@@ -1426,6 +1603,90 @@ HTML_TEMPLATE = """<!doctype html>
         console.warn('Beat update skipped:', err.message);
       } finally {
         beatRequestInFlight = false;
+      }
+    }
+
+    function parseTagList(value) {
+      const tags = [];
+      for (const part of String(value || '').split(/[\\n,]+/)) {
+        for (const tag of part.trim().split(/\\s+/)) {
+          const clean = tag.trim();
+          if (clean && !tags.includes(clean)) tags.push(clean);
+        }
+      }
+      return tags;
+    }
+
+    async function applyDynamicScene() {
+      const data = await send('dynamic_scene', {
+        mood: dynMood.value.trim(),
+        energy: dynEnergy.value,
+        motion: dynMotion.value,
+        strategy: dynStrategy.value.trim(),
+        engine: dynEngine.value,
+        composition_mode: dynComposition.value,
+        intensity: Number(dynIntensity.value) / 100
+      });
+      setText('dynSceneStatus', data && data.ok ? (data.message || 'Dynamic scene applied.') : (data && data.error ? ('Dynamic scene error: ' + data.error) : 'Dynamic scene request sent.'));
+    }
+
+    async function startRealtime() {
+      const data = await send('realtime_start', {
+        shader: rtShader.value,
+        mood: rtMood.value.trim(),
+        composition_mode: rtComposition.value,
+        intensity: Number(rtIntensity.value) / 100,
+        fps: Number(rtFps.value),
+        duration_s: Number(rtDuration.value)
+      });
+      await refreshRealtimeStatus();
+      setText('realtimeStatus', data && data.ok ? (data.message || 'Realtime stream started.') : (data && data.error ? ('Realtime error: ' + data.error) : 'Realtime request sent.'));
+    }
+
+    async function stopRealtime() {
+      const data = await send('realtime_stop');
+      setText('realtimeStatus', data && data.ok ? (data.message || 'Realtime stopped.') : (data && data.error ? ('Realtime error: ' + data.error) : 'Realtime stop request sent.'));
+    }
+
+    async function refreshRealtimeStatus() {
+      try {
+        const data = await postAction('realtime_status', {}, 4000);
+        const message = data && data.message ? data.message : JSON.stringify(data || {});
+        setText('realtimeStatus', message || 'No realtime status available.');
+        return data;
+      } catch (err) {
+        setText('realtimeStatus', 'Status error: ' + err.message);
+        return null;
+      }
+    }
+
+    async function submitLookFeedback(score) {
+      const payload = {
+        score: Number(score),
+        notes: feedbackNotes.value.trim(),
+        tags: parseTagList(feedbackTags.value),
+        applies_to: 'last'
+      };
+      const lookId = feedbackLookId.value.trim();
+      if (lookId) payload.look_id = lookId;
+      try {
+        const data = await postAction('look_feedback', payload, 6000);
+        setText('feedbackStatus', data && data.message ? data.message : 'Feedback saved.');
+        return data;
+      } catch (err) {
+        setText('feedbackStatus', 'Feedback error: ' + err.message);
+        return null;
+      }
+    }
+
+    async function refreshLookMemory() {
+      try {
+        const data = await postAction('look_memory_summary', {limit: 8}, 6000);
+        setText('lookMemorySummary', data && data.message ? data.message : 'Look memory unavailable.');
+        return data;
+      } catch (err) {
+        setText('lookMemorySummary', 'Memory error: ' + err.message);
+        return null;
       }
     }
 
@@ -1664,6 +1925,7 @@ HTML_TEMPLATE = """<!doctype html>
         const data = await response.json();
         if (data.ok && data.state) {
           applyFleetInfo(data);
+          updateConnectionStatusFromState(data.state);
           const picked = displayState(data.state);
           const st = picked.state;
           const onOff = st.on ? 'ON' : 'OFF';
@@ -2835,6 +3097,7 @@ HTML_TEMPLATE = """<!doctype html>
         }
         if (payload.state) {
           applyFleetInfo(payload);
+          const health = updateConnectionStatusFromState(payload.state);
           const picked = displayState(payload.state);
           const st = picked.state;
           const onOff = st.on ? 'ON' : 'OFF';
@@ -2857,10 +3120,11 @@ HTML_TEMPLATE = """<!doctype html>
             if (i.uptime) display += ` Uptime:${Math.floor(i.uptime/60)}m`;
           }
           stateDisplay.textContent = display;
-          stateSummary.textContent = `${onOff} | Bri ${bri} | Fx ${seg.fx ?? '-'} @ ${seg.sx ?? '-'}`;
+          const controllerSummary = health.fleet
+            ? ` | ${health.connected.length}/${health.total} controllers`
+            : '';
+          stateSummary.textContent = `${onOff} | Bri ${bri} | Fx ${seg.fx ?? '-'} @ ${seg.sx ?? '-'}${controllerSummary}`;
           updateLightPreview(st, ledCapabilities, picked.segId);
-          connIndicator.textContent = '🟢';
-          connText.textContent = 'Connected';
         } else if (payload.error) {
           stateDisplay.textContent = 'Device offline — reconnecting...';
           stateSummary.textContent = '--';
@@ -3485,6 +3749,28 @@ TV_AMBIENT_HTML = """<!doctype html>
       if (data && data.ok !== false) {
         dot.classList.remove('bad');
         applyState(data);
+        if (data.state && typeof applyFleetInfo === 'function' && typeof displayState === 'function') {
+          applyFleetInfo(data);
+          const health = typeof updateConnectionStatusFromState === 'function'
+            ? updateConnectionStatusFromState(data.state)
+            : {fleet: false, connected: [], total: 0};
+          const picked = displayState(data.state);
+          const st = picked.state || {};
+          const seg = st.seg && st.seg[0] ? st.seg[0] : {};
+          const bri = st.bri ?? '?';
+          const onOff = st.on ? 'ON' : 'OFF';
+          const col = seg.col && seg.col[0] ? seg.col[0] : [0,0,0,0];
+          const stateDisplayEl = document.getElementById('stateDisplay');
+          const stateSummaryEl = document.getElementById('stateSummary');
+          if (stateDisplayEl) {
+            stateDisplayEl.textContent = `${picked.name ? 'Controller: ' + picked.name + '\n' : ''}Power: ${onOff}\nBrightness: ${bri}\nColor: RGBW(${col.join(',')})\nEffect: ${seg.fx ?? '-'} Speed: ${seg.sx ?? '-'}`;
+          }
+          if (stateSummaryEl) {
+            const controllerSummary = health.fleet ? ` | ${health.connected.length}/${health.total} controllers` : '';
+            stateSummaryEl.textContent = `${onOff} | Bri ${bri} | Fx ${seg.fx ?? '-'} @ ${seg.sx ?? '-'}${controllerSummary}`;
+          }
+          if (typeof updateLightPreview === 'function') updateLightPreview(st, ledCapabilities, picked.segId);
+        }
       } else {
         dot.classList.add('bad');
       }
