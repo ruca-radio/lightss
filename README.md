@@ -29,14 +29,15 @@ The `dynamic_scene` action/tool is a high-level lighting director for creative
 or vague requests (for example, "dreamy calm ocean" or "tasteful party motion").
 By default `engine="generated"` paints exact-length static pixel frames for each
 strip using real wall order, live segment ids, calibrated pixel counts,
-orientation, and bottom-origin direction. Composition modes (`unison`,
-`independent`, `pairs`, `center_vs_outer`, `left_vs_right`, `alternating`,
-`random_groups`) decide whether strips match, differ, or form groups. Optional
-`engine="effect"` preserves the stock safe-effect behavior. Dynamic scenes
-reassert configured segment start/stop bounds in payloads but never mutate WLED
-hardware configuration or create/delete extra segments. Use explicit
-actions (`color`, `effect`, `brightness`, wall modes, etc.) when a request gives
-exact values.
+orientation, and bottom-origin direction. Pass `colors` (hex or RGB stops) and a
+`seed` to build a unique palette instead of the stock mood colors. Composition
+modes (`unison`, `independent`, `pairs`, `center_vs_outer`, `left_vs_right`,
+`alternating`, `random_groups`) decide whether strips match, differ, or form
+groups. Optional `engine="effect"` preserves the stock safe-effect behavior.
+Dynamic scenes reassert configured segment start/stop bounds in payloads but
+never mutate WLED hardware configuration or create/delete extra segments. Use
+explicit actions (`color`, `effect`, `brightness`, wall modes, etc.) when a
+request gives exact values.
 
 Lightss also keeps a small local look memory in
 `~/.config/lightss/look_memory.json`. Dynamic scenes record compact summaries
@@ -48,13 +49,23 @@ director can repeat what worked and avoid known issues.
 ## Realtime direct-control renderer
 
 For direct AI-directed visuals, Lightss includes a bounded local DDP renderer
-(`realtime_start`, `realtime_stop`, `realtime_status`). The AI selects only safe
-parameters — shader (`red_rocks`, `aurora_flow`, `bass_bloom`,
-`liquid_gradient`, `center_wave`, `vertical_scan`), mood, composition mode,
-intensity, FPS, finite duration, and seed. The local renderer derives calibrated
-DDP offsets from topology (including right-controller middle-right at offset 0
-and far-right at offset 47), streams RGB8 DDP packets to port 4048, caps FPS at
-40 and duration at 15 minutes, and never accepts raw pixels or shader code.
+(`realtime_start`, `realtime_stop`, `realtime_status`). The AI can build a unique
+look from shader (`auto`, `red_rocks`, `aurora_flow`, `bass_bloom`,
+`liquid_gradient`, `center_wave`, `vertical_scan`, `ember_rise`, `tide_pull`,
+`comet_fall`, `dusk_bloom`, `magma_column`, `twin_helix`, `ribbon_drift`), mood,
+custom color stops, composition mode, intensity, FPS, finite duration, and seed.
+The local renderer derives calibrated DDP offsets from topology (including
+right-controller middle-right at offset 0 and far-right at offset 47), streams
+RGB8 DDP packets to port 4048, caps FPS at 40 and duration at 15 minutes, and
+never accepts raw pixels or shader code.
+
+## Design look
+
+The `design_look` MCP/chat tool invents a unique wall recipe (shader, palette,
+composition, intensity) via optional specialist models (colorist/motion/critic)
+or local `color_lab` when agents are off. Pass a prompt plus optional
+mood/energy/motion, colors, and seed. Set `run=true` to start the bounded
+realtime DDP renderer with that look (`fps` 1–40, `duration_s` 0.1–900).
 
 ## Setup
 
@@ -91,6 +102,9 @@ python scripts/migrate_wled_topology.py --restore "$backup_dir"
 |----------|-------------|---------|
 | `OPENAI_API_KEY` | API key for AI features in the GUI | *(required for AI)* |
 | `LIGHT_AI_MODEL` | OpenAI model override for AI prompts | `gpt-5.2` |
+| `LIGHT_COLORIST_MODEL` | Optional specialist model for palette design | *(off — local color_lab)* |
+| `LIGHT_MOTION_MODEL` | Optional specialist model for shader/composition | *(off — local color_lab)* |
+| `LIGHT_CRITIC_MODEL` | Optional specialist model that only tightens safety | *(off — local critic)* |
 | `LIGHT_HOST` | WLED controller URL for MCP server | `http://10.27.27.110` |
 | `LIGHT_HOSTS` | Comma-separated WLED controller URLs defining the fleet (names `light-1`, `light-2`, …; no channel aliases) | config `controllers` / built-in two-controller default |
 | `LIGHT_AUDIO_SOURCE` | Audio capture source: `monitor`, `mic`, or a device name | `monitor` |
@@ -322,6 +336,8 @@ Tools exposed to MCP clients:
 - `list_segments`
 - `wall_mode` (mode: `span` | `mirror` | `chase` | `versus`, with `fx`/`pal` or
   `fx_left`/`fx_right`/`pal_left`/`pal_right`)
+- `strips` (any 1–4 strip combo with one look, or different effects per strip)
+- `design_look` (unique look via colorist/motion/critic models or local fallback; `run=true` starts realtime)
 - `tv_status`
 - `tv_wake`
 - `tv_sleep`

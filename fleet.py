@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 
@@ -21,6 +22,11 @@ logger = logging.getLogger("lightss.fleet")
 
 WALL_ORDER: list[str] = ["far-left", "middle-left", "middle-right", "far-right"]
 DEFAULT_TARGET = "all"
+STRIP_GROUPS: dict[str, tuple[str, ...]] = {
+    "outer": ("far-left", "far-right"),
+    "inner": ("middle-left", "middle-right"),
+    "center": ("middle-left", "middle-right"),
+}
 
 _BUILTIN_CONTROLLERS = [
     {
@@ -357,38 +363,130 @@ class LightFleet:
         return dict(self._channels)
 
     def valid_targets(self) -> list[str]:
-        return [DEFAULT_TARGET, *self.names(), *self._channels.keys()]
+        groups = [name for name in STRIP_GROUPS if all(ch in self._channels for ch in STRIP_GROUPS[name])]
+        return [DEFAULT_TARGET, *groups, *self.names(), *self._channels.keys()]
+
+    def _normalize_target(self, target: str) -> str:
+        return (target or "").strip().lower().replace(" ", "-").replace("_", "-")
+
+    def _resolve_one(self, token: str) -> list[tuple[str, int | None]]:
+        if token == DEFAULT_TARGET:
+            return [(name, None) for name in self.names()]
+        if token in STRIP_GROUPS:
+            return self._resolve_channel_list(STRIP_GROUPS[token])
+        for name in self.clients:
+            if name.lower() == token:
+                return [(name, None)]
+        for channel, mapping in self._channels.items():
+            if channel.lower() == token:
+                return [mapping]
+        raise ValueError(
+            f"Unknown target: {token!r}. Valid targets: {', '.join(self.valid_targets())}."
+        )
+
+    def _resolve_channel_list(self, tokens: tuple[str, ...] | list[str]) -> list[tuple[str, int | None]]:
+        resolved: list[tuple[str, int | None]] = []
+        seen: set[tuple[str, int | None]] = set()
+        for token in tokens:
+            for item in self._resolve_one(self._normalize_target(str(token))):
+                if item in seen:
+                    continue
+                seen.add(item)
+                resolved.append(item)
+        return resolved
 
     def resolve(self, target: str) -> list[tuple[str, int | None]]:
-        """Resolve 'all' | controller name | channel name to [(controller_name, seg_id_or_None)].
+        """Resolve 'all' | group | controller | channel | combo to [(controller, seg_id_or_None)].
 
+        Groups: outer (far columns), inner/center (middle columns).
+        Combos: 'far-left,middle-right' or 'far-left+far-right'.
         Channel/controller matching is forgiving: case-insensitive and spaces/
         underscores count as hyphens ("Far Left" == "far-left").
         """
         target = (target or "").strip() or DEFAULT_TARGET
-        normalized = target.lower().replace(" ", "-").replace("_", "-")
-        if normalized == DEFAULT_TARGET:
-            return [(name, None) for name in self.names()]
-        for name in self.clients:
-            if name.lower() == normalized:
-                return [(name, None)]
-        for channel, mapping in self._channels.items():
-            if channel.lower() == normalized:
-                return [mapping]
-        raise ValueError(
-            f"Unknown target: {target!r}. Valid targets: {', '.join(self.valid_targets())}."
-        )
+        parts = [part for part in re.split(r"[,+]", target) if part.strip()]
+        if len(parts) > 1:
+            return self._resolve_channel_list(parts)
+        return self._resolve_one(self._normalize_target(parts[0] if parts else DEFAULT_TARGET))
+
+    def _controller_segments(self, name: str) -> list[int]:
+        for controller in self.controllers:
+            if controller.name == name:
+                return list(controller.segments.keys())
+        return []
+
+    def _segment_config(self, name: str, seg_id: int) -> SegmentConfig | None:
+        for controller in self.controllers:
+            if controller.name == name:
+                segment = controller.segments.get(seg_id)
+                return segment if isinstance(segment, SegmentConfig) else None
+        return None
+
+    def _expand_resolved(self, resolved: list[tuple[str, int | None]]) -> list[tuple[str, int | None]]:
+        expanded: list[tuple[str, int | None]] = []
+        seen: set[tuple[str, int | None]] = set()
+        for name, seg_id in resolved:
+            items = [(name, seg_id)] if seg_id is not None else [(name, sid) for sid in self._controller_segments(name)] or [(name, None)]
+            for item in items:
+                if item in seen:
+                    continue
+                seen.add(item)
+                expanded.append(item)
+        return expanded
+
+    def _decorate_segment(self, name: str, seg_id: int | None, template: dict) -> dict:
+        entry = dict(template)
+        if seg_id is None:
+            return entry
+        entry["id"] = seg_id
+        config = self._segment_config(name, seg_id)
+        if config is not None and config.start is not None and config.stop is not None:
+            entry.setdefault("start", config.start)
+            entry.setdefault("stop", config.stop)
+            entry.setdefault("on", True)
+        return entry
 
     def post_state(self, payload: dict, target: str = DEFAULT_TARGET) -> dict[str, dict]:
         """Fan a payload out to the resolved controllers.
 
-        Channel targets get the segment id injected into the payload's seg entries.
+        Segment payloads without ids expand onto every selected strip (all four
+        wall columns for target=all, both strips on a controller target, or any
+        explicit combo). Channel targets still inject that one segment id.
         A dead controller is reported in its result entry, never raised.
         Fleet posts carry udpn.nn (no-notify) so per-controller differences are
         not clobbered by WLED UDP sync; manual/UI changes still sync normally.
         """
-        results: dict[str, dict] = {}
-        for name, seg_id in self.resolve(target):
+        resolved = self.resolve(target)
+        templates = payload.get("seg")
+        if templates:
+            addressed = all(isinstance(entry, dict) and "id" in entry for entry in templates)
+            if not addressed:
+                resolved = self._expand_resolved(resolved)
+            if not addressed and any(seg_id is not None for _name, seg_id in resolved):
+                grouped: dict[str, list[int | None]] = {}
+                for name, seg_id in resolved:
+                    grouped.setdefault(name, []).append(seg_id)
+                single_strip = len(grouped) == 1 and len(next(iter(grouped.values()))) == 1
+                results: dict[str, dict] = {}
+                for name, seg_ids in grouped.items():
+                    if single_strip:
+                        entries = [self._decorate_segment(name, seg_ids[0], template) for template in templates]
+                    else:
+                        entries = [self._decorate_segment(name, seg_id, templates[0]) for seg_id in seg_ids]
+                    outgoing = dict(payload)
+                    outgoing["seg"] = entries
+                    udpn = dict(outgoing.get("udpn") or {})
+                    udpn["nn"] = True
+                    outgoing["udpn"] = udpn
+                    try:
+                        response = self.clients[name].post_state(outgoing)
+                        results[name] = {"ok": True, "response": response}
+                    except Exception as exc:
+                        _warn(f"post_state to controller {name!r} failed: {exc}")
+                        results[name] = {"ok": False, "error": str(exc)}
+                return results
+        results = {}
+        for name, seg_id in resolved:
             outgoing = _inject_segment_id(payload, seg_id) if seg_id is not None else dict(payload)
             udpn = dict(outgoing.get("udpn") or {})
             udpn["nn"] = True

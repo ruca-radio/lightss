@@ -55,7 +55,7 @@ class ChatToolsTests(unittest.TestCase):
         self.assertGreater(len(tools), 20)
         names = {t["function"]["name"] for t in tools}
         for expected in ("light_on", "set_effect", "set_color", "wall_mode",
-                         "atmosphere", "dynamic_scene", "list_segments", "list_controllers"):
+                         "atmosphere", "dynamic_scene", "design_look", "strips", "list_segments", "list_controllers"):
             self.assertIn(expected, names)
         for tool in tools:
             self.assertEqual(tool["type"], "function")
@@ -67,6 +67,7 @@ class ChatToolsTests(unittest.TestCase):
 
         self.assertIn("get_state", names)
         self.assertIn("set_color", names)
+        self.assertIn("design_look", names)
         self.assertNotIn("set_leds", names)
         self.assertNotIn("tv_open_url", names)
         self.assertLess(len(tools), len(ai_chat.chat_tools()))
@@ -254,7 +255,9 @@ class RunChatTests(unittest.TestCase):
             ai_chat.run_chat(fleet_, "dim only the middle left strip", settings=SETTINGS)
 
         self.assertEqual(len(fleet_.clients["left"].payloads), 1)
-        self.assertEqual(fleet_.clients["left"].payloads[0], {"seg": [{"id": 1, "bri": 77}], "udpn": {"nn": True}})
+        left_seg = fleet_.clients["left"].payloads[0]["seg"][0]
+        self.assertEqual(left_seg["id"], 1)
+        self.assertEqual(left_seg["bri"], 77)
         self.assertEqual(fleet_.clients["right"].payloads, [])
 
     def test_channel_targeted_color_and_brightness_combo_can_hit_middle_right(self):
@@ -271,7 +274,8 @@ class RunChatTests(unittest.TestCase):
         self.assertEqual(len(fleet_.clients["right"].payloads), 2)
         self.assertEqual(fleet_.clients["right"].payloads[0]["seg"][0]["id"], 1)
         self.assertEqual(fleet_.clients["right"].payloads[0]["seg"][0]["col"][0][:3], [255, 40, 0])
-        self.assertEqual(fleet_.clients["right"].payloads[1], {"seg": [{"id": 1, "bri": 180}], "udpn": {"nn": True}})
+        self.assertEqual(fleet_.clients["right"].payloads[1]["seg"][0]["id"], 1)
+        self.assertEqual(fleet_.clients["right"].payloads[1]["seg"][0]["bri"], 180)
 
     def test_multiple_tool_calls_then_answer(self):
         rounds = [

@@ -104,10 +104,28 @@ class GuiHtmlAuditTests(unittest.TestCase):
             "send('realtime_start'",
             "send('realtime_stop'",
             "refreshRealtimeStatus()",
+            "rtColors",
+            "ember_rise",
+            "parseColorList(",
             "That worked",
             "look_feedback",
             "look_memory_summary",
             "Show memory summary",
+            "design_look",
+            "Design unique look",
+        ):
+            self.assertIn(marker, html)
+
+    def test_look_agent_controls_are_visible(self):
+        html = light_gui.render_html()
+
+        for marker in (
+            "Look Agents",
+            "agentColoristModel",
+            "agentMotionModel",
+            "agentCriticModel",
+            "design_look",
+            "Design unique look",
         ):
             self.assertIn(marker, html)
 

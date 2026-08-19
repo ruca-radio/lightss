@@ -165,5 +165,30 @@ class SetChannelTests(unittest.TestCase):
         self.assertEqual(left.payloads[0], {"seg": [{"id": 1, "col": [[255, 0, 0]]}], "udpn": {"nn": True}})
 
 
+class ApplyChannelsTests(unittest.TestCase):
+    def test_apply_channels_posts_only_named_strips(self):
+        fleet_ = make_fleet()
+        columns.apply_channels(fleet_, ["far-left", "far-right"], fx=9, pal=2)
+        self.assertEqual([seg["id"] for seg in fleet_.clients["left"].payloads[0]["seg"]], [0])
+        self.assertEqual([seg["id"] for seg in fleet_.clients["right"].payloads[0]["seg"]], [0])
+        self.assertEqual(fleet_.clients["left"].payloads[0]["seg"][0]["fx"], 9)
+        self.assertEqual(fleet_.clients["right"].payloads[0]["seg"][0]["pal"], 2)
+
+    def test_per_strip_assigns_different_effects(self):
+        fleet_ = make_fleet()
+        columns.per_strip(
+            fleet_,
+            [
+                {"channel": "far-left", "fx": 9},
+                {"channel": "middle-left", "fx": 28},
+                {"channel": "middle-right", "fx": 46},
+            ],
+        )
+        left = {seg["id"]: seg["fx"] for seg in fleet_.clients["left"].payloads[0]["seg"]}
+        right = {seg["id"]: seg["fx"] for seg in fleet_.clients["right"].payloads[0]["seg"]}
+        self.assertEqual(left, {0: 9, 1: 28})
+        self.assertEqual(right, {1: 46})
+
+
 if __name__ == "__main__":
     unittest.main()

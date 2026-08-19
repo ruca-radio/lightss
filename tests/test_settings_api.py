@@ -120,12 +120,16 @@ class SettingsApiHttpTest(unittest.TestCase):
         settings = payload["settings"]
         self.assertEqual(
             set(settings["ai"].keys()),
-            {"provider", "base_url", "model", "vision_model", "api_key_env", "api_key_set"},
+            {"provider", "base_url", "model", "vision_model", "api_key_env", "api_key_set", "agents"},
         )
         self.assertIsInstance(settings["ai"]["api_key_set"], bool)
         self.assertNotIn("api_key", settings["ai"])
         self.assertEqual(settings["ai"]["provider"], "openai")
         self.assertEqual(settings["ai"]["base_url"], light_gui.DEFAULT_AI_BASE_URL)
+        self.assertEqual(set(settings["ai"]["agents"].keys()), {"colorist", "motion", "critic"})
+        self.assertFalse(settings["ai"]["agents"]["colorist"]["enabled"])
+        self.assertEqual(settings["ai"]["agents"]["colorist"]["model"], "")
+        self.assertEqual(settings["ai"]["agents"]["colorist"]["provider"], settings["ai"]["provider"])
         self.assertEqual(settings["controllers"][0]["name"], "right")
         self.assertEqual(settings["audio_source"], "monitor")
         self.assertIsNone(settings["mic_device"])
@@ -437,6 +441,115 @@ class AiSettingsPrecedenceTest(unittest.TestCase):
                 request = light_gui.build_openai_request("make it warm")
         self.assertEqual(request["model"], light_gui.DEFAULT_AI_MODEL)
         self.assertEqual(request["input"][0]["content"], light_gui.system_knowledge_prompt())
+
+    def test_agent_defaults(self) -> None:
+        with patch.dict(light_gui.os.environ, {"LIGHT_AI_MODEL": "", "OPENAI_MODEL": "", "OPENAI_BASE_URL": ""}):
+            settings = light_gui.ai_settings({})
+
+        self.assertEqual(set(settings["agents"].keys()), {"colorist", "motion", "critic"})
+        colorist = settings["agents"]["colorist"]
+        self.assertFalse(colorist["enabled"])
+        self.assertEqual(colorist["model"], "")
+        self.assertEqual(colorist["provider"], settings["provider"])
+        self.assertEqual(colorist["base_url"], settings["base_url"])
+        self.assertEqual(colorist["api_key_env"], settings["api_key_env"])
+        self.assertIsInstance(colorist["api_key_set"], bool)
+        self.assertEqual(
+            set(colorist.keys()),
+            {"enabled", "provider", "base_url", "model", "api_key_env", "api_key_set"},
+        )
+        for role in ("motion", "critic"):
+            self.assertFalse(settings["agents"][role]["enabled"])
+            self.assertEqual(settings["agents"][role]["model"], "")
+            self.assertEqual(settings["agents"][role]["provider"], settings["provider"])
+
+    def test_agent_config_override(self) -> None:
+        config = {
+            "ai": {
+                "provider": "openai",
+                "base_url": "https://api.openai.com/v1",
+                "agents": {
+                    "colorist": {
+                        "enabled": True,
+                        "model": "colorist-model",
+                        "provider": "openrouter",
+                        "base_url": "https://openrouter.ai/api/v1",
+                        "api_key_env": "OPENROUTER_API_KEY",
+                    }
+                },
+            }
+        }
+        with patch.dict(light_gui.os.environ, {"LIGHT_COLORIST_MODEL": "env-colorist"}):
+            settings = light_gui.ai_settings(config)
+
+        colorist = settings["agents"]["colorist"]
+        self.assertTrue(colorist["enabled"])
+        self.assertEqual(colorist["model"], "colorist-model")
+        self.assertEqual(colorist["provider"], "openrouter")
+        self.assertEqual(colorist["base_url"], "https://openrouter.ai/api/v1")
+        self.assertEqual(colorist["api_key_env"], "OPENROUTER_API_KEY")
+        self.assertEqual(settings["agents"]["motion"]["provider"], "openai")
+        self.assertEqual(settings["agents"]["motion"]["base_url"], "https://api.openai.com/v1")
+        self.assertEqual(settings["agents"]["motion"]["model"], "")
+        self.assertFalse(settings["agents"]["motion"]["enabled"])
+
+    def test_agent_secrets_never_appear(self) -> None:
+        config = {
+            "ai": {
+                "api_key": "parent-secret",
+                "agents": {
+                    "colorist": {
+                        "enabled": True,
+                        "model": "colorist-model",
+                        "api_key": "colorist-secret",
+                        "api_key_env": "COLORIST_KEY",
+                    }
+                },
+            }
+        }
+        env = {
+            "COLORIST_KEY": "env-secret-value",
+            "OPENAI_API_KEY": "parent-env-secret",
+        }
+        with patch.dict(light_gui.os.environ, env):
+            settings = light_gui.ai_settings(config)
+
+        dumped = json.dumps(settings)
+        self.assertNotIn("parent-secret", dumped)
+        self.assertNotIn("colorist-secret", dumped)
+        self.assertNotIn("env-secret-value", dumped)
+        self.assertNotIn("parent-env-secret", dumped)
+        self.assertNotIn("api_key", settings)
+        self.assertNotIn("api_key", settings["agents"]["colorist"])
+        self.assertTrue(settings["agents"]["colorist"]["api_key_set"])
+
+    def test_post_settings_deep_merges_ai_agents(self) -> None:
+        # Exercised via merge_settings_into_config so a partial POST cannot
+        # wipe sibling roles or other colorist keys.
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = os.path.join(tmp, "config.json")
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "ai": {
+                            "model": "cfg-model",
+                            "agents": {
+                                "colorist": {"enabled": True, "model": "colorist-a"},
+                                "motion": {"enabled": True, "model": "motion-a"},
+                            },
+                        }
+                    },
+                    f,
+                )
+            with patch.object(lightctl, "_CONFIG_PATH", config_path):
+                merged = light_gui.merge_settings_into_config(
+                    {"ai": {"agents": {"colorist": {"model": "colorist-b"}}}}
+                )
+
+        self.assertEqual(merged["ai"]["model"], "cfg-model")
+        self.assertEqual(merged["ai"]["agents"]["colorist"]["model"], "colorist-b")
+        self.assertTrue(merged["ai"]["agents"]["colorist"]["enabled"])
+        self.assertEqual(merged["ai"]["agents"]["motion"]["model"], "motion-a")
 
 
 class ReloadControllersTest(unittest.TestCase):

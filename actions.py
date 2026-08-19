@@ -41,8 +41,10 @@ AI_ACTIONS = [
     "wall_chase",
     "wall_versus",
     "set_channel",
+    "strips",
     "atmosphere",
     "dynamic_scene",
+    "design_look",
     "look_feedback",
     "realtime_start",
     "realtime_stop",
@@ -50,8 +52,9 @@ AI_ACTIONS = [
 ]
 
 # Client actions produce no direct WLED payload from the AI path. The wall_*
-# actions, set_channel, atmosphere, and dynamic_scene are routed server-side
-# through columns.py / atmospheres.py / dynamic_scenes.py instead.
+# actions, set_channel, strips, atmosphere, dynamic_scene, and design_look are
+# routed server-side through columns.py / atmospheres.py / dynamic_scenes.py /
+# look_agents.py instead.
 CLIENT_ACTIONS = {
     "mode1_start",
     "mode1_stop",
@@ -67,8 +70,10 @@ CLIENT_ACTIONS = {
     "wall_chase",
     "wall_versus",
     "set_channel",
+    "strips",
     "atmosphere",
     "dynamic_scene",
+    "design_look",
     "look_feedback",
     "realtime_start",
     "realtime_stop",

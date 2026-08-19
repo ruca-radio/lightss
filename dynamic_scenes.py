@@ -12,6 +12,7 @@ import random
 from dataclasses import dataclass
 from typing import Any
 
+import color_lab
 import fleet as fleet_mod
 import lightctl
 import look_memory
@@ -131,23 +132,35 @@ def _auto_strategy(mood: str, energy: str, motion: str) -> str:
     return "quiet_gradient"
 
 
-def _profile(mood: str, energy: str, intensity: float | None) -> tuple[int, int, int, list[list[int]]]:
+def _profile(mood: str, energy: str, intensity: float | None, seed: int | str | None = None, colors: list | None = None) -> tuple[int, int, int, list[list[int]]]:
     words = f"{mood} {energy}".lower()
     level = 0.55 if intensity is None else max(0.0, min(1.0, float(intensity)))
     if any(w in words for w in ("party", "dance", "edm", "bright")):
-        base, pal, colors = 150, PALETTES["rainbow"], COLORS["party"]
+        base = 150
+        stock = COLORS["party"]
     elif any(w in words for w in ("ocean", "water", "blue", "cool")):
-        base, pal, colors = 120, PALETTES["ocean"], COLORS["cool"]
+        base = 120
+        stock = COLORS["cool"]
     elif any(w in words for w in ("dark", "metal", "noir", "purple")):
-        base, pal, colors = 105, PALETTES["purple"], COLORS["dark"]
+        base = 105
+        stock = COLORS["dark"]
     elif any(w in words for w in ("forest", "green")):
-        base, pal, colors = 115, PALETTES["forest"], COLORS["soft"]
+        base = 115
+        stock = COLORS["soft"]
     else:
-        base, pal, colors = 110, PALETTES["warm"], COLORS["warm"]
+        base = 110
+        stock = COLORS["warm"]
+    custom = color_lab.coerce_colors(colors)
+    if custom:
+        painted = color_lab.to_rgbw(custom)
+    elif seed is not None or mood or energy:
+        painted = color_lab.to_rgbw(color_lab.palette_from_prompt(mood, energy, seed))
+    else:
+        painted = stock
     bri = min(180, max(35, int(base * (0.65 + level * 0.55))))
     sx = min(170, max(35, int(45 + level * 95)))
     ix = min(190, max(70, int(95 + level * 75)))
-    return bri, sx, ix, colors
+    return bri, sx, ix, painted
 
 
 def _mix(a: list[int], b: list[int], t: float) -> list[int]:
@@ -208,7 +221,7 @@ def _frame(entry: WallEntry, strategy: str, colors: list[list[int]], group: int,
     return frame
 
 
-def _compose_generated(entries: list[WallEntry], mood: str, energy: str, motion: str, strategy: str, composition_mode: str, seed: int | str | None, intensity: float | None) -> dict[str, dict]:
+def _compose_generated(entries: list[WallEntry], mood: str, energy: str, motion: str, strategy: str, composition_mode: str, seed: int | str | None, intensity: float | None, colors: list | None = None) -> dict[str, dict]:
     rng = random.Random(seed)
     strategy = (strategy or _auto_strategy(mood, energy, motion)).strip().lower().replace("-", "_")
     if strategy == "quiet_gradient":
@@ -218,7 +231,7 @@ def _compose_generated(entries: list[WallEntry], mood: str, energy: str, motion:
     mode = (composition_mode or "unison").strip().lower().replace("-", "_")
     if mode not in COMPOSITION_MODES:
         mode = "unison"
-    bri, _sx, _ix, colors = _profile(mood, energy, intensity)
+    bri, _sx, _ix, colors = _profile(mood, energy, intensity, seed, colors)
     payloads: dict[str, dict] = {}
     for entry in entries:
         group = _group_for(entry, mode, rng)
@@ -229,14 +242,14 @@ def _compose_generated(entries: list[WallEntry], mood: str, energy: str, motion:
     return payloads
 
 
-def _compose_effect(entries: list[WallEntry], mood: str, energy: str, motion: str, strategy: str, seed: int | str | None, intensity: float | None) -> dict[str, dict]:
+def _compose_effect(entries: list[WallEntry], mood: str, energy: str, motion: str, strategy: str, seed: int | str | None, intensity: float | None, colors: list | None = None) -> dict[str, dict]:
     strategy = (strategy or _auto_strategy(mood, energy, motion)).strip().lower().replace("-", "_")
     if strategy == "chase":
         strategy = "left_to_right"
     if strategy not in STRATEGIES:
         strategy = _auto_strategy(mood, energy, motion)
     rng = random.Random(seed)
-    bri, sx, ix, colors = _profile(mood, energy, intensity)
+    bri, sx, ix, colors = _profile(mood, energy, intensity, seed, colors)
     transition = 18
     count = max(1, len(entries))
     payloads: dict[str, dict] = {}
@@ -270,12 +283,13 @@ def compose_dynamic_scene(
     engine: str = "generated",
     seed: int | str | None = None,
     intensity: float | None = None,
+    colors: list | None = None,
 ) -> dict[str, dict]:
     entries = _wall_entries(fleet)
     engine = (engine or "generated").strip().lower()
     if engine == "effect":
-        return _compose_effect(entries, mood, energy, motion, strategy, seed, intensity)
-    return _compose_generated(entries, mood, energy, motion, strategy, composition_mode, seed, intensity)
+        return _compose_effect(entries, mood, energy, motion, strategy, seed, intensity, colors)
+    return _compose_generated(entries, mood, energy, motion, strategy, composition_mode, seed, intensity, colors)
 
 
 def apply_dynamic_scene(fleet: Any, **kwargs) -> dict:

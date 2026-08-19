@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import inspect
 import json
 import logging
 import os
@@ -17,6 +18,7 @@ import dynamic_scenes
 import columns
 import fleet
 import lightctl
+import look_agents
 import look_memory
 import realtime
 import music_recognizer
@@ -83,9 +85,9 @@ def _target_schema() -> dict:
     return {
         "type": "string",
         "description": (
-            "Target: 'all' (default), a controller name, or one strip/channel name: "
-            "far-left, middle-left, middle-right, or far-right. Use channel targets "
-            "for independent strip control."
+            "Target: 'all' (all four strips), a group (outer/inner/center), a controller "
+            "(left/right = both strips on that side), one strip (far-left, middle-left, "
+            "middle-right, far-right), or a combo like 'far-left,middle-right'."
         ),
         "default": "all",
     }
@@ -343,6 +345,45 @@ def build_tools() -> list[dict]:
             },
         },
         {
+            "name": "strips",
+            "description": (
+                "Address any combination of the four wall strips. "
+                "Same look: pass channels (e.g. [\"far-left\",\"far-right\"]) plus fx. "
+                "Different looks: pass assignments [{channel, fx, pal}]. "
+                "Unused strips are left unchanged."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "channels": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Strip names sharing one look: far-left, middle-left, middle-right, far-right",
+                    },
+                    "fx": int_schema("Effect id when using channels", 0, 255),
+                    "pal": int_schema("Palette id when using channels", 0, 255),
+                    "speed": int_schema("Effect speed", 0, 255),
+                    "intensity": int_schema("Effect intensity", 0, 255),
+                    "assignments": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "channel": {"type": "string"},
+                                "fx": int_schema("Effect id", 0, 255),
+                                "pal": int_schema("Palette id", 0, 255),
+                                "sx": int_schema("Speed", 0, 255),
+                                "ix": int_schema("Intensity", 0, 255),
+                            },
+                            "required": ["channel"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
             "name": "atmosphere",
             "description": "Apply a named curated atmosphere (multi-part look) across the wall.",
             "inputSchema": {
@@ -360,7 +401,7 @@ def build_tools() -> list[dict]:
         },
         {
             "name": "dynamic_scene",
-            "description": "Apply an opinionated, topology-aware, safe dynamic scene from mood/energy/motion words. Prefer for creative or vague vibe requests; no raw fx/pal passthrough.",
+            "description": "Apply an opinionated, topology-aware, safe dynamic scene from mood/energy/motion words. Pass colors and a seed to build a unique palette. Prefer for creative or vague vibe requests; no raw fx/pal passthrough.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -372,6 +413,7 @@ def build_tools() -> list[dict]:
                     "composition_mode": {"type": "string", "enum": ["unison", "independent", "pairs", "center_vs_outer", "left_vs_right", "alternating", "random_groups"]},
                     "seed": {"type": ["integer", "string"], "description": "Optional deterministic seed"},
                     "intensity": {"type": "number", "minimum": 0, "maximum": 1},
+                    "colors": {"type": "array", "description": "Unique palette stops as #RRGGBB hex strings", "items": {"type": "string"}},
                 },
                 "additionalProperties": False,
             },
@@ -398,10 +440,13 @@ def build_tools() -> list[dict]:
         },
         {
             "name": "realtime_start",
-            "description": "Start bounded AI-directed realtime DDP shader renderer (finite duration/FPS, no raw pixels).",
+            "description": "Start a unique bounded AI-directed realtime DDP look. Pass colors + shader (or auto) + seed; no raw pixels.",
             "inputSchema": {"type": "object", "properties": {
-                "shader": {"type": "string", "enum": ["red_rocks", "aurora_flow", "bass_bloom", "liquid_gradient", "center_wave", "vertical_scan"]},
+                "shader": {"type": "string", "enum": ["auto", "red_rocks", "aurora_flow", "bass_bloom", "liquid_gradient", "center_wave", "vertical_scan", "ember_rise", "tide_pull", "comet_fall", "dusk_bloom", "magma_column", "twin_helix", "ribbon_drift"]},
                 "mood": {"type": "string"},
+                "energy": {"type": "string"},
+                "motion": {"type": "string"},
+                "colors": {"type": "array", "description": "Unique palette stops as hex strings or RGB lists", "items": {"type": ["string", "array"]}},
                 "composition_mode": {"type": "string", "enum": ["unison", "independent", "pairs", "center_vs_outer", "left_vs_right", "alternating", "random_groups"]},
                 "intensity": {"type": "number", "minimum": 0, "maximum": 1},
                 "fps": {"type": "integer", "minimum": 1, "maximum": 40},
@@ -411,6 +456,31 @@ def build_tools() -> list[dict]:
         },
         {"name": "realtime_stop", "description": "Stop realtime DDP rendering.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
         {"name": "realtime_status", "description": "Realtime DDP renderer status.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
+        {
+            "name": "design_look",
+            "description": (
+                "Design a unique wall look with optional specialist models (colorist/motion/critic). "
+                "Local color_lab fallback if agents are off. Optionally run it via realtime DDP."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Creative look brief, e.g. ember canyon dusk"},
+                    "mood": {"type": "string", "description": "Mood words, e.g. dreamy, ocean, ember"},
+                    "energy": {"type": "string", "description": "Energy words, e.g. calm, bright, party"},
+                    "motion": {"type": "string", "description": "Motion words, e.g. rise, flow, drift"},
+                    "colors": {"type": "array", "description": "Unique palette stops as #RRGGBB hex strings", "items": {"type": "string"}},
+                    "seed": {"type": ["integer", "string"], "description": "Optional deterministic seed"},
+                    "run": {"type": "boolean", "description": "If true, start realtime DDP with the designed look"},
+                    "fps": {"type": "integer", "minimum": 1, "maximum": 40},
+                    "duration_s": {"type": "number", "minimum": 0.1, "maximum": 900},
+                    "composition_mode": {"type": "string", "enum": ["unison", "independent", "pairs", "center_vs_outer", "left_vs_right", "alternating", "random_groups"]},
+                    "intensity": {"type": "number", "minimum": 0, "maximum": 1},
+                    "shader": {"type": "string", "enum": ["auto", "red_rocks", "aurora_flow", "bass_bloom", "liquid_gradient", "center_wave", "vertical_scan", "ember_rise", "tide_pull", "comet_fall", "dusk_bloom", "magma_column", "twin_helix", "ribbon_drift"]},
+                },
+                "additionalProperties": False,
+            },
+        },
     ]
     # Fleet args: every tool accepts an optional target; seg-emitting tools also accept a segment id.
     for tool in tools:
@@ -617,6 +687,22 @@ def text_result(message: str) -> dict:
     return {"content": [{"type": "text", "text": message}]}
 
 
+def _kwargs_for(fn: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Keep kwargs the callee accepts so extra design_look hints can be ignored."""
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return kwargs
+    if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in sig.parameters.values()):
+        return kwargs
+    allowed = {
+        name
+        for name, parameter in sig.parameters.items()
+        if parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+    return {key: value for key, value in kwargs.items() if key in allowed}
+
+
 def _is_fleet(client: Any) -> bool:
     return hasattr(client, "channels") and hasattr(client, "resolve")
 
@@ -686,7 +772,7 @@ def _segments_info(client: Any) -> dict:
         "wall_order": list(getattr(getattr(client, "installation", None), "wall_order", fleet.WALL_ORDER)),
         "controllers": controllers,
         "channels": {ch: [ctrl, seg_id] for ch, (ctrl, seg_id) in channels.items()},
-        "valid_targets": list(dict.fromkeys([fleet.DEFAULT_TARGET, *client.names(), *channels])),
+        "valid_targets": list(client.valid_targets()) if hasattr(client, "valid_targets") else list(dict.fromkeys([fleet.DEFAULT_TARGET, *client.names(), *channels])),
     }
 
 
@@ -1030,6 +1116,23 @@ def call_tool(
         return text_result(json.dumps(_segments_info(client), indent=2))
     if name == "wall_mode":
         return text_result(_wall_mode(client, args))
+    if name == "strips":
+        if not _is_fleet(client):
+            raise ValueError("strips requires fleet mode (run without --host).")
+        assignments = args.get("assignments")
+        if isinstance(assignments, list) and assignments:
+            result = columns.per_strip(client, assignments)
+            return text_result(f"Applied per-strip looks: {result}")
+        channels = args.get("channels") or []
+        if not channels:
+            raise ValueError("strips requires channels or assignments.")
+        opts = {}
+        if args.get("speed") is not None:
+            opts["sx"] = args["speed"]
+        if args.get("intensity") is not None:
+            opts["ix"] = args["intensity"]
+        result = columns.apply_channels(client, list(channels), int(args.get("fx") or 9), args.get("pal"), **opts)
+        return text_result(f"Applied look to {', '.join(channels)}: {result}")
     if name == "atmosphere":
         if not _is_fleet(client):
             raise ValueError("atmosphere requires fleet mode (run without --host).")
@@ -1061,6 +1164,49 @@ def call_tool(
         return text_result(realtime.realtime_stop())
     if name == "realtime_status":
         return text_result(json.dumps(realtime.realtime_status(), indent=2))
+    if name == "design_look":
+        if not _is_fleet(client):
+            raise ValueError("design_look requires fleet mode (run without --host).")
+        scene_args = dict(args)
+        scene_args.pop("target", None)
+        try:
+            import light_gui
+            settings = light_gui.ai_settings()
+        except Exception:
+            settings = None
+        design_kwargs: dict[str, Any] = {"settings": settings}
+        for key in ("mood", "energy", "motion", "seed", "colors", "composition_mode", "intensity", "shader"):
+            if scene_args.get(key) is not None:
+                design_kwargs[key] = scene_args[key]
+        look = look_agents.design_look(
+            str(scene_args.get("prompt") or ""),
+            **_kwargs_for(look_agents.design_look, design_kwargs),
+        )
+        started = False
+        apply_result = ""
+        if scene_args.get("run"):
+            apply_kwargs: dict[str, Any] = {}
+            if scene_args.get("fps") is not None:
+                apply_kwargs["fps"] = scene_args["fps"]
+            if scene_args.get("duration_s") is not None:
+                apply_kwargs["duration_s"] = scene_args["duration_s"]
+            apply_result = str(
+                look_agents.apply_look(client, look, **_kwargs_for(look_agents.apply_look, apply_kwargs)) or ""
+            )
+            started = True
+        agents = look.get("agents") or {}
+        if isinstance(agents, dict):
+            ran = [f"{name}={value}" for name, value in agents.items() if value]
+            agents_text = ", ".join(ran) if ran else "none (color_lab fallback)"
+        else:
+            agents_text = str(agents)
+        status = "Realtime started" if started else "Realtime not started"
+        if apply_result:
+            status = f"{status}: {apply_result}"
+        return text_result(
+            f"Look recipe: shader={look.get('shader')}, colors={look.get('colors')}, "
+            f"agents={agents_text}. {status}."
+        )
     if name == "set_zone":
         return text_result(_set_zone(client, args))
     if name == "set_segment_bounds":

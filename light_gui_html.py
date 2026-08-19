@@ -534,6 +534,10 @@ HTML_TEMPLATE = """<!doctype html>
     .settings-msg.info { color: var(--text-secondary); }
     .settings-badge { padding: 6px 12px; border-radius: 999px; font-size: 12px; font-weight: 800; border: 1px solid rgba(251,70,102,.45); background: rgba(251,70,102,.12); color: #fda4af; white-space: nowrap; }
     .settings-badge.set { border-color: rgba(52,211,153,.45); background: rgba(16,185,129,.14); color: #6ee7b7; }
+    .agent-role { margin: 10px 0; padding: 10px; border-radius: var(--radius-sm); background: rgba(4,8,20,.46); border: 1px solid rgba(255,255,255,.10); }
+    .agent-role h3 { margin: 0 0 8px; font-size: 13px; font-weight: 800; color: var(--text-secondary); }
+    .agent-role .row { gap: 8px; }
+    .agent-role input[type="text"] { width: 100%; }
     .controller-row { display: grid; grid-template-columns: auto minmax(90px,.8fr) minmax(120px,1.2fr) minmax(120px,1.2fr) minmax(0,1fr) auto; gap: 8px; align-items: center; margin: 8px 0; padding: 8px; border-radius: var(--radius-sm); background: rgba(4,8,20,.46); border: 1px solid rgba(255,255,255,.10); }
     .controller-row input { width: 100%; padding: 7px 9px; font-size: 12px; }
     .ctl-info { font-size: 11px; color: var(--text-secondary); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -684,7 +688,7 @@ HTML_TEMPLATE = """<!doctype html>
     <div class="target-bar">
       <span>🎯 Target</span>
       <select id="targetSelect" onchange="setTarget(this.value)" title="Which controller or channel actions apply to">
-        <option value="all">All controllers</option>
+        <option value="all">All 4 strips</option>
       </select>
       <span class="target-hint" id="targetHint">applies to every action below</span>
       <span class="firetv-bar">
@@ -943,6 +947,12 @@ HTML_TEMPLATE = """<!doctype html>
       <label>Intensity <span id="dynIntensityText">72</span>%
         <input id="dynIntensity" type="range" min="0" max="100" value="72" oninput="dynIntensityText.textContent=this.value">
       </label>
+      <label>Unique colors
+        <input id="dynColors" type="text" placeholder="#00c8b4, #003c64, #7a3cff" style="width:100%;">
+      </label>
+      <label>Seed
+        <input id="dynSeed" type="text" placeholder="optional unique seed" style="width:100%;">
+      </label>
       <div class="row" style="margin-top:8px;">
         <button onclick="applyDynamicScene()" title="Apply a dynamic AI scene">Apply Dynamic Scene</button>
       </div>
@@ -951,16 +961,24 @@ HTML_TEMPLATE = """<!doctype html>
     </div>
     <div class="card">
       <h2>⚡ Realtime Direct Mode</h2>
-      <p class="card-note">Realtime streams direct pixels over DDP and overrides WLED effects until you stop it or the timeout ends. Keep durations bounded.</p>
+      <p class="card-note">Realtime streams unique palettes and motion over DDP and overrides WLED effects until you stop it or the timeout ends. Pass your own colors and a seed to build a look, or leave them blank and let mood + seed invent one.</p>
       <div class="row">
         <label style="flex:1; margin:0;">Shader
           <select id="rtShader" style="width:100%;">
+            <option value="auto">auto from mood</option>
             <option value="red_rocks">red_rocks</option>
             <option value="aurora_flow">aurora_flow</option>
             <option value="bass_bloom">bass_bloom</option>
             <option value="liquid_gradient" selected>liquid_gradient</option>
             <option value="center_wave">center_wave</option>
             <option value="vertical_scan">vertical_scan</option>
+            <option value="ember_rise">ember_rise</option>
+            <option value="tide_pull">tide_pull</option>
+            <option value="comet_fall">comet_fall</option>
+            <option value="dusk_bloom">dusk_bloom</option>
+            <option value="magma_column">magma_column</option>
+            <option value="twin_helix">twin_helix</option>
+            <option value="ribbon_drift">ribbon_drift</option>
           </select>
         </label>
         <label style="flex:1; margin:0;">Mood
@@ -990,9 +1008,16 @@ HTML_TEMPLATE = """<!doctype html>
         <label style="margin:0;">Duration (s)
           <input id="rtDuration" type="number" min="1" max="900" value="60" style="width:100px;">
         </label>
+        <label style="margin:0;">Seed
+          <input id="rtSeed" type="text" placeholder="unique-look" style="width:110px;">
+        </label>
       </div>
+      <label>Unique colors
+        <input id="rtColors" type="text" placeholder="#c8320c, #501004, #f0a028" style="width:100%;">
+      </label>
       <div class="row" style="margin-top:8px;">
         <button onclick="startRealtime()" title="Start direct DDP realtime rendering">Start Realtime</button>
+        <button onclick="designLook()" title="Design a unique look with the colorist/motion/critic agents">Design unique look</button>
         <button class="danger" onclick="stopRealtime()" title="Stop the realtime stream">Stop Realtime</button>
         <button class="secondary" onclick="refreshRealtimeStatus()" title="Fetch realtime status">Status</button>
       </div>
@@ -1106,6 +1131,56 @@ HTML_TEMPLATE = """<!doctype html>
           <button class="secondary" onclick="testAiConnection(this)" title="Test the configured AI connection">Test connection</button>
         </div>
         <div class="settings-msg" id="aiSettingsMsg"></div>
+      </div>
+
+      <div class="card">
+        <h2>🎨 Look Agents</h2>
+        <p class="card-note">Optional per-role models for colorist, motion, and critic. Leave provider/base URL blank to inherit the main AI provider.</p>
+        <div class="agent-role">
+          <h3>Colorist</h3>
+          <label><input type="checkbox" id="agentColoristEnabled"> Enabled</label>
+          <label>Model
+            <input id="agentColoristModel" type="text" placeholder="inherit or e.g. gpt-4o-mini" style="width:100%;">
+          </label>
+          <div class="row">
+            <label style="flex:1;">Provider
+              <input id="agentColoristProvider" type="text" placeholder="optional" style="width:100%;">
+            </label>
+            <label style="flex:1;">Base URL
+              <input id="agentColoristBaseUrl" type="text" placeholder="optional" style="width:100%;">
+            </label>
+          </div>
+        </div>
+        <div class="agent-role">
+          <h3>Motion</h3>
+          <label><input type="checkbox" id="agentMotionEnabled"> Enabled</label>
+          <label>Model
+            <input id="agentMotionModel" type="text" placeholder="inherit or e.g. gpt-4o-mini" style="width:100%;">
+          </label>
+          <div class="row">
+            <label style="flex:1;">Provider
+              <input id="agentMotionProvider" type="text" placeholder="optional" style="width:100%;">
+            </label>
+            <label style="flex:1;">Base URL
+              <input id="agentMotionBaseUrl" type="text" placeholder="optional" style="width:100%;">
+            </label>
+          </div>
+        </div>
+        <div class="agent-role">
+          <h3>Critic</h3>
+          <label><input type="checkbox" id="agentCriticEnabled"> Enabled</label>
+          <label>Model
+            <input id="agentCriticModel" type="text" placeholder="inherit or e.g. gpt-4o-mini" style="width:100%;">
+          </label>
+          <div class="row">
+            <label style="flex:1;">Provider
+              <input id="agentCriticProvider" type="text" placeholder="optional" style="width:100%;">
+            </label>
+            <label style="flex:1;">Base URL
+              <input id="agentCriticBaseUrl" type="text" placeholder="optional" style="width:100%;">
+            </label>
+          </div>
+        </div>
       </div>
 
       <div class="card">
@@ -1365,8 +1440,10 @@ HTML_TEMPLATE = """<!doctype html>
       for (const name of fleetInfo.targets) {
         const opt = document.createElement('option');
         opt.value = name;
-        opt.textContent = name === 'all' ? 'All controllers'
-          : (name in channels ? 'Channel: ' + name : 'Controller: ' + name);
+        opt.textContent = name === 'all' ? 'All 4 strips'
+          : name === 'outer' ? 'Group: outer (far pair)'
+          : (name === 'inner' || name === 'center') ? 'Group: inner (middle pair)'
+          : (name in channels ? 'Strip: ' + name : 'Controller: ' + name);
         sel.appendChild(opt);
       }
       sel.value = fleetInfo.targets.includes(currentTarget) ? currentTarget : 'all';
@@ -1617,6 +1694,10 @@ HTML_TEMPLATE = """<!doctype html>
       return tags;
     }
 
+    function parseColorList(value) {
+      return String(value || '').split(/[,;|]+/).map((part) => part.trim()).filter(Boolean);
+    }
+
     async function applyDynamicScene() {
       const data = await send('dynamic_scene', {
         mood: dynMood.value.trim(),
@@ -1625,7 +1706,9 @@ HTML_TEMPLATE = """<!doctype html>
         strategy: dynStrategy.value.trim(),
         engine: dynEngine.value,
         composition_mode: dynComposition.value,
-        intensity: Number(dynIntensity.value) / 100
+        intensity: Number(dynIntensity.value) / 100,
+        colors: parseColorList(dynColors.value),
+        seed: dynSeed.value.trim() || null
       });
       setText('dynSceneStatus', data && data.ok ? (data.message || 'Dynamic scene applied.') : (data && data.error ? ('Dynamic scene error: ' + data.error) : 'Dynamic scene request sent.'));
     }
@@ -1637,10 +1720,28 @@ HTML_TEMPLATE = """<!doctype html>
         composition_mode: rtComposition.value,
         intensity: Number(rtIntensity.value) / 100,
         fps: Number(rtFps.value),
-        duration_s: Number(rtDuration.value)
+        duration_s: Number(rtDuration.value),
+        colors: parseColorList(rtColors.value),
+        seed: rtSeed.value.trim() || null
       });
       await refreshRealtimeStatus();
       setText('realtimeStatus', data && data.ok ? (data.message || 'Realtime stream started.') : (data && data.error ? ('Realtime error: ' + data.error) : 'Realtime request sent.'));
+    }
+
+    async function designLook() {
+      const data = await send('design_look', {
+        prompt: rtMood.value.trim() || 'unique wall look',
+        mood: rtMood.value.trim(),
+        colors: parseColorList(rtColors.value),
+        seed: rtSeed.value.trim() || null,
+        run: true,
+        fps: Number(rtFps.value),
+        duration_s: Number(rtDuration.value),
+        composition_mode: rtComposition.value,
+        intensity: Number(rtIntensity.value)/100
+      });
+      await refreshRealtimeStatus();
+      setText('realtimeStatus', data && data.ok ? (data.message || 'Look design started.') : (data && data.error ? ('Look design error: ' + data.error) : 'Look design request sent.'));
     }
 
     async function stopRealtime() {
@@ -3186,6 +3287,22 @@ HTML_TEMPLATE = """<!doctype html>
         document.getElementById('setAiModel').value = ai.model || '';
         document.getElementById('setAiVisionModel').value = ai.vision_model || '';
         document.getElementById('setAiKeyEnv').value = ai.api_key_env || '';
+        const agents = ai.agents || {};
+        const colorist = agents.colorist || {};
+        const motion = agents.motion || {};
+        const critic = agents.critic || {};
+        document.getElementById('agentColoristEnabled').checked = !!colorist.enabled;
+        document.getElementById('agentColoristModel').value = colorist.model || '';
+        document.getElementById('agentColoristProvider').value = colorist.provider || '';
+        document.getElementById('agentColoristBaseUrl').value = colorist.base_url || '';
+        document.getElementById('agentMotionEnabled').checked = !!motion.enabled;
+        document.getElementById('agentMotionModel').value = motion.model || '';
+        document.getElementById('agentMotionProvider').value = motion.provider || '';
+        document.getElementById('agentMotionBaseUrl').value = motion.base_url || '';
+        document.getElementById('agentCriticEnabled').checked = !!critic.enabled;
+        document.getElementById('agentCriticModel').value = critic.model || '';
+        document.getElementById('agentCriticProvider').value = critic.provider || '';
+        document.getElementById('agentCriticBaseUrl').value = critic.base_url || '';
         const badge = document.getElementById('setAiKeyBadge');
         badge.textContent = ai.api_key_set ? 'API key: set ✓' : 'API key: not set';
         badge.classList.toggle('set', !!ai.api_key_set);
@@ -3211,7 +3328,27 @@ HTML_TEMPLATE = """<!doctype html>
         base_url: document.getElementById('setAiBaseUrl').value.trim(),
         model: document.getElementById('setAiModel').value.trim(),
         vision_model: document.getElementById('setAiVisionModel').value.trim(),
-        api_key_env: document.getElementById('setAiKeyEnv').value.trim()
+        api_key_env: document.getElementById('setAiKeyEnv').value.trim(),
+        agents: {
+          colorist: {
+            enabled: document.getElementById('agentColoristEnabled').checked,
+            model: document.getElementById('agentColoristModel').value.trim(),
+            provider: document.getElementById('agentColoristProvider').value.trim(),
+            base_url: document.getElementById('agentColoristBaseUrl').value.trim()
+          },
+          motion: {
+            enabled: document.getElementById('agentMotionEnabled').checked,
+            model: document.getElementById('agentMotionModel').value.trim(),
+            provider: document.getElementById('agentMotionProvider').value.trim(),
+            base_url: document.getElementById('agentMotionBaseUrl').value.trim()
+          },
+          critic: {
+            enabled: document.getElementById('agentCriticEnabled').checked,
+            model: document.getElementById('agentCriticModel').value.trim(),
+            provider: document.getElementById('agentCriticProvider').value.trim(),
+            base_url: document.getElementById('agentCriticBaseUrl').value.trim()
+          }
+        }
       };
       btn.disabled = true;
       setMsg(msg, 'Saving...', 'info');

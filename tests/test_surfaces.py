@@ -17,6 +17,27 @@ import mcp_light
 import music_director
 
 
+def _openai_array_schema_problems(schema, path="$"):
+    """OpenAI json_schema rejects any array type that lacks items."""
+    problems = []
+    if not isinstance(schema, dict):
+        return problems
+    types = schema.get("type")
+    type_list = types if isinstance(types, list) else [types] if types is not None else []
+    if "array" in type_list and "items" not in schema:
+        problems.append(f"{path} array schema missing items")
+    items = schema.get("items")
+    if isinstance(items, dict):
+        item_types = items.get("type")
+        item_list = item_types if isinstance(item_types, list) else [item_types] if item_types is not None else []
+        if "array" in item_list and "items" not in items:
+            problems.append(f"{path}.items array schema missing items")
+        problems.extend(_openai_array_schema_problems(items, path + ".items"))
+    for key, value in (schema.get("properties") or {}).items():
+        problems.extend(_openai_array_schema_problems(value, f"{path}.{key}"))
+    return problems
+
+
 class FakeClient:
     def __init__(self):
         self.payloads = []
@@ -161,6 +182,8 @@ class SurfaceTests(unittest.TestCase):
         self.assertIn("set_color", tool_names)
         self.assertIn("set_effect", tool_names)
         self.assertIn("dynamic_scene", tool_names)
+        self.assertIn("design_look", tool_names)
+        self.assertIn("strips", tool_names)
 
     def test_mcp_effect_tool_accepts_full_catalog_range(self):
         effect_tool = next(tool for tool in mcp_light.build_tools() if tool["name"] == "set_effect")
@@ -305,8 +328,10 @@ class SurfaceTests(unittest.TestCase):
                 "wall_chase",
                 "wall_versus",
                 "set_channel",
+                "strips",
                 "atmosphere",
                 "dynamic_scene",
+                "design_look",
                 "look_feedback",
                 "realtime_start",
                 "realtime_stop",
@@ -316,6 +341,16 @@ class SurfaceTests(unittest.TestCase):
         properties = request["text"]["format"]["schema"]["properties"]["actions"]["items"]["properties"]
         for field in ("preset_id", "minutes", "interval", "schedule_time", "schedule_action", "schedule_index"):
             self.assertIn(field, properties)
+
+    def test_light_actions_schema_arrays_declare_items(self):
+        request = light_gui.build_openai_request("control everything")
+        schema = request["text"]["format"]["schema"]
+        problems = _openai_array_schema_problems(schema)
+        self.assertEqual(problems, [])
+        colors = schema["properties"]["actions"]["items"]["properties"]["colors"]
+        self.assertIn("array", colors["type"] if isinstance(colors["type"], list) else [colors["type"]])
+        self.assertEqual(colors["items"]["type"], "string")
+        self.assertIn("colors", schema["properties"]["actions"]["items"]["required"])
 
     def test_ai_job_manager_tracks_completion_result(self):
         manager = light_gui.AiJobManager(max_workers=1)

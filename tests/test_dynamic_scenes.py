@@ -196,6 +196,27 @@ def test_dynamic_scene_records_compact_memory_without_frames():
     assert all("i" not in item for items in event["payload_summary"].values() for item in items)
 
 
+def test_custom_colors_override_stock_mood_palette():
+    f = RecordingFleet()
+    teal = dynamic_scenes.compose_dynamic_scene(
+        f,
+        mood="party",
+        colors=["#00c8b4", "#003c64"],
+        strategy="quiet_gradient",
+        seed=1,
+    )
+    frame = teal["left"]["seg"][0]["i"]
+    assert frame[0][1] >= frame[0][0]
+    assert frame[0][1] >= frame[0][2]
+
+
+def test_generated_palettes_change_with_seed():
+    f = RecordingFleet()
+    a = dynamic_scenes.compose_dynamic_scene(f, mood="ember dusk", strategy="quiet_gradient", seed=3)
+    b = dynamic_scenes.compose_dynamic_scene(f, mood="ember dusk", strategy="quiet_gradient", seed=9)
+    assert a["left"]["seg"][0]["i"] != b["left"]["seg"][0]["i"]
+
+
 def test_look_memory_feedback_summary_and_bounded_history():
     last = None
     for idx in range(105):

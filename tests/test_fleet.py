@@ -281,26 +281,91 @@ class FleetFanOutTests(unittest.TestCase):
         fleet_ = make_fleet()
         result = fleet_.post_state({"seg": [{"fx": 9, "sx": 180}]}, target="middle-left")
         self.assertEqual(set(result), {"left"})
-        self.assertEqual(fleet_.clients["left"].payloads, [{"seg": [{"id": 1, "fx": 9, "sx": 180}], "udpn": {"nn": True}}])
+        self.assertEqual(
+            fleet_.clients["left"].payloads,
+            [{"seg": [{"fx": 9, "sx": 180, "id": 1, "start": 34, "stop": 82, "on": True}], "udpn": {"nn": True}}],
+        )
         self.assertEqual(fleet_.clients["right"].payloads, [])
 
     def test_channel_target_injects_into_every_seg_entry(self):
         fleet_ = make_fleet()
         fleet_.post_state({"seg": [{"fx": 9}, {"col": [[1, 2, 3, 0]]}]}, target="middle-right")
         # channel target: every seg entry gets the channel's segment id
-        self.assertEqual(fleet_.clients["right"].payloads,
-                         [{"seg": [{"id": 1, "fx": 9}, {"id": 1, "col": [[1, 2, 3, 0]]}], "udpn": {"nn": True}}])
+        self.assertEqual(
+            fleet_.clients["right"].payloads,
+            [{
+                "seg": [
+                    {"fx": 9, "id": 1, "start": 0, "stop": 47, "on": True},
+                    {"col": [[1, 2, 3, 0]], "id": 1, "start": 0, "stop": 47, "on": True},
+                ],
+                "udpn": {"nn": True},
+            }],
+        )
         self.assertEqual(fleet_.clients["left"].payloads, [])
 
     def test_channel_target_injects_right_center_seg_id(self):
         fleet_ = make_fleet()
         fleet_.post_state({"seg": [{"fx": 28}]}, target="middle-right")
-        self.assertEqual(fleet_.clients["right"].payloads, [{"seg": [{"id": 1, "fx": 28}], "udpn": {"nn": True}}])
+        self.assertEqual(
+            fleet_.clients["right"].payloads,
+            [{"seg": [{"fx": 28, "id": 1, "start": 0, "stop": 47, "on": True}], "udpn": {"nn": True}}],
+        )
 
     def test_channel_target_without_seg_passes_payload_through(self):
         fleet_ = make_fleet()
         fleet_.post_state({"on": False}, target="middle-left")
         self.assertEqual(fleet_.clients["left"].payloads, [{"on": False, "udpn": {"nn": True}}])
+
+    def test_effect_on_all_reaches_every_wall_segment_with_bounds(self):
+        fleet_ = make_fleet()
+        fleet_.post_state({"seg": [{"fx": 9, "sx": 140}]})
+        left = {seg["id"]: seg for seg in fleet_.clients["left"].payloads[0]["seg"]}
+        right = {seg["id"]: seg for seg in fleet_.clients["right"].payloads[0]["seg"]}
+        self.assertEqual(set(left), {0, 1})
+        self.assertEqual(set(right), {0, 1})
+        self.assertEqual((left[0]["start"], left[0]["stop"], left[0]["on"]), (0, 34, True))
+        self.assertEqual((left[1]["start"], left[1]["stop"]), (34, 82))
+        self.assertEqual((right[1]["start"], right[1]["stop"]), (0, 47))
+        self.assertEqual((right[0]["start"], right[0]["stop"]), (47, 87))
+        for seg in list(left.values()) + list(right.values()):
+            self.assertEqual(seg["fx"], 9)
+            self.assertEqual(seg["sx"], 140)
+
+    def test_effect_on_left_controller_hits_both_left_strips_only(self):
+        fleet_ = make_fleet()
+        fleet_.post_state({"seg": [{"fx": 28}]}, target="left")
+        left = {seg["id"]: seg["fx"] for seg in fleet_.clients["left"].payloads[0]["seg"]}
+        self.assertEqual(left, {0: 28, 1: 28})
+        self.assertEqual(fleet_.clients["right"].payloads, [])
+
+    def test_outer_group_targets_far_columns_only(self):
+        fleet_ = make_fleet()
+        fleet_.post_state({"seg": [{"fx": 46}]}, target="outer")
+        left = fleet_.clients["left"].payloads[0]["seg"]
+        right = fleet_.clients["right"].payloads[0]["seg"]
+        self.assertEqual([seg["id"] for seg in left], [0])
+        self.assertEqual([seg["id"] for seg in right], [0])
+        self.assertEqual(left[0]["fx"], 46)
+        self.assertEqual(right[0]["fx"], 46)
+
+    def test_combo_target_selects_any_strip_subset(self):
+        fleet_ = make_fleet()
+        fleet_.post_state({"seg": [{"fx": 12}]}, target="far-left,middle-right")
+        self.assertEqual([seg["id"] for seg in fleet_.clients["left"].payloads[0]["seg"]], [0])
+        self.assertEqual([seg["id"] for seg in fleet_.clients["right"].payloads[0]["seg"]], [1])
+        self.assertEqual(len(fleet_.clients["left"].payloads), 1)
+        self.assertEqual(len(fleet_.clients["right"].payloads), 1)
+
+    def test_plus_combo_and_inner_alias(self):
+        fleet_ = make_fleet()
+        self.assertEqual(
+            sorted(fleet_.resolve("inner")),
+            [("left", 1), ("right", 1)],
+        )
+        self.assertEqual(
+            sorted(fleet_.resolve("far-left+far-right")),
+            [("left", 0), ("right", 0)],
+        )
 
     def test_post_state_does_not_mutate_the_callers_payload(self):
         fleet_ = make_fleet()

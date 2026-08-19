@@ -170,6 +170,35 @@ def left_vs_right(
     return _post_per_controller(fleet, payloads)
 
 
+def apply_channels(fleet: LightFleet, channels: list[str], fx: int, pal: int | None = None, **seg_opts) -> dict:
+    """Same look on an explicit subset of strips (any 1-4 combo)."""
+    if not channels:
+        raise ValueError("apply_channels requires at least one channel")
+    entry = _seg_entry(fx, pal, seg_opts)
+    return fleet.post_state(lightctl.segment_payload([entry]), target=",".join(channels))
+
+
+def per_strip(fleet: LightFleet, specs: list[dict]) -> dict:
+    """Different fx/pal/options per named strip, one POST per controller."""
+    if not specs:
+        raise ValueError("per_strip requires at least one strip assignment")
+    channels = fleet.channels()
+    grouped: dict[str, list[dict]] = {}
+    for spec in specs:
+        channel = str(spec.get("channel") or "").strip()
+        if channel not in channels:
+            raise ValueError(f"Unknown channel {channel!r}. Valid: {', '.join(channels)}")
+        controller, seg_id = channels[channel]
+        opts = {key: value for key, value in spec.items() if key not in {"channel", "fx", "pal", "effect", "palette"}}
+        fx = spec.get("fx", spec.get("effect"))
+        pal = spec.get("pal", spec.get("palette"))
+        entry = _seg_entry(None if fx is None else int(fx), None if pal is None else int(pal), opts)
+        entry["id"] = seg_id
+        grouped.setdefault(controller, []).append(entry)
+    payloads = {controller: lightctl.segment_payload(entries) for controller, entries in grouped.items()}
+    return _post_per_controller(fleet, payloads)
+
+
 def set_channel(fleet: LightFleet, channel: str, **seg_opts) -> dict:
     """Thin wrapper: apply raw seg options to a single channel.
 
