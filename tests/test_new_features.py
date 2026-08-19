@@ -67,7 +67,38 @@ class MergePayloadsTests(unittest.TestCase):
 
     def test_transition_included_when_nonzero(self):
         payload = lightctl.on_payload(True, transition_ms=500)
-        self.assertEqual(payload["transition"], 500)
+        self.assertEqual(payload["transition"], 5)
+
+    def test_merges_per_segment_id(self):
+        merged = lightctl.merge_payloads(
+            lightctl.effect_payload(9, seg_id=0),
+            lightctl.color_payload(1, 2, 3, 4, seg_id=0),
+        )
+        self.assertEqual(
+            merged,
+            {"seg": [{"id": 0, "fx": 9, "sx": 128, "col": [[1, 2, 3, 4]]}]},
+        )
+
+    def test_different_segment_ids_stay_separate(self):
+        merged = lightctl.merge_payloads(
+            lightctl.effect_payload(9, seg_id=0),
+            lightctl.effect_payload(28, seg_id=1),
+        )
+        self.assertEqual(len(merged["seg"]), 2)
+        by_id = {seg["id"]: seg for seg in merged["seg"]}
+        self.assertEqual(by_id[0]["fx"], 9)
+        self.assertEqual(by_id[1]["fx"], 28)
+
+    def test_id_less_entries_merge_into_first_segment(self):
+        merged = lightctl.merge_payloads(
+            lightctl.segment_payload([{"id": 0, "fx": 9}, {"id": 1, "fx": 28}]),
+            lightctl.color_payload(5, 5, 5, 0),
+        )
+        self.assertEqual(len(merged["seg"]), 2)
+        by_id = {seg["id"]: seg for seg in merged["seg"]}
+        self.assertEqual(by_id[0]["col"], [[5, 5, 5, 0]])
+        self.assertEqual(by_id[0]["fx"], 9)
+        self.assertNotIn("col", by_id[1])
 
 
 class ReactiveThreadTests(unittest.TestCase):
@@ -219,19 +250,19 @@ class TransitionTests(unittest.TestCase):
     def test_brightness_payload_includes_transition(self):
         p = lightctl.brightness_payload(200, transition_ms=500)
         self.assertEqual(p["bri"], 200)
-        self.assertEqual(p["transition"], 500)
+        self.assertEqual(p["transition"], 5)
 
     def test_color_payload_includes_transition(self):
         p = lightctl.color_payload(255, 0, 0, 0, transition_ms=300)
-        self.assertEqual(p["transition"], 300)
+        self.assertEqual(p["transition"], 3)
 
     def test_effect_payload_includes_transition(self):
         p = lightctl.effect_payload(28, 128, transition_ms=100)
-        self.assertEqual(p["transition"], 100)
+        self.assertEqual(p["transition"], 1)
 
     def test_scene_payload_includes_transition(self):
         p = lightctl.scene_payload("warm", transition_ms=250)
-        self.assertEqual(p["transition"], 250)
+        self.assertEqual(p["transition"], 2)
 
 
 class GuiPayloadTests(unittest.TestCase):
@@ -248,7 +279,7 @@ class GuiPayloadTests(unittest.TestCase):
 
     def test_transition_passed_through(self):
         payload = light_gui.payload_for_action("bri", {"value": 200, "transition": 500})
-        self.assertEqual(payload["transition"], 500)
+        self.assertEqual(payload["transition"], 5)
 
     def test_hex_action_builds_color_payload(self):
         payload = light_gui.payload_for_action("hex", {"color": "#ff6600"})
@@ -340,6 +371,18 @@ class HexColorTests(unittest.TestCase):
             lightctl.hex_to_rgbw("ggg")
 
 
+def test_verified_column_geometry_defaults_to_40_pixels():
+    assert lightctl.LEDS_PER_COLUMN == 40
+    assert lightctl.COLUMN_LENGTH_M == 2.0
+    assert lightctl.zone_bounds("bottom half") == (0, 20)
+    assert lightctl.zone_bounds("top half") == (20, 40)
+
+
+def test_downward_orientation_flips_top_and_bottom():
+    assert lightctl.zone_bounds("top half", orientation="down") == (0, 20)
+    assert lightctl.zone_bounds("bottom half", orientation="down") == (20, 40)
+
+
 class RandomSceneTests(unittest.TestCase):
     def test_random_scene_is_builtin(self):
         payload = lightctl.random_scene_payload()
@@ -388,7 +431,28 @@ class PresetTests(unittest.TestCase):
 
     def test_preset_payload_includes_transition(self):
         p = lightctl.preset_payload(10, transition_ms=300)
-        self.assertEqual(p["transition"], 300)
+        self.assertEqual(p["transition"], 3)
+
+    def test_playlist_payload_sets_pl(self):
+        self.assertEqual(lightctl.playlist_payload(3), {"pl": 3})
+
+
+class ValidateEffectLiveSetTests(unittest.TestCase):
+    def test_validate_effect_offline_falls_back_to_safe_effects(self):
+        self.assertEqual(lightctl.validate_effect(9), 9)
+        with self.assertRaises(ValueError):
+            lightctl.validate_effect(200)
+
+    def test_validate_effect_with_live_set_per_firmware(self):
+        right_live = set(range(187))  # WLED 0.15.4
+        left_live = set(range(220))   # WLED 16.0.1
+        with self.assertRaises(ValueError):
+            lightctl.validate_effect(200, allowed=right_live)
+        self.assertEqual(lightctl.validate_effect(200, allowed=left_live), 200)
+
+    def test_validate_effect_rejects_id_outside_live_set(self):
+        with self.assertRaises(ValueError):
+            lightctl.validate_effect(5, allowed={9, 28})
 
 
 class WledInfoTests(unittest.TestCase):

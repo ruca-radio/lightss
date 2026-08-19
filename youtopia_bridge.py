@@ -2,7 +2,9 @@
 """One-shot bridge from Youtopia player state to lightss AI-driven lighting.
 
 Reads a JSON object from stdin with keys:
-  - host: WLED controller URL (default: lightctl.DEFAULT_HOST)
+  - host: WLED controller URL (optional; forces a single-controller client,
+          overriding the fleet)
+  - target: fleet target (default: "all") — a controller name or channel name
   - song: dict with title, artist, album, genre, durationSeconds, videoType,
           isLive, likeStatus, volume and status
 
@@ -25,6 +27,58 @@ import light_gui
 
 logger = logging.getLogger("youtopia_bridge")
 logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
+
+
+class TargetedFleet:
+    """Duck-typed adapter binding a LightFleet to a fixed target.
+
+    Exposes the LightClient-shaped surface the light_gui helpers use
+    (post_state / get_state / get_device_snapshot) so an AI plan can be
+    applied to a single controller or channel without special-casing. The
+    resolve passthrough makes light_gui's duck-typed fleet detection
+    (_is_fleet) recognize the adapter, so per-action targets are honored
+    and primary_state unwraps the fleet-shaped get_state dict correctly.
+    """
+
+    def __init__(self, light_fleet: Any, target: str) -> None:
+        self._fleet = light_fleet
+        self._target = target
+
+    def resolve(self, target: str) -> Any:
+        """Passthrough so light_gui treats this adapter as a fleet."""
+        return self._fleet.resolve(target)
+
+    def post_state(self, payload: dict[str, Any], target: str | None = None) -> dict[str, Any]:
+        # An explicit per-action target (other than the broadcast default)
+        # overrides the bound target; otherwise post to the bound target.
+        if not target or target == "all":
+            target = self._target
+        return self._fleet.post_state(payload, target=target)
+
+    def get_state(self, target: str | None = None) -> dict[str, Any]:
+        return self._fleet.get_state(target or self._target)
+
+    def get_device_snapshot(self) -> dict[str, Any]:
+        return self._fleet.get_fleet_snapshot()
+
+
+def make_client(host: str | None, target: str = "all") -> Any:
+    """Build the lighting client for a request.
+
+    An explicit host forces a single-controller LightClient (back-compat
+    escape hatch); otherwise a LightFleet is built from config and bound to
+    the requested target ("all" broadcasts to every controller).
+    """
+    if host:
+        return lightctl.LightClient(host=host)
+    import fleet  # local import: fleet imports lightctl
+
+    light_fleet = fleet.LightFleet.from_config()
+    target = target or "all"
+    if target != "all":
+        # Raises ValueError early on an unknown target.
+        light_fleet.resolve(target)
+    return TargetedFleet(light_fleet, target)
 
 
 def _video_type_name(video_type: int | str | None) -> str:
@@ -55,6 +109,12 @@ def _like_status_name(like_status: int | str | None) -> str:
 
 
 def build_prompt(song: dict[str, Any]) -> str:
+    """Build an informative lighting prompt from all available Youtopia metadata.
+
+    The AI is asked to infer missing musical context (genre, mood, BPM, energy)
+    from the metadata it does have, so the resulting scene matches the song as
+    closely as possible.
+    """
     title = song.get("title", "Unknown") or "Unknown"
     artist = song.get("artist", "Unknown") or "Unknown"
     album = song.get("album", "")
@@ -69,7 +129,7 @@ def build_prompt(song: dict[str, Any]) -> str:
     status = song.get("status", "")
 
     parts = [
-        f"Create a lighting scene for the currently playing track.",
+        "Create a lighting scene for the currently playing track.",
         f"Title: {title}",
         f"Artist: {artist}",
     ]
@@ -109,7 +169,8 @@ def main() -> int:
         print(json.dumps({"ok": False, "error": f"Invalid JSON input: {exc}"}))
         return 1
 
-    host = data.get("host") or lightctl.DEFAULT_HOST
+    host = data.get("host")
+    target = str(data.get("target") or "all")
     song = data.get("song") or {}
 
     if not song.get("title"):
@@ -117,7 +178,7 @@ def main() -> int:
         return 1
 
     try:
-        client = lightctl.LightClient(host=host)
+        client = make_client(str(host) if host else None, target)
         snapshot = client.get_device_snapshot()
 
         now_playing = {

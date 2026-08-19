@@ -1,3 +1,7 @@
+import pytest
+
+pytest.importorskip("PySide6", reason="light_tray requires PySide6")
+
 import light_tray
 
 
@@ -74,3 +78,37 @@ def test_ai_routable_actions_exclude_system_power_controls():
     assert light_tray.is_ai_routable_action("audio_reactive")
     assert light_tray.is_ai_routable_action("schedule")
     assert light_tray.is_ai_routable_action("scene_management")
+
+
+class FakeFleet:
+    def __init__(self):
+        self.payloads = []
+
+    def resolve(self, target):
+        return []
+
+    def post_state(self, payload, target="all"):
+        self.payloads.append((target, payload))
+        return {}
+
+    def get_state(self, target="all"):
+        return {}
+
+
+def test_thread_client_wraps_fleet_with_target():
+    fleet = FakeFleet()
+    worker = light_tray.LightWorker(fleet, target="bedroom")
+
+    client = worker.thread_client()
+
+    assert isinstance(client, light_tray.lightctl._FleetRouter)
+    assert client.target == "bedroom"
+    client.post_state({"on": True})
+    assert fleet.payloads == [("bedroom", {"on": True})]
+
+
+def test_thread_client_returns_single_client_unchanged():
+    client = FakeClient()
+    worker = light_tray.LightWorker(client)
+
+    assert worker.thread_client() is client

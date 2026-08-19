@@ -269,9 +269,13 @@ dependencies = [
     { name = "audioop-lts" },
     { name = "numpy" },
     { name = "pydub" },
-    { name = "pytest" },
     { name = "shazamio" },
     { name = "sounddevice" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
 ]
 
 [package.metadata]
@@ -279,10 +283,11 @@ requires-dist = [
     { name = "audioop-lts", marker = "python_full_version >= '3.13'", specifier = ">=0.2" },
     { name = "numpy", specifier = ">=1.26,<2.0" },
     { name = "pydub", specifier = ">=0.25,<0.26" },
-    { name = "pytest", specifier = ">=7,<10" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7,<10" },
     { name = "shazamio", specifier = "==0.2.0.0" },
     { name = "sounddevice", specifier = ">=0.5,<0.6" },
 ]
+provides-extras = ["dev"]
 
 [[package]]
 name = "multidict"

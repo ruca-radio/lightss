@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import logging
 import math
 import os
-import sys
 import threading
 import time
 import urllib.error
@@ -63,12 +63,20 @@ SAFE_EFFECTS = {
     183: "Wavesins",
 }
 
+# Effect ids that must never be sent, even when a device's live /json/eff list
+# contains them (validate_effect hook; keep empty until a blocklist is needed).
+BLOCKED_EFFECTS: set[int] = set()
+
 
 # ---------------------------------------------------------------------------
 # Typed payloads
 # ---------------------------------------------------------------------------
 
 class SegPayload(TypedDict, total=False):
+    id: int
+    start: int
+    stop: int
+    len: int
     col: list[list[int]]
     fx: int
     sx: int
@@ -77,6 +85,9 @@ class SegPayload(TypedDict, total=False):
     c1: int
     c2: int
     c3: int
+    o1: int
+    o2: int
+    o3: int
     on: bool
     frz: bool
     rev: bool
@@ -86,6 +97,7 @@ class SegPayload(TypedDict, total=False):
     spc: int
     of: int
     cct: int
+    i: list
 
 
 class WledPayload(TypedDict, total=False):
@@ -108,6 +120,15 @@ def clamp_byte(value: int | float) -> int:
     return max(0, min(255, int(value)))
 
 
+def _transition_units(transition_ms: int) -> int:
+    """Convert milliseconds to WLED 'transition' units.
+
+    Per the WLED JSON API the 'transition' value is 0-255 in units of 100ms,
+    so 500ms becomes 5 and anything above 25500ms clamps to 255.
+    """
+    return max(0, min(255, round(transition_ms / 100)))
+
+
 def normalize_host(host: str) -> str:
     host = host.strip().rstrip("/")
     if not host.startswith(("http://", "https://")):
@@ -122,14 +143,14 @@ def normalize_host(host: str) -> str:
 def on_payload(enabled: bool, transition_ms: int = 0) -> WledPayload:
     payload: WledPayload = {"on": enabled}
     if transition_ms > 0:
-        payload["transition"] = transition_ms
+        payload["transition"] = _transition_units(transition_ms)
     return payload
 
 
 def brightness_payload(brightness: int, transition_ms: int = 0) -> WledPayload:
     payload: WledPayload = {"bri": clamp_byte(brightness)}
     if transition_ms > 0:
-        payload["transition"] = transition_ms
+        payload["transition"] = _transition_units(transition_ms)
     return payload
 
 
@@ -137,7 +158,8 @@ def color_payload(
     red: int, green: int, blue: int, white: int = 0,
     red2: int | None = None, green2: int | None = None, blue2: int | None = None, white2: int | None = None,
     red3: int | None = None, green3: int | None = None, blue3: int | None = None, white3: int | None = None,
-    transition_ms: int = 0
+    transition_ms: int = 0,
+    seg_id: int | None = None
 ) -> WledPayload:
     colors = [[clamp_byte(red), clamp_byte(green), clamp_byte(blue), clamp_byte(white)]]
     if red2 is not None or green2 is not None or blue2 is not None or white2 is not None:
@@ -154,20 +176,129 @@ def color_payload(
                 clamp_byte(blue3 or 0),
                 clamp_byte(white3 or 0)
             ])
-    payload: WledPayload = {"seg": [{"col": colors}]}
+    seg: SegPayload = {"col": colors}
+    if seg_id is not None:
+        seg["id"] = seg_id
+    payload: WledPayload = {"seg": [seg]}
     if transition_ms > 0:
-        payload["transition"] = transition_ms
+        payload["transition"] = _transition_units(transition_ms)
     return payload
 
 
-def effect_payload(effect: int, speed: int = 128, transition_ms: int = 0) -> WledPayload:
-    effect = int(effect)
-    if effect not in SAFE_EFFECTS:
-        allowed = ", ".join(f"{effect_id}={name}" for effect_id, name in SAFE_EFFECTS.items())
-        raise ValueError(f"Effect {effect} is not allowed. Safe effects: {allowed}.")
-    payload: WledPayload = {"seg": [{"fx": effect, "sx": clamp_byte(speed)}]}
+def validate_effect(fx: int, allowed: set[int] | None = None) -> int:
+    """Validate an effect id. With a live device id set (from /json/eff indices)
+    accept anything it contains except BLOCKED_EFFECTS; otherwise fall back to
+    the offline SAFE_EFFECTS allowlist. Returns the effect id on success."""
+    fx = int(fx)
+    if fx in BLOCKED_EFFECTS:
+        raise ValueError(f"Effect {fx} is blocked.")
+    if allowed is not None:
+        if fx not in allowed:
+            raise ValueError(f"Effect {fx} is not available on the target device.")
+        return fx
+    if fx not in SAFE_EFFECTS:
+        allowed_str = ", ".join(f"{effect_id}={name}" for effect_id, name in SAFE_EFFECTS.items())
+        raise ValueError(f"Effect {fx} is not allowed. Safe effects: {allowed_str}.")
+    return fx
+
+
+def effect_payload(
+    effect: int,
+    speed: int = 128,
+    transition_ms: int = 0,
+    intensity: int | None = None,
+    palette: int | None = None,
+    c1: int | None = None,
+    c2: int | None = None,
+    c3: int | None = None,
+    o1: int | None = None,
+    o2: int | None = None,
+    o3: int | None = None,
+    seg_id: int | None = None,
+) -> WledPayload:
+    effect = validate_effect(effect)
+    seg: SegPayload = {"fx": effect, "sx": clamp_byte(speed)}
+    if seg_id is not None:
+        seg["id"] = seg_id
+    optional_fields = {
+        "ix": intensity,
+        "pal": palette,
+        "c1": c1,
+        "c2": c2,
+        "c3": c3,
+        "o1": o1,
+        "o2": o2,
+        "o3": o3,
+    }
+    for key, value in optional_fields.items():
+        if value is None:
+            continue
+        if key in ("o1", "o2", "o3"):
+            seg[key] = bool(value)  # type: ignore[literal-required]
+        elif key == "c3":
+            seg[key] = max(0, min(31, int(value)))  # WLED c3 range is 0-31
+        else:
+            seg[key] = clamp_byte(value)  # type: ignore[literal-required]
+    payload: WledPayload = {"seg": [seg]}
     if transition_ms > 0:
-        payload["transition"] = transition_ms
+        payload["transition"] = _transition_units(transition_ms)
+    return payload
+
+
+def palette_payload(
+    palette: int,
+    seg_id: int | None = None,
+    transition_ms: int = 0,
+) -> WledPayload:
+    seg: SegPayload = {"pal": int(palette)}
+    if seg_id is not None:
+        seg["id"] = seg_id
+    payload: WledPayload = {"seg": [seg]}
+    if transition_ms > 0:
+        payload["transition"] = _transition_units(transition_ms)
+    return payload
+
+
+def cct_payload(
+    cct: int,
+    seg_id: int | None = None,
+    transition_ms: int = 0,
+) -> WledPayload:
+    seg: SegPayload = {"cct": clamp_byte(cct)}
+    if seg_id is not None:
+        seg["id"] = seg_id
+    payload: WledPayload = {"seg": [seg]}
+    if transition_ms > 0:
+        payload["transition"] = _transition_units(transition_ms)
+    return payload
+
+
+def segment_payload(segments: list[dict]) -> WledPayload:
+    """Build a multi-segment payload from raw segment dicts, validated."""
+    if not segments:
+        raise ValueError("segment_payload requires at least one segment.")
+    payload: WledPayload = {"seg": [dict(segment) for segment in segments]}
+    validate_wled_payload(payload)
+    return payload
+
+
+def validate_wled_payload(payload: WledPayload | dict) -> WledPayload | dict:
+    """Validate project-level safety constraints before sending WLED JSON."""
+    segments = payload.get("seg") if isinstance(payload, dict) else None
+    if segments is None:
+        return payload
+    if not isinstance(segments, list):
+        raise ValueError("WLED payload field 'seg' must be a list.")
+    for segment in segments:
+        if not isinstance(segment, dict):
+            raise ValueError("WLED segment payloads must be objects.")
+        if segment.get("fx") is None:
+            continue
+        effect = int(segment["fx"])
+        if effect < 0 or effect > 255:
+            raise ValueError(f"Effect {effect} is out of range (0-255).")
+        if effect in BLOCKED_EFFECTS:
+            raise ValueError(f"Effect {effect} is blocked.")
     return payload
 
 
@@ -186,15 +317,195 @@ def reactive_beat_payload(
     )
 
 
+def _merge_segments(existing: list[SegPayload], incoming: list[SegPayload]) -> None:
+    """Merge incoming seg entries per segment id: entries with an id merge into
+    the existing entry with the same id (appended if absent); id-less entries
+    merge into seg[0], preserving the historical single-segment behavior."""
+    for segment in incoming:
+        seg_id = segment.get("id")
+        target: SegPayload | None = None
+        if seg_id is None:
+            if existing:
+                target = existing[0]
+        else:
+            for candidate in existing:
+                if candidate.get("id") == seg_id:
+                    target = candidate
+                    break
+        if target is None:
+            existing.append(segment)
+        else:
+            target.update(segment)
+
+
 def merge_payloads(*payloads: WledPayload) -> WledPayload:
     merged: WledPayload = {}
     for payload in payloads:
         for key, value in payload.items():
             if key == "seg" and key in merged:
-                merged[key][0].update(value[0])  # type: ignore[index]
+                _merge_segments(merged[key], value)  # type: ignore[arg-type]
             else:
                 merged[key] = value  # type: ignore[literal-required]
     return merged
+
+
+# ---------------------------------------------------------------------------
+# Zones and per-LED geometry
+# ---------------------------------------------------------------------------
+
+# Physical model: each channel is one vertical bar, COLUMN_LENGTH_M meters tall,
+# with LEDS_PER_COLUMN addressable WS2811 IC pixels (20 addressable WS2811 IC
+# pixels/m; 40 per 2 m column; 720 visible COB LEDs/m; pixel 0 at the bottom).
+LEDS_PER_COLUMN = 40
+COLUMN_LENGTH_M = 2.0
+
+_ZONE_POSITIONS = ("top", "middle", "bottom")
+_ZONE_FRACTIONS = {"half": 2, "third": 3, "quarter": 4}
+_LED_ORIENTATIONS = ("up", "down")
+_BYTE_SEG_FIELDS = ("sx", "ix", "c1", "c2", "c3", "bri")
+
+
+def zone_bounds(zone: str, length: int = LEDS_PER_COLUMN, orientation: str = "up") -> tuple[int, int]:
+    """LED [start, stop) bounds for a named zone of a column.
+
+    Zones are physical positions on the bar: "<top|middle|bottom> <half|third|quarter>"
+    or "all". "bottom"/"top" are the first/last fraction of the bar; "middle" is the
+    centered fraction ("middle quarter" = the central 25%). orientation="up" means
+    LED 0 is at the bottom, so "top" maps to the high LED indices; orientation="down"
+    flips the mapping.
+    """
+    length = int(length)
+    if length <= 0:
+        raise ValueError(f"Zone length must be positive, got {length}.")
+    if orientation not in _LED_ORIENTATIONS:
+        raise ValueError(f"Unknown orientation '{orientation}'. Use one of: {', '.join(_LED_ORIENTATIONS)}.")
+    key = " ".join(str(zone).strip().lower().split())
+    if key == "all":
+        return (0, length)
+    parts = key.split(" ")
+    if len(parts) != 2 or parts[0] not in _ZONE_POSITIONS or parts[1] not in _ZONE_FRACTIONS:
+        raise ValueError(f"Unknown zone '{zone}'. Use 'all' or '<top|middle|bottom> <half|third|quarter>'.")
+    position, fraction = parts
+    n = _ZONE_FRACTIONS[fraction]
+    if position == "bottom":
+        p0, p1 = 0.0, 1.0 / n
+    elif position == "top":
+        p0, p1 = 1.0 - 1.0 / n, 1.0
+    else:  # middle: the centered fraction of the bar
+        p0, p1 = 0.5 - 0.5 / n, 0.5 + 0.5 / n
+    start = round(length * p0)
+    stop = round(length * p1)
+    if orientation == "down":
+        start, stop = length - stop, length - start
+    if start >= stop:
+        # Per WLED, stop <= start deletes the segment; never emit empty bounds.
+        raise ValueError(
+            f"Zone '{zone}' of length {length} resolves to an empty range (start={start}, stop={stop})."
+        )
+    return (start, stop)
+
+
+def _hex_to_rgb(color: object) -> list[int]:
+    """Normalize a color to an [r, g, b] list. Accepts 'RRGGBB'/'#RRGGBB' hex
+    strings or [r, g, b](, w) sequences."""
+    if isinstance(color, str):
+        hex_color = color.strip().lstrip("#")
+        if len(hex_color) not in (6, 8):
+            raise ValueError(f"Hex color must be RRGGBB or RRGGBBWW, got '{color}'.")
+        try:
+            return [int(hex_color[i:i + 2], 16) for i in (0, 2, 4)]
+        except ValueError:
+            raise ValueError(f"Invalid hex color '{color}'.") from None
+    if isinstance(color, (list, tuple)) and 3 <= len(color) <= 4:
+        try:
+            return [clamp_byte(color[0]), clamp_byte(color[1]), clamp_byte(color[2])]
+        except (TypeError, ValueError):
+            pass
+    raise ValueError(f"Color must be an RRGGBB hex string or [r, g, b] list, got {color!r}.")
+
+
+def zone_payload(zones: list[dict], length: int = LEDS_PER_COLUMN, orientation: str = "up") -> WledPayload:
+    """Build a multi-segment payload carving a column into zones.
+
+    Each zone dict carries either {"zone": "<position> <fraction>"} or explicit
+    {"start": n, "stop": m} bounds, an optional "id" (present = update that segment,
+    absent = append a new one), plus any seg fields (fx/pal/col/sx/ix/rev/mi/on...)
+    passed through; "col" may be an RRGGBB hex string. Segments always get explicit
+    start/stop bounds.
+    """
+    if not zones:
+        raise ValueError("zone_payload requires at least one zone.")
+    segments: list[SegPayload] = []
+    for zone in zones:
+        if not isinstance(zone, dict):
+            raise ValueError(f"Each zone must be a dict, got {zone!r}.")
+        entry = dict(zone)
+        if "zone" in entry:
+            start, stop = zone_bounds(str(entry.pop("zone")), length=length, orientation=orientation)
+            # Stray start/stop keys must not silently override the computed bounds
+            # via seg.update(entry) below.
+            entry.pop("start", None)
+            entry.pop("stop", None)
+        else:
+            if "start" not in entry or "stop" not in entry:
+                raise ValueError("Each zone needs either a 'zone' name or explicit 'start' and 'stop'.")
+            start, stop = int(entry.pop("start")), int(entry.pop("stop"))
+            if not (0 <= start < stop <= length):
+                raise ValueError(
+                    f"Zone bounds must satisfy 0 <= start < stop <= {length}, got start={start}, stop={stop}."
+                )
+        seg_id = entry.pop("id", None)
+        col = entry.get("col")
+        if isinstance(col, str):
+            entry["col"] = [_hex_to_rgb(col)]
+        for field in _BYTE_SEG_FIELDS:
+            if field in entry and entry[field] is not None:
+                entry[field] = clamp_byte(entry[field])
+        seg: SegPayload = {"start": start, "stop": stop}
+        if seg_id is not None:
+            seg["id"] = int(seg_id)
+        seg.update(entry)  # type: ignore[typeddict-item]
+        segments.append(seg)
+    payload: WledPayload = {"seg": segments}
+    validate_wled_payload(payload)
+    return payload
+
+
+def _color_token(color) -> str:
+    """Normalize a color to an RRGGBB hex string for WLED 'i' arrays."""
+    if isinstance(color, str):
+        return "".join(f"{c:02X}" for c in _hex_to_rgb(color))
+    return "".join(f"{clamp_byte(c):02X}" for c in list(color)[:3])
+
+
+def leds_payload(led_ranges: list, seg_id: int | None = None) -> WledPayload:
+    """Build a per-LED payload emitting the WLED seg 'i' array.
+
+    led_ranges is either a flat list of colors applied from LED 0 upward
+    (["RRGGBB", ...] or [r, g, b] entries) or a list of [start, stop, color]
+    ranges (stop exclusive, bounded by LEDS_PER_COLUMN). Colors are emitted
+    as RRGGBB hex strings per the WLED JSON API ('i' grammar). Setting
+    individual LEDs freezes the running effect on the segment.
+    """
+    if not led_ranges:
+        raise ValueError("leds_payload requires at least one LED color or range.")
+    individual: list = []
+    for item in led_ranges:
+        if isinstance(item, (list, tuple)) and len(item) == 3 and isinstance(item[2], (str, list, tuple)) and isinstance(item[0], (int, float)) and isinstance(item[1], (int, float)):
+            start, stop = int(item[0]), int(item[1])
+            if not (0 <= start < stop <= LEDS_PER_COLUMN):
+                raise ValueError(
+                    f"LED range must satisfy 0 <= start < stop <= {LEDS_PER_COLUMN}, got start={start}, stop={stop}."
+                )
+            individual.extend([start, stop, _color_token(item[2])])
+        else:
+            individual.append(_color_token(item))
+    seg: SegPayload = {"i": individual}
+    if seg_id is not None:
+        seg["id"] = int(seg_id)
+    payload: WledPayload = {"seg": [seg]}
+    validate_wled_payload(payload)
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -272,12 +583,13 @@ def load_scene_payload(name: str) -> WledPayload:
 def scene_payload(name: str, transition_ms: int = 0) -> WledPayload:
     key = name.strip().lower()
     if key in _builtin_scenes:
-        payload = _builtin_scenes[key]
+        # Deep copy: callers may stamp seg ids via _with_seg_id(), which mutates
+        # nested seg dicts; never hand out the shared module-global scene.
+        payload = copy.deepcopy(_builtin_scenes[key])
     else:
         payload = load_scene_payload(name)
     if transition_ms > 0:
-        payload = dict(payload)
-        payload["transition"] = transition_ms
+        payload["transition"] = _transition_units(transition_ms)
     return payload
 
 
@@ -303,16 +615,26 @@ def _save_schedule(schedule: list[dict]) -> None:
 
 
 def add_schedule(time_str: str, action: str, data: dict | None = None) -> None:
+    parts = time_str.split(":")
+    if (
+        len(parts) != 2
+        or not all(part.isdigit() for part in parts)
+        or not (0 <= int(parts[0]) <= 23)
+        or not (0 <= int(parts[1]) <= 59)
+    ):
+        raise ValueError(f"Schedule time must be in HH:MM format, got '{time_str}'.")
     schedule = _load_schedule()
     schedule.append({"time": time_str, "action": action, "data": data or {}})
     _save_schedule(schedule)
 
 
-def remove_schedule(index: int) -> None:
+def remove_schedule(index: int) -> bool:
     schedule = _load_schedule()
-    if 0 <= index < len(schedule):
-        schedule.pop(index)
+    if not (0 <= index < len(schedule)):
+        return False
+    schedule.pop(index)
     _save_schedule(schedule)
+    return True
 
 
 def list_schedule() -> list[dict]:
@@ -417,7 +739,8 @@ class FadeTimer:
                     return
                 bri = int(start_bri * (1 - i / steps))
                 self.client.post_state(brightness_payload(bri))
-                time.sleep(10)
+                if i < steps:
+                    time.sleep(10)
             self.client.post_state(on_payload(False))
         except Exception:
             logger.exception("Fade timer error")
@@ -481,7 +804,21 @@ def preset_payload(preset_id: int, transition_ms: int = 0) -> WledPayload:
         raise ValueError(f"Preset ID must be between {PRESET_MIN} and {PRESET_MAX}.")
     payload: WledPayload = {"ps": preset_id}
     if transition_ms > 0:
-        payload["transition"] = transition_ms
+        payload["transition"] = _transition_units(transition_ms)
+    return payload
+
+
+PLAYLIST_MIN = 1
+PLAYLIST_MAX = 250
+
+
+def playlist_payload(playlist_id: int, transition_ms: int = 0) -> WledPayload:
+    playlist_id = int(playlist_id)
+    if not (PLAYLIST_MIN <= playlist_id <= PLAYLIST_MAX):
+        raise ValueError(f"Playlist ID must be between {PLAYLIST_MIN} and {PLAYLIST_MAX}.")
+    payload: WledPayload = {"pl": playlist_id}
+    if transition_ms > 0:
+        payload["transition"] = _transition_units(transition_ms)
     return payload
 
 
@@ -535,11 +872,11 @@ class CycleThread:
             except Exception:
                 logger.exception("Cycle step failed")
             self._index += 1
-            # Sleep in small chunks so stop is responsive
-            for _ in range(int(self.interval_seconds)):
-                if self._stop.is_set():
-                    break
-                time.sleep(1)
+            # Sleep in small chunks so stop is responsive, honoring fractional intervals
+            remaining = self.interval_seconds
+            while remaining > 0 and not self._stop.is_set():
+                time.sleep(min(1.0, remaining))
+                remaining -= 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -597,7 +934,8 @@ class SunriseSimulator:
                     color_payload(*rgbw),
                 )
                 self.client.post_state(payload)
-                time.sleep(10)
+                if i < steps:
+                    time.sleep(10)
         except Exception:
             logger.exception("Sunrise simulation error")
 
@@ -621,6 +959,33 @@ def save_config(config: dict) -> None:
     os.makedirs(_SCENE_DIR, exist_ok=True)
     with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
+
+
+def load_dotenv(path: str | None = None) -> int:
+    """Load KEY=VALUE lines from a .env file into os.environ (setdefault only).
+
+    Defaults to the .env next to this package. Real environment variables
+    always win; comments and blank lines are skipped; optional quotes are
+    stripped. Returns the number of variables applied.
+    """
+    if path is None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    applied = 0
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+                    applied += 1
+    except FileNotFoundError:
+        pass
+    return applied
 
 
 def get_mic_device() -> str | int | None:
@@ -738,10 +1103,18 @@ class LightClient:
     def presets_json_url(self) -> str:
         return f"{self.host}{PRESETS_JSON_PATH}"
 
+    def _decode_response_json(self, response: urllib.request.addinfourl, url: str) -> dict | list:
+        """Decode a response body as JSON, wrapping truncation/empty-body failures
+        into RuntimeError so callers only handle one error type for controller issues."""
+        try:
+            return json.loads(response.read().decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Invalid JSON from {url}: {exc}") from exc
+
     def _get_json_url(self, url: str) -> dict | list:
         request = urllib.request.Request(url, method="GET")
         with self._request_with_retry(request) as response:
-            return json.loads(response.read().decode("utf-8"))
+            return self._decode_response_json(response, url)
 
     def get_json(self) -> dict:
         data = self._get_json_url(self.json_url)
@@ -855,6 +1228,9 @@ class LightClient:
                     self._last_req_time = time.time()
                     return res
                 except urllib.error.HTTPError as exc:
+                    # Close the error response body so its socket fd is released
+                    # (HTTPError is also a response object).
+                    exc.close()
                     if exc.code in (501, 404, 405):
                         raise
                     last_exc = exc
@@ -879,9 +1255,10 @@ class LightClient:
     def get_state(self) -> dict:
         request = urllib.request.Request(self.state_url, method="GET")
         with self._request_with_retry(request) as response:
-            return json.loads(response.read().decode("utf-8"))
+            return self._decode_response_json(response, self.state_url)
 
     def post_state(self, payload: WledPayload) -> None:
+        validate_wled_payload(payload)
         body = json.dumps(payload).encode("utf-8")
         if self.dry_run:
             logger.info("dry-run: %s", body.decode("utf-8"))
@@ -1094,7 +1471,22 @@ def parse_rgbw(values: Iterable[str]) -> tuple[int, int, int, int]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Control the bedroom Wi-Fi LED controller.")
-    parser.add_argument("--host", default=DEFAULT_HOST, help=f"Controller host, default {DEFAULT_HOST}")
+    parser.add_argument(
+        "--host",
+        default=None,
+        help="Force single-controller mode with this host (default: fleet mode over the configured controllers)",
+    )
+    parser.add_argument(
+        "--target",
+        default="all",
+        help="Fleet target: 'all', a controller name, or a channel name (default: all)",
+    )
+    parser.add_argument(
+        "--segment",
+        type=int,
+        default=None,
+        help="WLED segment id to address within the target",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print JSON instead of sending it")
     parser.add_argument(
         "--transition", type=int, default=0, help="Transition time in milliseconds (0-65535)"
@@ -1138,7 +1530,7 @@ def build_parser() -> argparse.ArgumentParser:
     sched_add.add_argument("action", choices=("on", "off", "scene"), help="Action to perform")
     sched_add.add_argument("--scene-name", help="Scene name (required if action=scene)")
 
-    sched_list = schedule_sub.add_parser("list", help="List schedule entries")
+    schedule_sub.add_parser("list", help="List schedule entries")
     sched_remove = schedule_sub.add_parser("remove", help="Remove a schedule entry by index")
     sched_remove.add_argument("index", type=int)
 
@@ -1165,19 +1557,85 @@ def build_parser() -> argparse.ArgumentParser:
     sunrise.add_argument("--end-kelvin", type=int, default=5000, help="Ending color temp")
     sunrise.add_argument("--brightness", type=int, default=255, help="Max brightness at end")
 
-    info_cmd = subparsers.add_parser("info", help="Read WLED controller info")
+    subparsers.add_parser("info", help="Read WLED controller info")
 
     subparsers.add_parser("restart", help="Reboot the WLED controller")
+
+    subparsers.add_parser("segments", help="List fleet controllers, channels, and segments")
+
+    wall = subparsers.add_parser("wall", help="Wall-wide effect composers across all four columns")
+    wall.add_argument("mode", choices=("span", "mirror", "chase", "versus"))
+    wall.add_argument("--fx", type=int, default=9, help="Effect id (versus default for both sides)")
+    wall.add_argument("--pal", type=int, default=None, help="Palette id")
+    wall.add_argument("--fx-left", type=int, default=None, help="Versus: effect id for the left pair")
+    wall.add_argument("--fx-right", type=int, default=None, help="Versus: effect id for the right pair")
+    wall.add_argument("--pal-left", type=int, default=None, help="Versus: palette for the left pair")
+    wall.add_argument("--pal-right", type=int, default=None, help="Versus: palette for the right pair")
+
+    atmosphere = subparsers.add_parser("atmosphere", help="Apply a named curated atmosphere")
+    atmosphere.add_argument("name", help="Atmosphere name (see list)")
 
     return parser
 
 
+class _FleetRouter:
+    """Duck-typed LightClient shim: routes posts/reads through a LightFleet target."""
+
+    def __init__(self, fleet: object, target: str = "all") -> None:
+        self.fleet = fleet
+        self.target = target
+
+    def post_state(self, payload: WledPayload) -> None:
+        validate_wled_payload(payload)
+        self.fleet.post_state(payload, target=self.target)  # type: ignore[attr-defined]
+
+    def get_state(self) -> dict:
+        states = self.fleet.get_state(target=self.target)  # type: ignore[attr-defined]
+        for entry in states.values():
+            if isinstance(entry, dict):
+                state = entry.get("state", entry)
+                if isinstance(state, dict):
+                    return state
+        return {}
+
+
+def _with_seg_id(payload: WledPayload, seg_id: int | None) -> WledPayload:
+    """Stamp a segment id onto every id-less seg entry (for --segment)."""
+    if seg_id is None:
+        return payload
+    segments = payload.get("seg")
+    if segments:
+        for segment in segments:
+            segment.setdefault("id", seg_id)
+    return payload
+
+
+def _log_wled_info(info: dict) -> None:
+    logger.info("Name: %s", info.get("name", "?"))
+    logger.info("Version: %s", info.get("ver", "?"))
+    logger.info("LEDs: %d", info.get("leds", {}).get("count", 0))
+    logger.info("Uptime: %ds", info.get("uptime", 0))
+    logger.info("Free heap: %d", info.get("freeheap", 0))
+    logger.info("IP: %s", info.get("ip", "?"))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    client = LightClient(args.host, dry_run=args.dry_run)
     transition_ms = getattr(args, "transition", 0)
+    seg_id = getattr(args, "segment", None)
 
     logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
+
+    fleet_mod = None
+    fleet_obj = None
+    if args.host is not None:
+        # --host forces single-controller mode (back-compat escape hatch)
+        client: LightClient | _FleetRouter = LightClient(args.host, dry_run=args.dry_run)
+    else:
+        import fleet as fleet_mod  # lazy: fleet.py imports lightctl
+
+        fleet_obj = fleet_mod.LightFleet.from_config(dry_run=args.dry_run)
+        client = _FleetRouter(fleet_obj, target=args.target)
 
     try:
         if args.command == "on":
@@ -1187,15 +1645,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "bri":
             client.post_state(brightness_payload(args.value, transition_ms=transition_ms))
         elif args.command == "color":
-            client.post_state(color_payload(*parse_rgbw(args.values), transition_ms=transition_ms))
+            client.post_state(color_payload(*parse_rgbw(args.values), transition_ms=transition_ms, seg_id=seg_id))
         elif args.command == "fx":
-            client.post_state(effect_payload(args.effect, args.speed, transition_ms=transition_ms))
+            client.post_state(effect_payload(args.effect, args.speed, transition_ms=transition_ms, seg_id=seg_id))
         elif args.command == "scene":
-            client.post_state(scene_payload(args.name, transition_ms=transition_ms))
+            client.post_state(_with_seg_id(scene_payload(args.name, transition_ms=transition_ms), seg_id))
         elif args.command == "mode1":
             run_mode1(client, device=args.device, samplerate=args.samplerate)
         elif args.command == "temp":
-            client.post_state(color_payload(*kelvin_to_rgbw(args.kelvin), transition_ms=transition_ms))
+            client.post_state(color_payload(*kelvin_to_rgbw(args.kelvin), transition_ms=transition_ms, seg_id=seg_id))
         elif args.command == "save-scene":
             state = client.get_state()
             payload: WledPayload = {}
@@ -1224,12 +1682,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     for i, entry in enumerate(entries):
                         logger.info("%d: %s -> %s %s", i, entry["time"], entry["action"], entry.get("data", ""))
             elif args.schedule_action == "remove":
-                remove_schedule(args.index)
-                logger.info("Removed schedule entry %d.", args.index)
+                if remove_schedule(args.index):
+                    logger.info("Removed schedule entry %d.", args.index)
+                else:
+                    raise ValueError(f"No schedule entry at index {args.index}.")
         elif args.command == "hex":
-            client.post_state(color_payload(*hex_to_rgbw(args.color), transition_ms=transition_ms))
+            client.post_state(color_payload(*hex_to_rgbw(args.color), transition_ms=transition_ms, seg_id=seg_id))
         elif args.command == "random":
-            client.post_state(random_scene_payload(transition_ms=transition_ms))
+            client.post_state(_with_seg_id(random_scene_payload(transition_ms=transition_ms), seg_id))
         elif args.command == "fade-off":
             timer = FadeTimer(client, args.minutes, start_brightness=args.brightness)
             timer.start()
@@ -1277,19 +1737,61 @@ def main(argv: Sequence[str] | None = None) -> int:
                 logger.info("Sunrise cancelled.")
                 return 130
         elif args.command == "info":
-            info = client.get_info()
-            logger.info("Name: %s", info.get("name", "?"))
-            logger.info("Version: %s", info.get("ver", "?"))
-            logger.info("LEDs: %d", info.get("leds", {}).get("count", 0))
-            logger.info("Uptime: %ds", info.get("uptime", 0))
-            logger.info("Free heap: %d", info.get("freeheap", 0))
-            logger.info("IP: %s", info.get("ip", "?"))
+            if fleet_obj is not None:
+                for controller in fleet_mod.load_controllers():
+                    if args.target not in ("all", controller.name):
+                        continue
+                    logger.info("[%s]", controller.name)
+                    _log_wled_info(LightClient(controller.host, dry_run=args.dry_run).get_info())
+            else:
+                _log_wled_info(client.get_info())  # type: ignore[attr-defined]
         elif args.command == "restart":
             try:
                 client.post_state(restart_payload())
             except RuntimeError:
                 pass  # Device may reboot before completing the HTTP response
             logger.info("Restart command sent. Device will reconnect in a few seconds.")
+        elif args.command == "segments":
+            if fleet_obj is None:
+                raise ValueError("'segments' requires fleet mode (omit --host).")
+            for name in fleet_obj.names():
+                logger.info("controller: %s", name)
+            channels = fleet_obj.channels()
+            ordered = [c for c in fleet_mod.WALL_ORDER if c in channels]
+            ordered += sorted(c for c in channels if c not in fleet_mod.WALL_ORDER)
+            for channel in ordered:
+                controller_name, segment_id = channels[channel]
+                logger.info("channel: %s -> %s segment %d", channel, controller_name, segment_id)
+        elif args.command == "wall":
+            if fleet_obj is None:
+                raise ValueError("'wall' requires fleet mode (omit --host).")
+            import columns  # lazy: columns.py builds on fleet + lightctl
+
+            if args.mode == "span":
+                result = columns.wall_span(fleet_obj, args.fx, pal=args.pal)
+            elif args.mode == "mirror":
+                result = columns.mirror(fleet_obj, args.fx, pal=args.pal)
+            elif args.mode == "chase":
+                result = columns.chase(fleet_obj, args.fx, pal=args.pal)
+            else:
+                result = columns.left_vs_right(
+                    fleet_obj,
+                    args.fx_left if args.fx_left is not None else args.fx,
+                    args.fx_right if args.fx_right is not None else args.fx,
+                    pal_left=args.pal_left if args.pal_left is not None else args.pal,
+                    pal_right=args.pal_right if args.pal_right is not None else args.pal,
+                )
+            logger.info("wall %s: %s", args.mode, json.dumps(result, default=str))
+        elif args.command == "atmosphere":
+            if fleet_obj is None:
+                raise ValueError("'atmosphere' requires fleet mode (omit --host).")
+            import atmospheres  # lazy: atmospheres builds on columns
+
+            if args.name == "list":
+                logger.info("atmospheres:\n%s", atmospheres.atmosphere_menu_text())
+            else:
+                result = atmospheres.apply_atmosphere(fleet_obj, args.name)
+                logger.info("atmosphere %s: %s", args.name, json.dumps(result, default=str))
     except KeyboardInterrupt:
         logger.info("Stopped.")
         return 130
