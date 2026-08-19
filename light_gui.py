@@ -56,6 +56,7 @@ API_GET_PATHS = {
     "/api/firetv",
     "/api/music-director",
     "/api/tv-trivia",
+    "/api/player",
 }
 
 API_POST_PATHS = {
@@ -73,6 +74,7 @@ API_POST_PATHS = {
     "/api/ai/test",
     "/api/firetv",
     "/api/music-director",
+    "/api/player",
 }
 
 API_HEAD_PATHS = {
@@ -2519,7 +2521,22 @@ def smart_suggestions(state_data: dict | None = None, now_playing: dict[str, str
 # Settings API helpers
 # ---------------------------------------------------------------------------
 
-SETTINGS_MERGE_KEYS = ("ai", "controllers", "installation", "audio_source", "mic_device", "system_prompt_override")
+SETTINGS_MERGE_KEYS = ("ai", "controllers", "installation", "audio_source", "mic_device", "system_prompt_override", "audio_player")
+
+
+def audio_player_public_settings(config: dict | None = None) -> dict:
+    """Public player settings; never includes Apple/Youtopia tokens."""
+    import audio_player
+
+    if config is None:
+        config = lightctl.load_config()
+    raw = audio_player.settings_from_config(config)
+    return {
+        "youtube_host": raw.get("youtube_host") or audio_player.DEFAULT_YOUTUBE_HOST,
+        "youtube_token_set": bool(raw.get("youtube_token")),
+        "apple_developer_token_set": bool(raw.get("apple_developer_token")),
+        "sources": list(audio_player.SOURCES),
+    }
 
 
 def current_settings(config: dict | None = None) -> dict:
@@ -2550,6 +2567,7 @@ def current_settings(config: dict | None = None) -> dict:
         "installation": dict(installation) if isinstance(installation, dict) else None,
         "audio_source": str(config.get("audio_source") or "monitor"),
         "mic_device": str(mic_device) if mic_device not in (None, "") else None,
+        "audio_player": audio_player_public_settings(config),
     }
 
 
@@ -2841,6 +2859,15 @@ def make_handler(state: GuiState):
                 job = state.ai_jobs.get(job_id)
                 self.respond_json({"ok": job["status"] != "missing", "job": job}, status=404 if job["status"] == "missing" else 200)
                 return
+            if path == "/api/player":
+                import audio_player
+
+                parsed = urllib.parse.urlparse(self.path)
+                query = urllib.parse.parse_qs(parsed.query)
+                source = (query.get("source") or ["youtube_music"])[0]
+                settings = audio_player.settings_from_config(lightctl.load_config())
+                self.respond_json({"ok": True, **audio_player.player_status(settings, source=source)})
+                return
             if path == "/api/now-playing":
                 now_playing = get_now_playing_with_shazam_fallback(use_shazam=False)
                 self.respond_json(
@@ -3131,6 +3158,20 @@ def make_handler(state: GuiState):
                     except Exception as exc:
                         logger.exception("Music Director toggle failed")
                         self.respond_json({"ok": False, "error": f"Music Director unavailable: {exc}"})
+                    return
+                if path == "/api/player":
+                    import audio_player
+
+                    if not isinstance(data, dict):
+                        raise ValueError("Player body must be a JSON object.")
+                    settings = audio_player.settings_from_config(lightctl.load_config())
+                    self.respond_json(
+                        audio_player.player_command(
+                            settings,
+                            str(data.get("source") or "youtube_music"),
+                            str(data.get("command") or ""),
+                        )
+                    )
                     return
                 if path == "/api/settings/reload":
                     names = state.reload_controllers()

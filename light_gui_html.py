@@ -763,6 +763,23 @@ HTML_TEMPLATE = """<!doctype html>
             </div>
           </div>
           <div class="card">
+            <h2>Audio Player</h2>
+            <p class="card-note">Play YouTube Music through Youtopia or connect Apple Music from this controller. Lights keep following the track.</p>
+            <label>Source
+              <select id="playerSource" style="width:100%;" onchange="refreshPlayerStatus()">
+                <option value="youtube_music">YouTube Music (Youtopia)</option>
+                <option value="apple_music">Apple Music</option>
+              </select>
+            </label>
+            <div class="status-output" id="playerNowPlaying">Idle.</div>
+            <div class="row" style="margin-top:8px;">
+              <button onclick="playerCommand('previous')" title="Previous track">⏮</button>
+              <button onclick="playerCommand('playPause')" title="Play or pause">▶/❚❚</button>
+              <button onclick="playerCommand('next')" title="Next track">⏭</button>
+              <button class="secondary" onclick="refreshPlayerStatus()" title="Refresh player status">Status</button>
+            </div>
+          </div>
+          <div class="card">
             <h2>Now Playing</h2>
             <div class="music-toolbar">
               <button class="secondary" onclick="refreshNowPlaying()" title="Refresh media-player metadata">Refresh Song</button>
@@ -1696,6 +1713,34 @@ HTML_TEMPLATE = """<!doctype html>
 
     function parseColorList(value) {
       return String(value || '').split(/[,;|]+/).map((part) => part.trim()).filter(Boolean);
+    }
+
+    async function refreshPlayerStatus() {
+      const source = (document.getElementById('playerSource') || {}).value || 'youtube_music';
+      try {
+        const data = await fetchJsonWithTimeout('/api/player?source=' + encodeURIComponent(source), {}, 4000);
+        const line = data.connected
+          ? ((data.playing ? '▶ ' : '❚❚ ') + (data.title || 'Unknown') + (data.artist ? ' — ' + data.artist : ''))
+          : (data.message || 'Disconnected');
+        setText('playerNowPlaying', line);
+        return data;
+      } catch (err) {
+        setText('playerNowPlaying', 'Player error: ' + err.message);
+        return null;
+      }
+    }
+
+    async function playerCommand(command) {
+      const source = (document.getElementById('playerSource') || {}).value || 'youtube_music';
+      try {
+        const data = await postJson('/api/player', {source, command});
+        setText('playerNowPlaying', data.message || (data.ok ? 'Command sent.' : 'Command failed.'));
+        await refreshPlayerStatus();
+        return data;
+      } catch (err) {
+        setText('playerNowPlaying', 'Player error: ' + err.message);
+        return null;
+      }
     }
 
     async function applyDynamicScene() {

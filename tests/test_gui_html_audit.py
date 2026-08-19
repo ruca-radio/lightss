@@ -83,6 +83,18 @@ class GuiHtmlAuditTests(unittest.TestCase):
         self.assertIn("fetchJsonWithTimeout('/api/mood/control'", html)
         self.assertIn("fetchJsonWithTimeout('/api/suggestions'", html)
 
+    def test_audio_player_controls_are_visible(self):
+        html = light_gui.render_html()
+        for marker in (
+            "Audio Player",
+            "playerSource",
+            "youtube_music",
+            "apple_music",
+            "playerCommand('playPause')",
+            "/api/player",
+        ):
+            self.assertIn(marker, html)
+
     def test_dynamic_scene_controls_are_visible(self):
         html = light_gui.render_html()
 
