@@ -10,6 +10,7 @@ dependencies = [
     "pydub>=0.25,<0.26",
     "shazamio==0.2.0.0",
     "sounddevice>=0.5,<0.6",
+    "websockets>=12",
 ]
 
 [project.scripts]
@@ -48,6 +49,7 @@ py-modules = [
     "music_recognizer",
     "realtime",
     "shows",
+    "wled_ws",
     "youtopia_bridge",
     "youtopia_daemon",
 ]
