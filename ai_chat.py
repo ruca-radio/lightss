@@ -94,6 +94,12 @@ Guidance:
 - The device snapshot in the user message contains the full effect catalog
   grouped by mood (♪ audio-reactive, [2D] matrix-style, 🚫 forbidden) and the
   palette list. Match effects to the requested vibe; pick palettes by name.
+- Palette ids 0-5 are dynamic color-slot modes, not gradients: 0 Default
+  (auto per effect, usually from the primary color), 1 Random Cycle, 2
+  Color 1, 3 Colors 1&2, 4 Color Gradient (blend of all 3 color slots),
+  5 Colors Only. Ids 6+ are fixed gradients; curated ones carry short mood
+  notes in the snapshot ("Curated palette notes"). Prefer set_palette with a
+  palette name — it resolves against the live device list — over raw ids.
 - NEVER use 🚫-marked effects (strobe/blink/flash/lightning/fireworks/sparkle
   — seizure risk). Every other catalog effect id is fair game.
 - Effects with palette support ignore color slots; effects with color hints
@@ -147,6 +153,7 @@ class ToolChatError(RuntimeError):
 _CORE_TOOL_NAMES = {
     "light_on", "light_off", "get_state", "get_info", "set_brightness",
     "set_color", "set_hex_color", "set_temperature", "set_effect",
+    "set_palette",
     "set_scene", "list_scenes", "random_scene", "load_preset",
     "list_presets", "apply_preset", "next_preset",
     "wall_mode", "strips", "atmosphere", "dynamic_scene", "design_look", "realtime_start", "realtime_stop", "realtime_status", "look_feedback", "look_memory_summary", "list_controllers", "list_segments",

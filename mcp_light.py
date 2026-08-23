@@ -20,6 +20,7 @@ import fleet
 import lightctl
 import look_agents
 import look_memory
+import palette_lab
 import realtime
 import music_recognizer
 import shows
@@ -98,7 +99,7 @@ def _segment_schema() -> dict:
 
 
 # Tools whose payload builders accept a seg_id (per-segment targeting).
-SEGMENT_TOOLS = {"set_color", "set_hex_color", "set_temperature", "set_effect"}
+SEGMENT_TOOLS = {"set_color", "set_hex_color", "set_temperature", "set_effect", "set_palette"}
 
 
 def build_tools() -> list[dict]:
@@ -189,6 +190,24 @@ def build_tools() -> list[dict]:
                     "transition": _transition_schema(),
                 },
                 "required": ["effect"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "set_palette",
+            "description": (
+                "Set a WLED palette by name or id. Names resolve against the device's live "
+                "/json/pal list (array index = id). Ids 0-5 are dynamic color-slot modes "
+                "(0 Default, 1 Random Cycle, 2 Color 1, 3 Colors 1&2, 4 Color Gradient, "
+                "5 Colors Only); ids 6+ are fixed gradients."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "palette": int_schema("Palette id", 0, 255),
+                    "name": {"type": "string", "description": "Palette name, resolved against the live device palette list"},
+                    "transition": _transition_schema(),
+                },
                 "additionalProperties": False,
             },
         },
@@ -999,6 +1018,62 @@ def _wall_mode(client: Any, args: dict[str, Any]) -> str:
     return _with_fleet_status(f"Wall mode {mode} applied.", result)
 
 
+def _palette_names_for(client: Any, target: str) -> list[str]:
+    """Live /json/pal names for the target (first resolved controller in fleet mode)."""
+    getter = getattr(client, "get_palettes", None)
+    if callable(getter) and not _is_fleet(client):
+        try:
+            return [str(name) for name in getter()]
+        except Exception:
+            return []
+    if _is_fleet(client):
+        clients = getattr(client, "clients", {})
+        try:
+            resolved = client.resolve(target)
+        except Exception:
+            resolved = []
+        for ctrl_name, _seg_id in resolved:
+            ctrl_client = clients.get(ctrl_name)
+            ctrl_getter = getattr(ctrl_client, "get_palettes", None)
+            if not callable(ctrl_getter):
+                continue
+            try:
+                names = ctrl_getter()
+            except Exception:
+                continue
+            if names:
+                return [str(name) for name in names]
+    return []
+
+
+def _resolve_palette_arg(client: Any, args: dict[str, Any], target: str) -> tuple[int, str]:
+    """Resolve set_palette args to (palette id, display label), errors included."""
+    name = str(args.get("name") or "").strip()
+    names = _palette_names_for(client, target)
+    if name:
+        if not names:
+            raise ValueError(
+                f"Cannot resolve palette name '{name}': no live palette list available; "
+                "pass a palette id instead."
+            )
+        palette_id = palette_lab.resolve_palette_id(name, names)
+        if palette_id is None:
+            matches = palette_lab.close_matches(name, names)
+            hint = f" Closest matches: {', '.join(matches)}." if matches else ""
+            raise ValueError(f"Unknown palette name '{name}'.{hint}")
+        return palette_id, names[palette_id]
+    if args.get("palette") is None:
+        raise ValueError("set_palette requires 'name' or 'palette' (id).")
+    palette_id = int(args["palette"])
+    if names and not 0 <= palette_id < len(names):
+        raise ValueError(
+            f"Palette id {palette_id} out of range: device exposes {len(names)} palettes "
+            f"(0-{len(names) - 1})."
+        )
+    label = names[palette_id] if names else f"id {palette_id}"
+    return palette_id, label
+
+
 def call_tool(
     client: lightctl.LightClient | fleet.LightFleet,
     name: str,
@@ -1053,6 +1128,11 @@ def call_tool(
                 segment["fxdef"] = True
         result = _post_state(client, payload, target)
         return text_result(_with_fleet_status(f"Set effect {effect} at speed {lightctl.clamp_byte(speed)}.", result))
+    if name == "set_palette":
+        palette_id, palette_label = _resolve_palette_arg(client, args, target)
+        payload = lightctl.palette_payload(palette_id, transition_ms=transition_ms, **seg_kwargs)
+        result = _post_state(client, payload, target)
+        return text_result(_with_fleet_status(f"Set palette {palette_id} ({palette_label}).", result))
     if name == "set_scene":
         scene = str(args["name"])
         result = _post_state(client, lightctl.scene_payload(scene, transition_ms=transition_ms), target)
