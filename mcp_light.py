@@ -170,12 +170,22 @@ def build_tools() -> list[dict]:
         },
         {
             "name": "set_effect",
-            "description": "Set a safe non-strobe WLED effect and speed.",
+            "description": (
+                "Set a safe non-strobe WLED effect and speed. Consult the effect metadata "
+                "(fxdata) in the snapshot catalog for per-effect slider meanings, palette "
+                "support, and audio-reactive flags; pass fxdef=true to apply the effect's "
+                "tuned WLED defaults instead of inheriting current slider values."
+            ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "effect": safe_effect_schema(),
                     "speed": int_schema("Effect speed", 0, 255),
+                    "fxdef": {
+                        "type": "boolean",
+                        "description": "Apply the effect's tuned fxdata defaults on the device (WLED 0.14+ fxdef segment flag)",
+                        "default": False,
+                    },
                     "transition": _transition_schema(),
                 },
                 "required": ["effect"],
@@ -927,6 +937,9 @@ def call_tool(
         effect = int(args["effect"])
         speed = int(args.get("speed", 128))
         payload = lightctl.effect_payload(effect, speed, transition_ms=transition_ms, **seg_kwargs)
+        if args.get("fxdef"):
+            for segment in payload.get("seg", []):
+                segment["fxdef"] = True
         result = _post_state(client, payload, target)
         return text_result(_with_fleet_status(f"Set effect {effect} at speed {lightctl.clamp_byte(speed)}.", result))
     if name == "set_scene":
