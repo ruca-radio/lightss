@@ -46,6 +46,7 @@ py-modules = [
     "mood_orchestrator",
     "music_director",
     "music_recognizer",
+    "palette_lab",
     "realtime",
     "shows",
     "youtopia_bridge",

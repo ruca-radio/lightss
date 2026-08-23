@@ -28,6 +28,7 @@ import lightctl
 import look_memory
 import mood_orchestrator
 import music_recognizer
+import palette_lab
 from light_gui_html import HTML_TEMPLATE
 
 logger = logging.getLogger("light_gui")
@@ -323,6 +324,7 @@ def device_snapshot_text(snapshot: dict | None, include_catalog: bool = True) ->
         "All palettes (use id number when setting palette):\n  "
         + "\n  ".join(f"{i}: {name}" for i, name in enumerate(palettes)),
     ])
+    lines.extend(palette_lab.prompt_lines(palettes))
     if effects and include_catalog:
         lines.append(catalog_text_for_prompt(effects, fxdata))
     fx_hints = _parse_fxdata_hints(fxdata)

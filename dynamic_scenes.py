@@ -16,6 +16,7 @@ import color_lab
 import fleet as fleet_mod
 import lightctl
 import look_memory
+import palette_lab
 
 
 _DYNAMIC_EFFECT_NAMES = {
@@ -37,6 +38,10 @@ def _safe_id(name: str) -> int:
 SAFE_EFFECTS = {key: _safe_id(name) for key, name in _DYNAMIC_EFFECT_NAMES.items()}
 FALLBACK_FX = SAFE_EFFECTS["breathe"]
 
+# Fallback palette ids for offline composing (no live /json/pal list). When a
+# live palette-name list is available the intended WLED palette NAME wins and
+# these numbers are ignored; sunset/purple/rainbow/default keep their
+# historical 35/10/11/0 behavior as the fallback.
 PALETTES = {
     "warm": 8,
     "ocean": 51,
@@ -46,6 +51,56 @@ PALETTES = {
     "rainbow": 11,
     "default": 0,
 }
+
+# Intended WLED palette names per scene key, tried in order against the live
+# /json/pal list (see palette_lab).
+_SCENE_PALETTE_NAMES = {
+    "warm": ("Lava", "Fire", "Sunset"),
+    "ocean": ("Ocean", "Atlantica", "Breeze"),
+    "forest": ("Forest", "Landscape"),
+    "sunset": ("Sunset", "Fire"),
+    "purple": ("Magenta", "Hult"),
+    "rainbow": ("Rainbow", "Rainbow Colors"),
+    "default": ("Default",),
+}
+
+
+def _palette_id(key: str, palette_names: list[str] | None = None) -> int:
+    """Resolve a scene palette key to a WLED palette id.
+
+    Live /json/pal names resolve by intended palette name; without a live
+    list the historical PALETTES fallback ids are kept as-is.
+    """
+    if palette_names:
+        resolved = palette_lab.resolve_any(_SCENE_PALETTE_NAMES.get(key, ()), palette_names)
+        if resolved is not None:
+            return resolved
+    return PALETTES[key]
+
+
+def _live_palette_names(fleet: Any) -> list[str]:
+    """Live /json/pal names from the fleet (or its first controller), else []."""
+    getter = getattr(fleet, "get_palettes", None)
+    if callable(getter):
+        try:
+            names = getter()
+        except Exception:
+            names = []
+        if names:
+            return [str(name) for name in names]
+    clients = getattr(fleet, "clients", None)
+    if isinstance(clients, dict):
+        for client in clients.values():
+            getter = getattr(client, "get_palettes", None)
+            if not callable(getter):
+                continue
+            try:
+                names = getter()
+            except Exception:
+                continue
+            if names:
+                return [str(name) for name in names]
+    return []
 
 COLORS = {
     "warm": [[255, 154, 72, 40], [255, 92, 24, 0]],
@@ -242,7 +297,7 @@ def _compose_generated(entries: list[WallEntry], mood: str, energy: str, motion:
     return payloads
 
 
-def _compose_effect(entries: list[WallEntry], mood: str, energy: str, motion: str, strategy: str, seed: int | str | None, intensity: float | None, colors: list | None = None) -> dict[str, dict]:
+def _compose_effect(entries: list[WallEntry], mood: str, energy: str, motion: str, strategy: str, seed: int | str | None, intensity: float | None, colors: list | None = None, palette_names: list[str] | None = None) -> dict[str, dict]:
     strategy = (strategy or _auto_strategy(mood, energy, motion)).strip().lower().replace("-", "_")
     if strategy == "chase":
         strategy = "left_to_right"
@@ -254,20 +309,20 @@ def _compose_effect(entries: list[WallEntry], mood: str, energy: str, motion: st
     count = max(1, len(entries))
     payloads: dict[str, dict] = {}
     for entry in entries:
-        seg: dict[str, Any] = {"id": entry.seg_id, "start": entry.start, "stop": entry.stop, "on": True, "bri": bri, "sx": sx, "ix": ix, "col": colors, "pal": PALETTES["warm"]}
+        seg: dict[str, Any] = {"id": entry.seg_id, "start": entry.start, "stop": entry.stop, "on": True, "bri": bri, "sx": sx, "ix": ix, "col": colors, "pal": _palette_id("warm", palette_names)}
         if strategy == "quiet_gradient":
-            seg.update({"fx": SAFE_EFFECTS["gradient"], "pal": PALETTES["sunset"], "of": entry.wall_index * 7})
+            seg.update({"fx": SAFE_EFFECTS["gradient"], "pal": _palette_id("sunset", palette_names), "of": entry.wall_index * 7})
         elif strategy == "split_temperature":
             warm = entry.wall_index < count / 2
-            seg.update({"fx": SAFE_EFFECTS["breathe"], "pal": PALETTES["warm" if warm else "ocean"], "col": COLORS["warm" if warm else "cool"]})
+            seg.update({"fx": SAFE_EFFECTS["breathe"], "pal": _palette_id("warm" if warm else "ocean", palette_names), "col": COLORS["warm" if warm else "cool"]})
         elif strategy in {"mirror", "center_out"}:
             distance = abs(entry.wall_index - (count - 1) / 2)
-            seg.update({"fx": SAFE_EFFECTS["colorwaves"], "pal": PALETTES["purple"], "mi": entry.wall_index < count / 2, "of": int(distance * 12)})
+            seg.update({"fx": SAFE_EFFECTS["colorwaves"], "pal": _palette_id("purple", palette_names), "mi": entry.wall_index < count / 2, "of": int(distance * 12)})
         elif strategy == "left_to_right":
             step = max(1, min(entry.pixels, 48) // count)
-            seg.update({"fx": SAFE_EFFECTS["chase"], "pal": PALETTES["rainbow"], "of": entry.wall_index * step})
+            seg.update({"fx": SAFE_EFFECTS["chase"], "pal": _palette_id("rainbow", palette_names), "of": entry.wall_index * step})
         else:
-            seg.update({"fx": SAFE_EFFECTS["sine"], "pal": PALETTES["sunset"], "rev": entry.pixel_zero != "bottom", "of": rng.randrange(0, max(1, entry.pixels))})
+            seg.update({"fx": SAFE_EFFECTS["sine"], "pal": _palette_id("sunset", palette_names), "rev": entry.pixel_zero != "bottom", "of": rng.randrange(0, max(1, entry.pixels))})
         payloads.setdefault(entry.controller, {"on": True, "bri": bri, "transition": transition, "seg": [], "udpn": {"nn": True}})
         payloads[entry.controller]["seg"].append(seg)
     return payloads
@@ -288,7 +343,7 @@ def compose_dynamic_scene(
     entries = _wall_entries(fleet)
     engine = (engine or "generated").strip().lower()
     if engine == "effect":
-        return _compose_effect(entries, mood, energy, motion, strategy, seed, intensity, colors)
+        return _compose_effect(entries, mood, energy, motion, strategy, seed, intensity, colors, palette_names=_live_palette_names(fleet))
     return _compose_generated(entries, mood, energy, motion, strategy, composition_mode, seed, intensity, colors)
 
 
@@ -304,7 +359,7 @@ def apply_dynamic_scene(fleet: Any, **kwargs) -> dict:
             for seg in stock_segments:
                 if seg.get("fx") not in available:
                     seg["fx"] = FALLBACK_FX
-                    seg["pal"] = PALETTES["warm"]
+                    seg["pal"] = _palette_id("warm", _live_palette_names(fleet))
         results.update(fleet.post_state(payload, target=controller))
     look_memory.record_look(
         source="dynamic_scene",
