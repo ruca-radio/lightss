@@ -28,6 +28,7 @@ import lightctl
 import look_memory
 import mood_orchestrator
 import music_recognizer
+import palette_lab
 from light_gui_html import HTML_TEMPLATE
 
 logger = logging.getLogger("light_gui")
@@ -177,8 +178,13 @@ def _parse_fxdata_hints(fxdata: list) -> dict[int, str]:
 def catalog_text_for_prompt(effects: list, fxdata: list) -> str:
     """Full effect catalog grouped by mood (via atmospheres.py)."""
     import atmospheres  # lazy: atmospheres imports columns
+    import effect_metadata
 
-    return atmospheres.catalog_text(list(effects), list(fxdata))
+    text = atmospheres.catalog_text(list(effects), list(fxdata))
+    metadata_text = effect_metadata.render_catalog_text(list(effects), list(fxdata))
+    if metadata_text:
+        text = f"{text}\n{metadata_text}"
+    return text
 
 
 _NUMBER_WORDS = {
@@ -323,6 +329,7 @@ def device_snapshot_text(snapshot: dict | None, include_catalog: bool = True) ->
         "All palettes (use id number when setting palette):\n  "
         + "\n  ".join(f"{i}: {name}" for i, name in enumerate(palettes)),
     ])
+    lines.extend(palette_lab.prompt_lines(palettes))
     if effects and include_catalog:
         lines.append(catalog_text_for_prompt(effects, fxdata))
     fx_hints = _parse_fxdata_hints(fxdata)
@@ -343,6 +350,9 @@ def device_snapshot_text(snapshot: dict | None, include_catalog: bool = True) ->
                 "Saved WLED presets: "
                 + ", ".join(f"{pid}={p['n']}" for pid, p in preset_entries)
             )
+    current_preset = snapshot.get("current_preset") if isinstance(snapshot.get("current_preset"), dict) else {}
+    if current_preset.get("name"):
+        lines.append(f"Current preset: {current_preset['name']} (id {current_preset.get('id', '?')})")
     return "\n".join(lines)
 
 
@@ -2318,12 +2328,21 @@ class GuiState:
         self._offline: dict[str, bool] = {}
         self._offline_checked_at: dict[str, float] = {}
         self.state_lock = threading.Lock()
+        # Websocket observers (wled_ws) feeding the caches; HTTP polling is
+        # the fallback whenever no observer is connected.
+        self._ws_observers: list = []
+        self._ws_statuses: dict[str, str] = {}
+        self._ws_names: dict[str, str] = {}
 
     @property
     def is_offline(self) -> bool:
         return self._offline.get("cached_state", False)
 
     def _fetch_throttled(self, cache_attr: str, fetch_fn: Callable[[], dict]) -> dict:
+        if self._ws_cache_live(cache_attr):
+            cached = getattr(self, cache_attr)
+            if cached is not None:
+                return cached
         now = time.time()
         if self._offline.get(cache_attr) and (now - self._offline_checked_at.get(cache_attr, 0.0) < 5.0):
             cached = getattr(self, cache_attr)
@@ -2447,6 +2466,7 @@ class GuiState:
         and rebuilt against the new one. Returns the new controller names.
         """
         new_client, info_client = _build_fleet_client(dry_run=getattr(self, "dry_run", False))
+        self.stop_ws_observers()
         with self.state_lock:
             for stoppable in (
                 self.mode1, self.schedule, self.mood_session, self.fade_timer,
@@ -2476,9 +2496,118 @@ class GuiState:
             self.cached_info = None
             self._offline = {}
             self._offline_checked_at = {}
+        self.start_ws_observers()
         if hasattr(new_client, "names"):
             return list(new_client.names())
         return [str(getattr(new_client, "host", "default"))]
+
+    # ------------------------------------------------------------------
+    # Websocket observation (external changes from the WLED UI/apps/remotes)
+    # ------------------------------------------------------------------
+
+    def _ws_targets(self) -> list[tuple[str, str]]:
+        """(name, host) pairs to observe: configured controllers, or the single client."""
+        if getattr(self, "is_fleet", False) and hasattr(self.client, "controllers"):
+            return [(str(c.name), str(c.host)) for c in self.client.controllers]
+        host = getattr(self.client, "host", None)
+        return [("primary", str(host))] if host else []
+
+    def start_ws_observers(self, connect_fn: Callable | None = None, sleep_fn: Callable | None = None) -> None:
+        """Watch each controller's /ws socket so external changes land in the cache.
+
+        HTTP polling stays the fallback: caches are only served without a poll
+        while the observers feeding them are connected (see _ws_cache_live).
+        """
+        import wled_ws  # lazy: optional websockets dependency
+
+        if getattr(self, "dry_run", False):
+            return
+        if getattr(self, "_ws_observers", None):
+            return
+        try:
+            targets = self._ws_targets()
+        except Exception:
+            logger.exception("Could not resolve controllers for ws observation; staying on polling")
+            return
+        observers = []
+        for name, host in targets:
+            try:
+                options: dict[str, Any] = {}
+                if connect_fn is not None:
+                    options["connect_fn"] = connect_fn
+                if sleep_fn is not None:
+                    options["sleep_fn"] = sleep_fn
+                observers.append(wled_ws.WledWsObserver(
+                    host,
+                    self._on_ws_update,
+                    name=name,
+                    on_status=self._on_ws_status,
+                    **options,
+                ))
+            except Exception:
+                logger.exception("Failed to create ws observer for %s (%s)", name, host)
+        self._ws_observers = observers
+        self._ws_names = {observer.host: observer.name for observer in observers}
+        for observer in observers:
+            try:
+                observer.start()
+            except Exception:
+                logger.exception("Failed to start ws observer for %s", observer.name)
+        if not observers:
+            logger.info("No ws observers started; HTTP polling remains the state channel")
+
+    def stop_ws_observers(self) -> None:
+        observers = getattr(self, "_ws_observers", None) or []
+        self._ws_observers = []
+        self._ws_names = {}
+        for observer in observers:
+            try:
+                observer.stop()
+            except Exception:
+                logger.exception("Failed to stop ws observer %s", getattr(observer, "name", "?"))
+
+    def _on_ws_status(self, name: str, status: str) -> None:
+        import wled_ws  # lazy: optional websockets dependency
+
+        self._ws_statuses[name] = status
+        if status in (wled_ws.STATUS_FALLBACK, wled_ws.STATUS_UNSUPPORTED):
+            logger.info("ws observer %s reports %s; HTTP polling covers this controller", name, status)
+
+    def _on_ws_update(self, host: str, state: dict, info: dict) -> None:
+        with self.state_lock:
+            name = getattr(self, "_ws_names", {}).get(host)
+            if getattr(self, "is_fleet", False):
+                if state and name:
+                    cached = self.cached_state if isinstance(self.cached_state, dict) else {}
+                    cached[name] = state
+                    self.cached_state = cached
+            elif state:
+                self.cached_state = state
+            if info:
+                info_host = getattr(getattr(self, "_info_client", None), "host", None)
+                if not getattr(self, "is_fleet", False) or info_host == host:
+                    self.cached_info = info
+            if state:
+                self._offline["cached_state"] = False
+            if info:
+                self._offline["cached_info"] = False
+
+    def _ws_cache_live(self, cache_attr: str) -> bool:
+        """True when ws observers are feeding this cache (polling can stand down)."""
+        observers = getattr(self, "_ws_observers", None) or []
+        if not observers or getattr(self, cache_attr) is None:
+            return False
+        if cache_attr == "cached_info":
+            info_host = getattr(getattr(self, "_info_client", None), "host", None)
+            return any(o.host == info_host and o.is_connected for o in observers)
+        if getattr(self, "is_fleet", False):
+            cached = self.cached_state
+            return (
+                all(o.is_connected for o in observers)
+                and isinstance(cached, dict)
+                and all(o.name in cached for o in observers)
+            )
+        return any(o.is_connected for o in observers)
 
 
 def smart_suggestions(state_data: dict | None = None, now_playing: dict[str, str] | None = None) -> list[dict[str, Any]]:
@@ -3528,6 +3657,7 @@ def main() -> int:
             list(client.channels()),
         )
     state = GuiState(client, target=args.target, info_client=info_client, dry_run=args.dry_run)
+    state.start_ws_observers()
     server = ThreadingHTTPServer(
         (args.listen, args.port),
         make_handler(state),
@@ -3546,6 +3676,7 @@ def main() -> int:
     except KeyboardInterrupt:
         logger.info("Stopped.")
     finally:
+        state.stop_ws_observers()
         server.server_close()
     return 0
 

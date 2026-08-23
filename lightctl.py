@@ -98,6 +98,7 @@ class SegPayload(TypedDict, total=False):
     of: int
     cct: int
     i: list
+    fxdef: bool
 
 
 class WledPayload(TypedDict, total=False):
@@ -107,6 +108,13 @@ class WledPayload(TypedDict, total=False):
     transition: int
     ps: int
     pl: int
+    psave: int
+    n: str
+    ib: bool
+    sb: bool
+    pdel: int
+    playlist: dict
+    np: bool
     nl: dict
     udpn: dict
     AudioReactive: dict
@@ -215,11 +223,15 @@ def effect_payload(
     o2: int | None = None,
     o3: int | None = None,
     seg_id: int | None = None,
+    fxdef: bool = False,
 ) -> WledPayload:
     effect = validate_effect(effect)
     seg: SegPayload = {"fx": effect, "sx": clamp_byte(speed)}
     if seg_id is not None:
         seg["id"] = seg_id
+    if fxdef:
+        # fxdef tells WLED (0.14+) to apply the effect's tuned fxdata defaults.
+        seg["fxdef"] = True
     optional_fields = {
         "ix": intensity,
         "pal": palette,
@@ -822,6 +834,143 @@ def playlist_payload(playlist_id: int, transition_ms: int = 0) -> WledPayload:
     return payload
 
 
+def save_preset_payload(
+    preset_id: int,
+    name: str | None = None,
+    include_brightness: bool = True,
+    include_bounds: bool = True,
+) -> WledPayload:
+    """Save the current state into an on-device preset (psave).
+
+    NOTE: preset saves are LittleFS writes and stall the device for seconds —
+    call sparingly, never in a loop. Boot presets should include segment bounds.
+    """
+    preset_id = int(preset_id)
+    if not (PRESET_MIN <= preset_id <= PRESET_MAX):
+        raise ValueError(f"Preset ID must be between {PRESET_MIN} and {PRESET_MAX}.")
+    payload: WledPayload = {"psave": preset_id}
+    if name:
+        payload["n"] = str(name)
+    if include_brightness:
+        payload["ib"] = True
+    if include_bounds:
+        payload["sb"] = True
+    return payload
+
+
+def delete_preset_payload(preset_id: int) -> WledPayload:
+    """Delete an on-device preset (pdel). Like psave, this stalls the device."""
+    preset_id = int(preset_id)
+    if not (PRESET_MIN <= preset_id <= PRESET_MAX):
+        raise ValueError(f"Preset ID must be between {PRESET_MIN} and {PRESET_MAX}.")
+    return {"pdel": preset_id}
+
+
+def _tenths(seconds: int | float) -> int:
+    """Convert seconds to WLED playlist tenths-of-a-second units (min 1)."""
+    return max(1, round(float(seconds) * 10))
+
+
+def playlist_create_payload(
+    preset_ids: Iterable[int],
+    durations: int | float | Sequence[int | float],
+    transition: int | float = 0,
+    repeat: int = 0,
+    end: int | None = None,
+) -> WledPayload:
+    """Create and start an on-device playlist (the 'playlist' state object).
+
+    durations/transition are in SECONDS here (scalar or per-preset list) and
+    are converted to the tenths-of-a-second units WLED expects; a scalar dur
+    stays scalar (uniform value). repeat 0/omitted = loop indefinitely;
+    end = preset applied after the last repeat.
+    """
+    ids = [int(preset_id) for preset_id in preset_ids]
+    if not ids:
+        raise ValueError("playlist_create_payload requires at least one preset id.")
+    for preset_id in ids:
+        if not (PRESET_MIN <= preset_id <= PRESET_MAX):
+            raise ValueError(f"Preset ID must be between {PRESET_MIN} and {PRESET_MAX}.")
+    if isinstance(durations, (int, float)):
+        dur: int | list[int] = _tenths(durations)
+    else:
+        dur = [_tenths(item) for item in durations]
+        if len(dur) != len(ids):
+            raise ValueError(
+                f"Playlist durations ({len(dur)}) must match preset count ({len(ids)})."
+            )
+    playlist: dict = {
+        "ps": ids,
+        "dur": dur,
+        "transition": max(0, min(255, round(float(transition) * 10))),
+    }
+    if repeat:
+        playlist["repeat"] = int(repeat)
+    if end is not None:
+        end = int(end)
+        if not (PRESET_MIN <= end <= PRESET_MAX):
+            raise ValueError(f"Preset ID must be between {PRESET_MIN} and {PRESET_MAX}.")
+        playlist["end"] = end
+    return {"playlist": playlist}
+
+
+def next_preset_payload() -> WledPayload:
+    """Skip to the next preset of the running playlist (np, WLED 0.15+)."""
+    return {"np": True}
+
+
+def list_presets(presets: dict) -> list[dict]:
+    """Flatten a /presets.json dict into sorted [{id, name, is_playlist}]."""
+    entries = []
+    for key, value in (presets or {}).items():
+        if not isinstance(value, dict):
+            continue
+        try:
+            preset_id = int(key)
+        except (TypeError, ValueError):
+            continue
+        entries.append({
+            "id": preset_id,
+            "name": str(value.get("n") or f"Preset {preset_id}"),
+            "is_playlist": "playlist" in value,
+        })
+    return sorted(entries, key=lambda entry: entry["id"])
+
+
+def find_preset_id(presets: dict, name_or_id: int | str) -> int | None:
+    """Resolve a preset id or (case-insensitive) name to an id; None if unknown."""
+    entries = list_presets(presets)
+    if isinstance(name_or_id, int) or (isinstance(name_or_id, str) and name_or_id.strip().isdigit()):
+        preset_id = int(name_or_id)
+        return preset_id if any(entry["id"] == preset_id for entry in entries) else None
+    wanted = str(name_or_id).strip().lower()
+    for entry in entries:
+        if entry["name"].lower() == wanted:
+            return entry["id"]
+    return None
+
+
+def preset_name(presets: dict, preset_id: int) -> str | None:
+    """Name of a preset id, or None when the id is not a saved preset."""
+    try:
+        preset_id = int(preset_id)
+    except (TypeError, ValueError):
+        return None
+    for entry in list_presets(presets):
+        if entry["id"] == preset_id:
+            return entry["name"]
+    return None
+
+
+def current_preset(presets: dict, state: dict) -> dict:
+    """Match state.ps against the preset list -> {"id", "name"}; {} when none."""
+    preset_id = state.get("ps") if isinstance(state, dict) else None
+    if not isinstance(preset_id, int) or preset_id < 0:
+        return {}
+    name = preset_name(presets, preset_id)
+    return {"id": preset_id, "name": name} if name else {}
+
+
 # ---------------------------------------------------------------------------
 # Scene Cycle / Playlist
 # ---------------------------------------------------------------------------
@@ -1185,6 +1334,10 @@ class LightClient:
                 pass
         return {}
 
+    def list_presets(self) -> list[dict]:
+        """Saved on-device presets as sorted [{id, name, is_playlist}]."""
+        return list_presets(self.get_presets())
+
     def _snapshot_part(self, name: str, loader: Callable[[], dict | list]) -> dict | list:
         try:
             return loader()
@@ -1201,15 +1354,22 @@ class LightClient:
         combined = self._snapshot_part("combined", self.get_json)
         if not isinstance(combined, dict):
             combined = {}
+        presets = self._snapshot_part("presets", self.get_presets)
+        state = combined.get("state") or self._snapshot_part("state", self.get_state)
         return {
-            "state": combined.get("state") or self._snapshot_part("state", self.get_state),
+            "state": state,
             "info": combined.get("info") or self._snapshot_part("info", self.get_info),
             "effects": combined.get("effects") or self._snapshot_part("effects", self.get_effects),
             "palettes": combined.get("palettes") or self._snapshot_part("palettes", self.get_palettes),
             "config": self._snapshot_part("config", self.get_config),
             "fxdata": self._snapshot_part("fxdata", self.get_fxdata),
             "networks": self._snapshot_part("networks", self.get_networks),
-            "presets": self._snapshot_part("presets", self.get_presets),
+            "presets": presets,
+            # current preset NAME is only recoverable by matching state.ps against presets
+            "current_preset": current_preset(
+                presets if isinstance(presets, dict) else {},
+                state if isinstance(state, dict) else {},
+            ),
             # live and nodes omitted (often return 501; realtime data uses E1.31/Art-Net per docs)
         }
 
