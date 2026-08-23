@@ -343,6 +343,9 @@ def device_snapshot_text(snapshot: dict | None, include_catalog: bool = True) ->
                 "Saved WLED presets: "
                 + ", ".join(f"{pid}={p['n']}" for pid, p in preset_entries)
             )
+    current_preset = snapshot.get("current_preset") if isinstance(snapshot.get("current_preset"), dict) else {}
+    if current_preset.get("name"):
+        lines.append(f"Current preset: {current_preset['name']} (id {current_preset.get('id', '?')})")
     return "\n".join(lines)
 
 

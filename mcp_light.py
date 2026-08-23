@@ -269,6 +269,91 @@ def build_tools() -> list[dict]:
             },
         },
         {
+            "name": "list_presets",
+            "description": "List presets saved on the WLED device(s): id, name, and whether each is a playlist.",
+            "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+        {
+            "name": "apply_preset",
+            "description": "Apply a saved on-device WLED preset by id or by name (names come from list_presets).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": int_schema("Preset ID", 1, 250),
+                    "name": {"type": "string", "description": "Preset name (case-insensitive)"},
+                    "transition": _transition_schema(),
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "save_preset",
+            "description": (
+                "Save the current LED state as a named on-device WLED preset. "
+                "This writes flash and stalls the device for seconds — use sparingly, never in a loop."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": int_schema("Preset slot to save into", 1, 250),
+                    "name": {"type": "string", "description": "Preset name"},
+                    "include_brightness": {"type": "boolean", "description": "Include brightness in the preset (default true)"},
+                    "include_bounds": {"type": "boolean", "description": "Include segment bounds in the preset (default true)"},
+                },
+                "required": ["id", "name"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "delete_preset",
+            "description": (
+                "Delete an on-device WLED preset. Like save_preset, this writes "
+                "flash and stalls the device for seconds — use sparingly."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": int_schema("Preset ID to delete", 1, 250),
+                },
+                "required": ["id"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "create_playlist",
+            "description": (
+                "Create and start an on-device playlist of saved presets. Runs entirely on the "
+                "WLED device — prefer this over step-by-step polling for preset rotations. "
+                "durations and transition are in seconds (scalar or per-preset list); "
+                "repeat 0/omitted loops indefinitely; end is the preset applied after the last repeat."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "preset_ids": {
+                        "type": "array",
+                        "items": {"type": "integer", "minimum": 1, "maximum": 250},
+                        "description": "Preset ids in play order",
+                    },
+                    "durations": {
+                        "type": ["number", "array"],
+                        "items": {"type": "number"},
+                        "description": "Seconds each preset plays (scalar for a uniform value, or one per preset)",
+                    },
+                    "transition": {"type": "number", "description": "Crossfade between presets in seconds"},
+                    "repeat": {"type": "integer", "minimum": 0, "description": "Repeat count; 0/omitted = indefinite"},
+                    "end": int_schema("Preset applied after the playlist finishes", 1, 250),
+                },
+                "required": ["preset_ids", "durations"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "next_preset",
+            "description": "Skip to the next preset of the currently running on-device playlist (WLED 0.15+).",
+            "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+        {
             "name": "get_info",
             "description": "Read WLED controller device info (name, version, LEDs, uptime, IP).",
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -721,6 +806,32 @@ def _get_state(client: Any, target: str) -> dict:
     return client.get_state()
 
 
+def _presets_by_controller(client: Any, target: str) -> dict[str, dict]:
+    """Per-controller /presets.json dicts; failures become {"error": ...} entries."""
+    if _is_fleet(client):
+        clients = getattr(client, "clients", {})
+        presets: dict[str, dict] = {}
+        for ctrl_name, _seg_id in client.resolve(target):
+            ctrl_client = clients.get(ctrl_name)
+            try:
+                presets[ctrl_name] = ctrl_client.get_presets() if ctrl_client is not None else {"error": "no client"}
+            except Exception as exc:
+                presets[ctrl_name] = {"error": str(exc)}
+        return presets
+    return {getattr(client, "host", "default"): client.get_presets()}
+
+
+def _find_preset_id(client: Any, target: str, name: str) -> int:
+    """Resolve a preset name against the target controllers' saved presets."""
+    for presets in _presets_by_controller(client, target).values():
+        if not isinstance(presets, dict) or "error" in presets:
+            continue
+        preset_id = lightctl.find_preset_id(presets, name)
+        if preset_id is not None:
+            return preset_id
+    raise ValueError(f"No preset named '{name}'. Use list_presets to see saved presets.")
+
+
 def _is_channel_target(client: Any, target: str) -> bool:
     return _is_fleet(client) and target in client.channels()
 
@@ -994,6 +1105,68 @@ def call_tool(
         preset_id = int(args["id"])
         result = _post_state(client, lightctl.preset_payload(preset_id, transition_ms=transition_ms), target)
         return text_result(_with_fleet_status(f"Loaded preset {preset_id}.", result))
+    if name == "list_presets":
+        lines = []
+        for ctrl_name, presets in _presets_by_controller(client, target).items():
+            if not isinstance(presets, dict) or "error" in presets:
+                lines.append(f"{ctrl_name}: unavailable ({(presets or {}).get('error', 'no presets')})")
+                continue
+            entries = lightctl.list_presets(presets)
+            listing = ", ".join(
+                f"{entry['id']}={entry['name']}{' (playlist)' if entry['is_playlist'] else ''}"
+                for entry in entries
+            )
+            lines.append(f"{ctrl_name}: {listing or 'no presets saved'}")
+        return text_result("Saved WLED presets:\n" + "\n".join(lines))
+    if name == "apply_preset":
+        preset_id = args.get("id")
+        if preset_id is not None:
+            preset_id = int(preset_id)
+        else:
+            preset_name = str(args.get("name") or "").strip()
+            if not preset_name:
+                raise ValueError("apply_preset requires 'id' or 'name'.")
+            preset_id = _find_preset_id(client, target, preset_name)
+        result = _post_state(client, lightctl.preset_payload(preset_id, transition_ms=transition_ms), target)
+        return text_result(_with_fleet_status(f"Applied preset {preset_id}.", result))
+    if name == "save_preset":
+        preset_id = int(args["id"])
+        preset_name = str(args["name"])
+        payload = lightctl.save_preset_payload(
+            preset_id,
+            name=preset_name,
+            include_brightness=bool(args.get("include_brightness", True)),
+            include_bounds=bool(args.get("include_bounds", True)),
+        )
+        result = _post_state(client, payload, target)
+        return text_result(_with_fleet_status(
+            f"Saved preset {preset_id} ('{preset_name}'). Device may stall briefly while writing flash.",
+            result,
+        ))
+    if name == "delete_preset":
+        preset_id = int(args["id"])
+        result = _post_state(client, lightctl.delete_preset_payload(preset_id), target)
+        return text_result(_with_fleet_status(
+            f"Deleted preset {preset_id}. Device may stall briefly while writing flash.",
+            result,
+        ))
+    if name == "create_playlist":
+        preset_ids = [int(preset_id) for preset_id in args["preset_ids"]]
+        payload = lightctl.playlist_create_payload(
+            preset_ids,
+            args["durations"],
+            transition=args.get("transition") or 0,
+            repeat=int(args.get("repeat") or 0),
+            end=int(args["end"]) if args.get("end") is not None else None,
+        )
+        result = _post_state(client, payload, target)
+        return text_result(_with_fleet_status(
+            f"Started on-device playlist of {len(preset_ids)} presets.",
+            result,
+        ))
+    if name == "next_preset":
+        result = _post_state(client, lightctl.next_preset_payload(), target)
+        return text_result(_with_fleet_status("Skipped to the next playlist preset.", result))
     if name == "get_info":
         if _is_fleet(client):
             clients = getattr(client, "clients", {})

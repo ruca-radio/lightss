@@ -122,6 +122,13 @@ the GUI host) so it plays alongside the show; for pitch-dark scenes,
 tv_sleep it. Check tv_status first when unsure of its state. These tools
 error politely when the user has disabled TV control in the UI — respect
 that: do not retry, and tell the user TV control is off.
+
+WLED presets & playlists: presets are named scenes stored ON the device
+(apply_preset by id or name, list_presets to see what exists, save_preset
+stores the current look). Playlists (create_playlist) also run on-device —
+prefer them over step-by-step polling when presets should rotate on a timer.
+save_preset/delete_preset write flash and stall the device for seconds —
+use them sparingly and never in a loop.
 """
 
 
@@ -133,6 +140,7 @@ _CORE_TOOL_NAMES = {
     "light_on", "light_off", "get_state", "get_info", "set_brightness",
     "set_color", "set_hex_color", "set_temperature", "set_effect",
     "set_scene", "list_scenes", "random_scene", "load_preset",
+    "list_presets", "apply_preset", "next_preset",
     "wall_mode", "strips", "atmosphere", "dynamic_scene", "design_look", "realtime_start", "realtime_stop", "realtime_status", "look_feedback", "look_memory_summary", "list_controllers", "list_segments",
 }
 
@@ -149,6 +157,7 @@ _SPECIALIZED_TOOL_GROUPS = (
       "stop_audio_reactive", "music_director"}),
     (("sunrise", "wake up", "wake-up", "fade", "timer"), {"start_sunrise", "fade_off"}),
     (("save scene", "delete scene", "save", "delete"), {"save_scene", "delete_scene"}),
+    (("preset", "playlist"), {"save_preset", "delete_preset", "create_playlist"}),
     (("restart", "reboot"), {"restart_controller"}),
 )
 
