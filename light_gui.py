@@ -177,8 +177,13 @@ def _parse_fxdata_hints(fxdata: list) -> dict[int, str]:
 def catalog_text_for_prompt(effects: list, fxdata: list) -> str:
     """Full effect catalog grouped by mood (via atmospheres.py)."""
     import atmospheres  # lazy: atmospheres imports columns
+    import effect_metadata
 
-    return atmospheres.catalog_text(list(effects), list(fxdata))
+    text = atmospheres.catalog_text(list(effects), list(fxdata))
+    metadata_text = effect_metadata.render_catalog_text(list(effects), list(fxdata))
+    if metadata_text:
+        text = f"{text}\n{metadata_text}"
+    return text
 
 
 _NUMBER_WORDS = {

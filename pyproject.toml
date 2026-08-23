@@ -33,6 +33,7 @@ py-modules = [
     "color_lab",
     "columns",
     "dynamic_scenes",
+    "effect_metadata",
     "firetv",
     "fleet",
     "light_gui",

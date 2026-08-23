@@ -122,6 +122,14 @@ the GUI host) so it plays alongside the show; for pitch-dark scenes,
 tv_sleep it. Check tv_status first when unsure of its state. These tools
 error politely when the user has disabled TV control in the UI — respect
 that: do not retry, and tell the user TV control is off.
+
+Effect metadata (fxdata): the snapshot catalog ends with per-effect metadata
+lines parsed from the device's fxdata — custom slider labels tell you what
+sx/ix/c1-c3 actually do for that effect, pal=no means the effect ignores
+palettes, [vol]/[freq] mark the audio-reactive set (use those for music
+requests), and "defaults:" lists WLED's tuned values. When switching
+effects, apply the tuned defaults (set_effect fxdef=true) unless the user
+specifies slider values.
 """
 
 

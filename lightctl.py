@@ -98,6 +98,7 @@ class SegPayload(TypedDict, total=False):
     of: int
     cct: int
     i: list
+    fxdef: bool
 
 
 class WledPayload(TypedDict, total=False):
@@ -215,11 +216,15 @@ def effect_payload(
     o2: int | None = None,
     o3: int | None = None,
     seg_id: int | None = None,
+    fxdef: bool = False,
 ) -> WledPayload:
     effect = validate_effect(effect)
     seg: SegPayload = {"fx": effect, "sx": clamp_byte(speed)}
     if seg_id is not None:
         seg["id"] = seg_id
+    if fxdef:
+        # fxdef tells WLED (0.14+) to apply the effect's tuned fxdata defaults.
+        seg["fxdef"] = True
     optional_fields = {
         "ix": intensity,
         "pal": palette,
