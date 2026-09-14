@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Lightss
+Comment=Desktop music player and WLED lighting controller
+Exec=lightss
+Icon=lightss
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+StartupNotify=true

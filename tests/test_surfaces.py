@@ -462,7 +462,7 @@ class SurfaceTests(unittest.TestCase):
         body = html[start:end]
 
         timer_idx = body.index("musicRecognitionTimer = setInterval")
-        initial_cycle_idx = body.index("await runMusicRecognitionCycle(true);")
+        initial_cycle_idx = body.index("await runMusicRecognitionCycle(false);")
 
         self.assertLess(timer_idx, initial_cycle_idx)
 
@@ -475,15 +475,16 @@ class SurfaceTests(unittest.TestCase):
         self.assertIn("fetchJsonWithTimeout('/api/recognize'", html)
         self.assertIn("fetchJsonWithTimeout('/api/match-lights'", html)
 
-    def test_music_mode_uses_browser_shazam_when_metadata_is_missing(self):
+    def test_music_mode_uses_shazam_only_for_explicit_identify(self):
         html = light_gui.render_html()
         cycle_start = html.index("async function runMusicRecognitionCycle")
         cycle_end = html.index("async function startAudioReactive")
         cycle_body = html[cycle_start:cycle_end]
 
-        self.assertIn("await matchLightsFromNowPlaying();", cycle_body)
+        self.assertIn("await refreshNowPlaying();", cycle_body)
         self.assertIn("await recognizeSongOnce();", cycle_body)
-        self.assertIn("await matchLightsFromRecognizedSong(recognizedSong);", cycle_body)
+        self.assertIn("else if (force)", cycle_body)
+        self.assertIn("await matchLightsFromRecognizedSong(song);", cycle_body)
 
     def test_browser_shazam_prefers_webcam_microphone(self):
         html = light_gui.render_html()
@@ -615,7 +616,8 @@ class SurfaceTests(unittest.TestCase):
         with open("pyproject.toml", "rb") as f:
             project = tomllib.load(f)["project"]
 
-        self.assertEqual(project["scripts"]["lightss"], "light_gui:main")
+        self.assertEqual(project["scripts"]["lightss"], "light_desktop:main")
+        self.assertEqual(project["scripts"]["lightss-desktop"], "light_desktop:main")
         self.assertEqual(project["scripts"]["light-gui"], "light_gui:main")
         self.assertEqual(project["scripts"]["lightctl"], "lightctl:main")
         self.assertEqual(project["scripts"]["mcp-light"], "mcp_light:main")

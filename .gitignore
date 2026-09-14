@@ -7,3 +7,7 @@ dist/
 .worktrees/
 
 .env
+
+# Generated release staging (not source)
+build/
+debian-build/

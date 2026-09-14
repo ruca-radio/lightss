@@ -1,6 +1,6 @@
 [project]
 name = "lightss"
-version = "0.1.0"
+version = "0.2.2"
 description = "Agentic AI WLED light controller with browser music mode and MCP tools"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -8,16 +8,21 @@ dependencies = [
     "audioop-lts>=0.2 ; python_full_version >= '3.13'",
     "numpy>=1.26,<2.0",
     "pydub>=0.25,<0.26",
+    "PySide6>=6.10,<7",
+    "pyjwt[crypto]>=2.8",
+    "segno>=1.6.6",
     "shazamio==0.2.0.0",
     "sounddevice>=0.5,<0.6",
 ]
 
 [project.scripts]
-lightss = "light_gui:main"
+lightss = "light_desktop:main"
 light-gui = "light_gui:main"
 lightctl = "lightctl:main"
 mcp-light = "mcp_light:main"
 light-tray = "light_tray:main"
+light-desktop = "light_desktop:main"
+lightss-desktop = "light_desktop:main"
 
 [project.optional-dependencies]
 dev = [
@@ -25,11 +30,14 @@ dev = [
 ]
 
 [tool.setuptools]
+packages = ["lightss_assets"]
 py-modules = [
     "actions",
+    "activity_intelligence",
     "ai_chat",
     "atmospheres",
     "audio_player",
+    "calibrate",
     "color_lab",
     "columns",
     "dynamic_scenes",
@@ -38,6 +46,15 @@ py-modules = [
     "light_gui",
     "light_gui_html",
     "light_tray",
+    "light_desktop",
+    "chrome_transport",
+    "chrome_x11",
+    "chrome_provider",
+    "desktop_auth",
+    "desktop_bridge",
+    "desktop_ui",
+    "calibration_service",
+    "player_library",
     "lightctl",
     "look_agents",
     "look_memory",
@@ -48,10 +65,17 @@ py-modules = [
     "music_recognizer",
     "realtime",
     "shows",
+    "smart_director",
+    "song_tracking",
+    "tv_trivia",
+    "wled_audio",
     "youtopia_bridge",
     "youtopia_daemon",
 ]
 include-package-data = true
 
 [tool.setuptools.package-data]
-"*" = ["wled-logo.png"]
+lightss_assets = ["wled-logo.png"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

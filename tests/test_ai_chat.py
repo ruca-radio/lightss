@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+import json
 import unittest
 from unittest.mock import patch
 
@@ -147,6 +149,56 @@ class ChatRoundHttpTests(unittest.TestCase):
             with self.assertRaises(ai_chat.ToolChatError) as ctx:
                 ai_chat._chat_round("https://example.test/v1/chat/completions", {}, {}, 1.0)
         self.assertIn("unreachable", str(ctx.exception))
+
+    @staticmethod
+    def _http_400(payload: dict) -> ai_chat.urllib.error.HTTPError:
+        return ai_chat.urllib.error.HTTPError(
+            "https://example.test/v1/chat/completions",
+            400,
+            "Bad Request",
+            {},
+            io.BytesIO(json.dumps(payload).encode("utf-8")),
+        )
+
+    def test_reasoning_effort_400_retries_with_reasoning_none(self):
+        bodies = []
+        error = self._http_400({
+            "error": {
+                "message": "Function tools with reasoning_effort are not supported "
+                           "for gpt-5.6-terra in /v1/chat/completions.",
+                "param": "reasoning_effort",
+            }
+        })
+
+        def fake_urlopen(request, timeout=0):
+            bodies.append(json.loads(request.data.decode("utf-8")))
+            if len(bodies) == 1:
+                raise error
+            return FakeHttpResponse(b'{"choices": []}')
+
+        with patch.object(ai_chat.urllib.request, "urlopen", fake_urlopen):
+            data = ai_chat._chat_round(
+                "https://example.test/v1/chat/completions", {}, {"model": "m"}, 1.0
+            )
+        self.assertEqual(data, {"choices": []})
+        self.assertEqual(len(bodies), 2, "one retry with reasoning disabled")
+        self.assertNotIn("reasoning_effort", bodies[0])
+        self.assertEqual(bodies[1].get("reasoning_effort"), "none")
+        self.assertEqual(bodies[1].get("model"), "m", "retry keeps the original body")
+
+    def test_other_400_is_not_retried(self):
+        calls = []
+        error = self._http_400({"error": {"message": "model not found"}})
+
+        def fake_urlopen(request, timeout=0):
+            calls.append(1)
+            raise error
+
+        with patch.object(ai_chat.urllib.request, "urlopen", fake_urlopen):
+            with self.assertRaises(ai_chat.ToolChatError) as ctx:
+                ai_chat._chat_round("https://example.test/v1/chat/completions", {}, {}, 1.0)
+        self.assertIn("HTTP 400", str(ctx.exception))
+        self.assertEqual(len(calls), 1, "unrelated 400s must not be retried")
 
 
 class FakeReactiveModes:

@@ -95,10 +95,16 @@ def test_auto_strategy_from_mood_energy_motion():
     assert rise["left"]["seg"][0]["rev"] is False
 
 
-def test_apply_posts_one_payload_per_controller():
+def test_apply_primes_power_before_per_led_frames():
     f = RecordingFleet()
     result = dynamic_scenes.apply_dynamic_scene(f, mood="ocean calm", seed=4)
-    assert [target for target, _payload in f.posts] == ["left", "right"]
+    # Per controller: an on/bri primer (WLED ignores 'i' frames when 'on'
+    # rides in the same request from an off state), then the frame payload.
+    assert [target for target, _payload in f.posts] == ["left", "left", "right", "right"]
+    for (_t1, primer), (_t2, frame) in ((f.posts[0], f.posts[1]), (f.posts[2], f.posts[3])):
+        assert "seg" not in primer
+        assert primer["on"] is True and "bri" in primer
+        assert any("i" in seg for seg in frame["seg"])
     assert set(result) == {"left", "right"}
     assert look_memory.last_look()["parameters"]["mood"] == "ocean calm"
 
@@ -178,7 +184,8 @@ def test_mcp_dynamic_scene_posts_per_controller():
     f = RecordingFleet()
     result = mcp_light.call_tool(f, "dynamic_scene", {"mood": "dreamy", "seed": 3}, None)
     assert "Applied dynamic scene" in result["content"][0]["text"]
-    assert [target for target, _payload in f.posts] == ["left", "right"]
+    # Primer + frame payload per controller (generated engine paints 'i' frames).
+    assert [target for target, _payload in f.posts] == ["left", "left", "right", "right"]
 
 
 def test_mcp_segments_info_uses_runtime_wall_order():
@@ -234,3 +241,17 @@ def test_mcp_feedback_and_summary_tools():
     assert look_id in result["content"][0]["text"]
     summary = mcp_light.call_tool(RecordingFleet(), "look_memory_summary", {"limit": 5}, None)["content"][0]["text"]
     assert "liked-colors" in summary
+
+
+def test_unspecified_composition_rotates_instead_of_always_unison():
+    f = RecordingFleet()
+    bri_patterns = set()
+    unison_seeds = 0
+    for seed in range(12):
+        payloads = dynamic_scenes.compose_dynamic_scene(f, mood="moody lounge", seed=seed)
+        bris = tuple(sorted(seg["bri"] for payload in payloads.values() for seg in payload["seg"]))
+        bri_patterns.add(bris)
+        if len(set(bris)) == 1:
+            unison_seeds += 1
+    assert unison_seeds <= 8  # rotation, not a unison monocrop
+    assert len(bri_patterns) >= 4

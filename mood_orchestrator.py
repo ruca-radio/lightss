@@ -12,6 +12,7 @@ import wave
 from typing import TYPE_CHECKING, Any, Callable
 
 import lightctl
+import song_tracking
 
 if TYPE_CHECKING:
     import fleet
@@ -80,13 +81,24 @@ class SongCache:
 
 
 class TransitionSmoother:
-    """Make WLED payload changes gentle and non-jarring."""
+    """Make WLED payload changes gentle and non-jarring.
+
+    Durations are expressed in milliseconds here, but WLED's 'tt' field is in
+    100ms units (0-65535, per-call only — see the JSON API docs), so values
+    are converted when written. Payloads passing an existing 'tt' are compared
+    in the same units.
+    """
 
     MIN_TRANSITION_MS = 1200
     AMBIENT_TRANSITION_MS = 4000
     AMBIENT_TO_MOOD_MS = 2500
     BRIGHTNESS_JUMP_THRESHOLD = 80
     INTERMEDIATE_STEP_MS = 800
+
+    @staticmethod
+    def _tt_units(milliseconds: float) -> int:
+        """Milliseconds -> WLED 'tt' units (100ms each, 0-65535)."""
+        return max(0, min(65535, round(milliseconds / 100)))
 
     def smooth(
         self,
@@ -105,10 +117,11 @@ class TransitionSmoother:
         else:
             min_tt = self.MIN_TRANSITION_MS
 
+        min_units = self._tt_units(min_tt)
         tt = payload.get("tt", 0)
-        if tt < min_tt:
+        if tt < min_units:
             payload = dict(payload)
-            payload["tt"] = min_tt
+            payload["tt"] = min_units
 
         # If brightness jump is too large, split into two posts.
         if abs(target_bri - current_bri) > self.BRIGHTNESS_JUMP_THRESHOLD:
@@ -116,7 +129,7 @@ class TransitionSmoother:
             intermediate_bri = current_bri + direction * self.BRIGHTNESS_JUMP_THRESHOLD
             intermediate = dict(payload)
             intermediate["bri"] = lightctl.clamp_byte(intermediate_bri)
-            intermediate["tt"] = self.INTERMEDIATE_STEP_MS
+            intermediate["tt"] = self._tt_units(self.INTERMEDIATE_STEP_MS)
             final = dict(payload)
             final["bri"] = lightctl.clamp_byte(target_bri)
             return [intermediate, final]
@@ -132,6 +145,7 @@ class AudioSampleBuffer:
         recognize_fn: Callable[[bytes], dict[str, str] | None],
         cooldown_seconds: float = 20.0,
         rms_threshold: float | None = None,
+        change_detection: bool = False,
     ) -> None:
         self.recognize_fn = recognize_fn
         self.cooldown_seconds = cooldown_seconds
@@ -139,8 +153,14 @@ class AudioSampleBuffer:
         self._last_attempt: float = 0.0
         self._lock = threading.Lock()
         self._rms_width_warned = False
+        self.change_tracker = (
+            song_tracking.ChangeAwareRecognizer(recognize_fn, cooldown_seconds)
+            if change_detection else None
+        )
 
     def maybe_recognize(self, audio_bytes: bytes) -> dict[str, str] | None:
+        if self.change_tracker is not None:
+            return self.change_tracker.recognize(audio_bytes)
         if self.rms_threshold is not None:
             rms = self._rms(audio_bytes)
             if rms < self.rms_threshold:
@@ -222,6 +242,7 @@ class MoodSession:
         ambient_payload: lightctl.WledPayload | None = None,
         recognize_cooldown: float = 20.0,
         ambient_timeout: float = 60.0,
+        change_detection: bool = False,
     ) -> None:
         self.client = client
         self.recognize_fn = recognize_fn
@@ -234,7 +255,10 @@ class MoodSession:
             lightctl.color_payload(*lightctl.kelvin_to_rgbw(2700)),
         )
         self.ambient_timeout = ambient_timeout
-        self._buffer = AudioSampleBuffer(recognize_fn, cooldown_seconds=recognize_cooldown)
+        self._buffer = AudioSampleBuffer(
+            recognize_fn, cooldown_seconds=recognize_cooldown,
+            change_detection=change_detection,
+        )
         self._state = self.STATE_IDLE
         self._lock = threading.Lock()
         self._current_song: dict[str, str] | None = None
@@ -242,6 +266,8 @@ class MoodSession:
         self._last_song_key: str = ""
         self._last_payload: dict | None = None
         self._last_error: str = ""
+        self._last_generation_error: str = ""
+        self._generation_status: str | None = None
         self._last_cache_hit: bool | None = None
         self._running = False
 
@@ -253,13 +279,19 @@ class MoodSession:
             self._state = self.STATE_LISTENING
             self._current_song = None
             self._last_song_key = ""
+            self._last_generation_error = ""
+            self._generation_status = None
             self._last_recognition_time = time.monotonic()
+            if self._buffer.change_tracker is not None:
+                self._buffer.change_tracker.reset()
 
     def stop(self) -> None:
         with self._lock:
             self._running = False
             self._state = self.STATE_IDLE
             self._current_song = None
+            if self._buffer.change_tracker is not None:
+                self._buffer.change_tracker.reset()
 
     def sample(self, audio_bytes: bytes) -> dict[str, Any]:
         with self._lock:
@@ -289,16 +321,23 @@ class MoodSession:
         if cached:
             payload = dict(cached)
             cache_hit = True
+            generation_status = "cache_hit"
+            generation_error = ""
         else:
             try:
                 payload = self.generate_fn(song)
             except Exception as exc:
                 _LOGGER.warning("Mood generation failed for %r: %s; using ambient.", key, exc)
                 payload = dict(self.ambient_payload)
-            try:
-                self.cache.set(key, dict(payload))
-            except Exception as exc:
-                _LOGGER.warning("Failed to persist song mood cache: %s", exc)
+                generation_status = "failed"
+                generation_error = str(exc)[:1000]
+            else:
+                generation_status = "generated"
+                generation_error = ""
+                try:
+                    self.cache.set(key, dict(payload))
+                except Exception as exc:
+                    _LOGGER.warning("Failed to persist song mood cache: %s", exc)
             cache_hit = False
 
         with self._lock:
@@ -307,6 +346,8 @@ class MoodSession:
             self._current_song = song
             self._last_song_key = key
             self._last_cache_hit = cache_hit
+            self._generation_status = generation_status
+            self._last_generation_error = generation_error
 
         self._apply_payload(payload, source)
 
@@ -316,7 +357,10 @@ class MoodSession:
         with self._lock:
             if self._state not in (self.STATE_LISTENING, self.STATE_RECOGNIZED):
                 return
-            if time.monotonic() - self._last_recognition_time < self.ambient_timeout:
+            last_activity = self._last_recognition_time
+            if self._buffer.change_tracker is not None:
+                last_activity = max(last_activity, self._buffer.change_tracker.last_audio_at or 0)
+            if time.monotonic() - last_activity < self.ambient_timeout:
                 return
             self._state = self.STATE_AMBIENT
             self._current_song = None
@@ -361,6 +405,9 @@ class MoodSession:
                 "last_recognition_time": self._last_recognition_time,
                 "last_payload": self._last_payload,
                 "last_error": self._last_error,
+                "last_generation_error": self._last_generation_error,
+                "generation_status": self._generation_status,
                 "last_cache_hit": self._last_cache_hit,
                 "next_recognition_in": round(self._buffer.next_available_in(), 3),
+                "recognition": self._buffer.change_tracker.status() if self._buffer.change_tracker else {"mode": "legacy"},
             }

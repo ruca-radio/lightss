@@ -381,3 +381,269 @@ class GdbusMprisTests(unittest.TestCase):
         with patch.object(music_recognizer, "_list_mpris_players", return_value=[]), \
              patch.object(music_recognizer, "_run_gdbus", return_value=None):
             assert music_recognizer.now_playing_mpris() is None
+
+
+class TestShazamErrorPageBackoff:
+    """The pinned shazamio 0.2.0.0 reports Shazam's non-JSON error pages (HTTP
+    429 rate limiting, see ShazamIO issue #81) as "Check args, URL is invalid".
+    Our wrapper paces calls process-wide and backs off on that signature."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch):
+        monkeypatch.setattr(music_recognizer, "SHAZAM_MIN_INTERVAL_S", 0.0)
+        monkeypatch.setattr(music_recognizer, "_last_shazam_call", 0.0)
+        self.sleeps: list[float] = []
+
+        async def fake_sleep(seconds):
+            self.sleeps.append(seconds)
+
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+        yield
+        music_recognizer._last_shazam_call = 0.0
+
+    def test_url_template_has_no_stray_space(self):
+        from shazamio.misc import ShazamUrl
+
+        assert "sampling=true " not in ShazamUrl.SEARCH_FROM_FILE
+        assert "sampling=true&" in ShazamUrl.SEARCH_FROM_FILE
+
+    def test_retries_error_page_then_succeeds(self):
+        calls = []
+
+        class FlakyShazam:
+            async def recognize_song(self, data):
+                calls.append(data)
+                if len(calls) < 3:
+                    raise Exception("Check args, URL is invalid\nURL- https://amp.shazam.com/x")
+                return {"matches": [], "track": {}}
+
+        result = asyncio.run(music_recognizer._recognize_with_backoff(FlakyShazam(), b"audio"))
+        assert result == {"matches": [], "track": {}}
+        assert len(calls) == 3
+        assert len(self.sleeps) == 2  # backoff between attempts, growing
+        assert self.sleeps[0] < self.sleeps[1]
+
+    def test_non_error_page_failure_is_not_retried(self):
+        calls = []
+
+        class BrokenShazam:
+            async def recognize_song(self, data):
+                calls.append(data)
+                raise ValueError("bad audio")
+
+        with pytest.raises(ValueError):
+            asyncio.run(music_recognizer._recognize_with_backoff(BrokenShazam(), b"audio"))
+        assert len(calls) == 1
+
+    def test_error_page_exhaustion_raises(self):
+        class AlwaysDown:
+            async def recognize_song(self, data):
+                raise Exception("Check args, URL is invalid\nURL- x")
+
+        with pytest.raises(Exception, match="URL is invalid"):
+            asyncio.run(music_recognizer._recognize_with_backoff(AlwaysDown(), b"audio", attempts=2))
+
+    def test_pacer_spaces_calls(self, monkeypatch):
+        monkeypatch.setattr(music_recognizer, "SHAZAM_MIN_INTERVAL_S", 30.0)
+        music_recognizer._last_shazam_call = time.monotonic()
+
+        class OkShazam:
+            async def recognize_song(self, data):
+                return {}
+
+        asyncio.run(music_recognizer._recognize_with_backoff(OkShazam(), b"a"))
+        assert self.sleeps and self.sleeps[0] > 25
+
+    def test_recognize_audio_bytes_returns_none_after_exhaustion(self, monkeypatch):
+        class DownShazam:
+            async def recognize_song(self, data):
+                raise Exception("Check args, URL is invalid\nURL- x")
+
+        monkeypatch.setattr(music_recognizer, "Shazam", DownShazam)
+        wav = music_recognizer.AudioSegment.silent(duration=1500).export(format="wav").read()
+        assert asyncio.run(music_recognizer.recognize_audio_bytes(wav)) is None
+
+
+class TestParseYoutubeUrl:
+    def test_hub_providers_youtube(self):
+        result = {
+            "matches": [{"id": "m1"}],
+            "track": {
+                "title": "Poker Face",
+                "subtitle": "Lady Gaga",
+                "hub": {
+                    "providers": [
+                        {"type": "SPOTIFY", "actions": [{"uri": "spotify:track:x"}]},
+                        {
+                            "type": "YOUTUBE",
+                            "actions": [{"uri": "https://www.youtube.com/watch?v=bESGLojNYSo"}],
+                        },
+                    ]
+                },
+            },
+        }
+        parsed = music_recognizer._parse_shazam_result(result)
+        assert parsed is not None
+        assert parsed["youtube_url"] == "https://www.youtube.com/watch?v=bESGLojNYSo"
+
+    def test_video_section_youtubeurl_actions(self):
+        result = {
+            "matches": [{"id": "m1"}],
+            "track": {
+                "title": "Song",
+                "subtitle": "Artist",
+                "sections": [
+                    {
+                        "type": "VIDEO",
+                        "youtubeurl": {"actions": [{"uri": "https://youtu.be/abc123"}]},
+                    }
+                ],
+            },
+        }
+        parsed = music_recognizer._parse_shazam_result(result)
+        assert parsed is not None
+        assert parsed["youtube_url"] == "https://youtu.be/abc123"
+
+    def test_video_section_youtubeurl_string(self):
+        result = {
+            "matches": [{"id": "m1"}],
+            "track": {
+                "title": "Song",
+                "subtitle": "Artist",
+                "sections": [{"type": "VIDEO", "youtubeurl": "https://youtu.be/plain"}],
+            },
+        }
+        parsed = music_recognizer._parse_shazam_result(result)
+        assert parsed is not None
+        assert parsed["youtube_url"] == "https://youtu.be/plain"
+
+
+class TestResolveIdentifyDevice:
+    def test_ignores_monitor_audio_source(self, monkeypatch):
+        monkeypatch.delenv("LIGHT_AUDIO_SOURCE", raising=False)
+        monkeypatch.delenv("LIGHT_MIC_DEVICE", raising=False)
+        monkeypatch.setattr(
+            music_recognizer.lightctl,
+            "load_config",
+            lambda: {"audio_source": "monitor", "mic_device": "hw:USB,0"},
+        )
+        device = music_recognizer.resolve_identify_device()
+        assert device == "hw:USB,0"
+        assert "monitor" not in str(device).lower()
+
+    def test_defaults_to_default_input_not_monitor(self, monkeypatch):
+        monkeypatch.delenv("LIGHT_AUDIO_SOURCE", raising=False)
+        monkeypatch.delenv("LIGHT_MIC_DEVICE", raising=False)
+        monkeypatch.setattr(
+            music_recognizer.lightctl,
+            "load_config",
+            lambda: {"audio_source": "monitor"},
+        )
+        device = music_recognizer.resolve_identify_device()
+        assert device not in ("monitor", "@DEFAULT_MONITOR@")
+        assert not str(device).endswith(".monitor")
+
+    def test_does_not_query_pactl_monitor(self, monkeypatch):
+        monkeypatch.delenv("LIGHT_MIC_DEVICE", raising=False)
+        monkeypatch.setattr(
+            music_recognizer.lightctl,
+            "load_config",
+            lambda: {"audio_source": "monitor", "mic_device": ""},
+        )
+
+        def boom():
+            raise AssertionError("ambient ID must not use the system monitor")
+
+        monkeypatch.setattr(music_recognizer, "_pactl_monitor_source", boom)
+        music_recognizer.resolve_identify_device()
+
+    def test_light_mic_device_env_wins(self, monkeypatch):
+        monkeypatch.setenv("LIGHT_MIC_DEVICE", "42")
+        monkeypatch.setattr(
+            music_recognizer.lightctl,
+            "load_config",
+            lambda: {"audio_source": "monitor", "mic_device": "hw:USB,0"},
+        )
+        assert music_recognizer.resolve_identify_device() == 42
+
+
+class TestRecognizeAmbient:
+    def test_does_not_consult_mpris(self, monkeypatch):
+        def boom():
+            raise AssertionError("ambient ID must not use MPRIS")
+
+        monkeypatch.setattr(music_recognizer, "now_playing_mpris", boom)
+        seen: list = []
+
+        async def fake_mic(duration, sample_rate, device=None):
+            seen.append(device)
+            return {"title": "Song", "artist": "Artist", "source": "shazam"}
+
+        monkeypatch.setattr(music_recognizer, "recognize_microphone", fake_mic)
+        monkeypatch.setattr(music_recognizer, "resolve_identify_device", lambda: "hw:mic")
+        result = asyncio.run(music_recognizer.recognize_ambient())
+        assert result == {"title": "Song", "artist": "Artist", "source": "shazam"}
+        assert seen == ["hw:mic"]
+
+    def test_retries_second_window_on_no_match(self, monkeypatch):
+        attempts: list[float] = []
+
+        async def fake_mic(duration, sample_rate, device=None):
+            attempts.append(duration)
+            if len(attempts) == 1:
+                return None
+            return {"title": "Live Song", "artist": "Lady Gaga"}
+
+        monkeypatch.setattr(music_recognizer, "recognize_microphone", fake_mic)
+        monkeypatch.setattr(music_recognizer, "resolve_identify_device", lambda: "mic")
+        result = asyncio.run(music_recognizer.recognize_ambient())
+        assert result is not None
+        assert result["title"] == "Live Song"
+        assert len(attempts) == 2
+
+    def test_does_not_retry_after_match(self, monkeypatch):
+        attempts: list[int] = []
+
+        async def fake_mic(duration, sample_rate, device=None):
+            attempts.append(1)
+            return {"title": "Hit"}
+
+        monkeypatch.setattr(music_recognizer, "recognize_microphone", fake_mic)
+        monkeypatch.setattr(music_recognizer, "resolve_identify_device", lambda: "mic")
+        result = asyncio.run(music_recognizer.recognize_ambient())
+        assert result == {"title": "Hit"}
+        assert len(attempts) == 1
+
+    def test_never_passes_monitor_device(self, monkeypatch):
+        monkeypatch.setattr(
+            music_recognizer, "resolve_audio_source", lambda cfg=None: "alsa_output.pci.monitor"
+        )
+        monkeypatch.setattr(music_recognizer, "resolve_identify_device", lambda: "hw:USB")
+        seen: list = []
+
+        async def fake_mic(duration, sample_rate, device=None):
+            seen.append(device)
+            return {"title": "X"}
+
+        monkeypatch.setattr(music_recognizer, "recognize_microphone", fake_mic)
+        asyncio.run(music_recognizer.recognize_ambient())
+        assert seen == ["hw:USB"]
+
+    def test_default_duration_is_at_least_ten_seconds(self, monkeypatch):
+        seen: list[float] = []
+
+        async def fake_mic(duration, sample_rate, device=None):
+            seen.append(duration)
+            return {"title": "X"}
+
+        monkeypatch.setattr(music_recognizer, "recognize_microphone", fake_mic)
+        monkeypatch.setattr(music_recognizer, "resolve_identify_device", lambda: "mic")
+        asyncio.run(music_recognizer.recognize_ambient())
+        assert seen[0] >= 10.0
+
+    def test_sync_wrapper_calls_ambient(self, monkeypatch):
+        async def fake_ambient(duration=None, sample_rate=None, device=None, windows=None):
+            return {"title": "Ambient", "artist": "Mic"}
+
+        monkeypatch.setattr(music_recognizer, "recognize_ambient", fake_ambient)
+        assert music_recognizer.recognize_ambient_sync() == {"title": "Ambient", "artist": "Mic"}

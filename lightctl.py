@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import collections
 import copy
 import json
 import logging
@@ -14,7 +15,9 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Callable, Iterable, Sequence, TypedDict
+from typing import Any, Callable, Iterable, Sequence, TypedDict
+
+import wled_audio
 
 logger = logging.getLogger("lightctl")
 
@@ -66,6 +69,56 @@ SAFE_EFFECTS = {
 # Effect ids that must never be sent, even when a device's live /json/eff list
 # contains them (validate_effect hook; keep empty until a blocklist is needed).
 BLOCKED_EFFECTS: set[int] = set()
+
+
+# ---------------------------------------------------------------------------
+# Recent-effect memory
+#
+# Every AI/tool path that sends an effect id records it here so the AI prompt
+# can say "you just used X, Y, Z — pick something else". In-memory only: a
+# server restart simply means the wall's recent history is whatever is on.
+# ---------------------------------------------------------------------------
+
+_fx_history_lock = threading.Lock()
+_fx_history: collections.deque = collections.deque(maxlen=64)  # (timestamp, fx_id, source)
+
+
+def record_fx_use(fx_id: Any, source: str = "") -> None:
+    """Note that effect id `fx_id` was just applied (by `source`, for logs)."""
+    try:
+        effect_id = int(fx_id)
+    except (TypeError, ValueError):
+        return
+    with _fx_history_lock:
+        _fx_history.append((time.time(), effect_id, str(source)))
+
+
+def recent_fx_ids(limit: int = 12) -> list[int]:
+    """Most-recently used effect ids, newest first, duplicates removed."""
+    seen: list[int] = []
+    with _fx_history_lock:
+        entries = list(_fx_history)
+    for _ts, effect_id, _source in reversed(entries):
+        if effect_id not in seen:
+            seen.append(effect_id)
+        if len(seen) >= limit:
+            break
+    return seen
+
+
+def recent_fx_text(limit: int = 12, names: Any = None) -> str:
+    """One-line prompt fragment describing recently used effects ('' when none)."""
+    ids = recent_fx_ids(limit)
+    if not ids:
+        return ""
+    def label(effect_id: int) -> str:
+        name = None
+        if isinstance(names, (list, tuple)) and 0 <= effect_id < len(names):
+            name = str(names[effect_id])
+        elif isinstance(names, dict):
+            name = names.get(effect_id)
+        return f"{effect_id}={name}" if name else str(effect_id)
+    return "Recently used effects (newest first): " + ", ".join(label(i) for i in ids)
 
 
 # ---------------------------------------------------------------------------
@@ -215,8 +268,9 @@ def effect_payload(
     o2: int | None = None,
     o3: int | None = None,
     seg_id: int | None = None,
+    allowed: set[int] | None = None,
 ) -> WledPayload:
-    effect = validate_effect(effect)
+    effect = validate_effect(effect, allowed=allowed)
     seg: SegPayload = {"fx": effect, "sx": clamp_byte(speed)}
     if seg_id is not None:
         seg["id"] = seg_id
@@ -308,12 +362,13 @@ def reactive_beat_payload(
     effect: int,
     speed: int,
     transition_ms: int = 0,
+    allowed: set[int] | None = None,
 ) -> WledPayload:
     return merge_payloads(
         on_payload(True, transition_ms=transition_ms),
         brightness_payload(brightness, transition_ms=transition_ms),
         color_payload(*color, transition_ms=transition_ms),
-        effect_payload(effect, speed, transition_ms=transition_ms),
+        effect_payload(effect, speed, transition_ms=transition_ms, allowed=allowed),
     )
 
 
@@ -1297,6 +1352,9 @@ class ReactiveMode:
         )
         self.min_interval = min_interval
         self.effects = tuple(SAFE_EFFECTS)
+        # Live-catalog ids the beat rotation may use (unsafe ones excluded);
+        # None = offline SAFE_EFFECTS fallback.
+        self.allowed_effects: set[int] | None = None
         self.color_index = 0
         self.last_sent_at = 0.0
 
@@ -1310,7 +1368,7 @@ class ReactiveMode:
         self.color_index += 1
         brightness = clamp_byte(max(80, min(255, energy * 255)))
         speed = clamp_byte(round(80 + (energy * 110)))
-        payload = reactive_beat_payload(color, brightness, effect, speed)
+        payload = reactive_beat_payload(color, brightness, effect, speed, allowed=self.allowed_effects)
         self.client.post_state(payload)
         self.last_sent_at = now
 
@@ -1400,7 +1458,19 @@ def run_mode1(
     stop_event: threading.Event | None = None,
     level_callback: Callable[[float, bool], None] | None = None,
     reactive_mode: ReactiveMode | None = None,
+    source: str | None = None,
 ) -> None:
+    if source is None:
+        source = str(load_config().get("audio_source") or "").strip()
+    if source == "wled_mic":
+        run_mode1_wled(
+            client,
+            stop_event=stop_event,
+            level_callback=level_callback,
+            reactive_mode=reactive_mode,
+        )
+        return
+
     try:
         import numpy as np
         import sounddevice as sd
@@ -1443,6 +1513,52 @@ def run_mode1(
     except Exception:
         logger.exception("Fatal error opening audio stream")
         raise
+
+
+def run_mode1_wled(
+    client: LightClient,
+    stop_event: threading.Event | None = None,
+    level_callback: Callable[[float, bool], None] | None = None,
+    reactive_mode: ReactiveMode | None = None,
+) -> None:
+    """Audio-reactive loop driven by the WLED controller's GPIO mic over UDP."""
+    mode = reactive_mode if reactive_mode is not None else ReactiveMode(client)
+    listener = wled_audio.WledAudioListener()
+
+    logger.info(
+        "Mode 1 listening via WLED controller mic (UDP %d). Press Ctrl+C to stop.",
+        wled_audio.AUDIO_SYNC_PORT,
+    )
+    listener.start()
+    last_packet: int | None = None
+    try:
+        while stop_event is None or not stop_event.is_set():
+            try:
+                snapshot = listener.get_snapshot()
+                energy = float(snapshot["level"])
+                # Edge-trigger on the listener's local receive sequence. WLED
+                # v2 byte 17 is reserved and is commonly constant. Fall back
+                # only for older injected listeners that omit the new field.
+                if "receive_sequence" in snapshot:
+                    packet = snapshot.get("receive_sequence")
+                else:
+                    packet = snapshot.get("frame_counter")
+                beat = (
+                    bool(snapshot["beat"])
+                    and packet is not None
+                    and packet != last_packet
+                )
+                if packet is not None:
+                    last_packet = packet
+                if level_callback is not None:
+                    level_callback(energy, beat)
+                if beat:
+                    mode.handle_beat(energy)
+            except Exception:
+                logger.exception("Error in WLED audio processing loop")
+            time.sleep(0.025)
+    finally:
+        listener.stop()
 
 
 def resolve_input_samplerate(
@@ -1574,6 +1690,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     atmosphere = subparsers.add_parser("atmosphere", help="Apply a named curated atmosphere")
     atmosphere.add_argument("name", help="Atmosphere name (see list)")
+
+    cal = subparsers.add_parser(
+        "calibrate",
+        help="Probe the controllers and report the calibrated topology (LED counts, GPIOs, bounds)",
+    )
+    cal.add_argument(
+        "--write",
+        action="store_true",
+        help="Persist the calibrated topology to config.json (timestamped backup first)",
+    )
+
+    ident = subparsers.add_parser("identify", help="Flash a target so you can physically locate it")
+    ident.add_argument("target", nargs="?", default="all", help="Fleet target to flash (default: all)")
+    ident.add_argument("--flashes", type=int, default=4, help="Number of off/on flashes (1-12)")
 
     return parser
 
@@ -1792,6 +1922,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 result = atmospheres.apply_atmosphere(fleet_obj, args.name)
                 logger.info("atmosphere %s: %s", args.name, json.dumps(result, default=str))
+        elif args.command == "calibrate":
+            import calibrate as calibrate_mod
+
+            if fleet_obj is not None:
+                report = calibrate_mod.calibrate(
+                    clients={name: fleet_obj.clients[name] for name in fleet_obj.names()},
+                    topology=(fleet_obj.installation, fleet_obj.controllers),
+                    write=args.write,
+                )
+            else:
+                report = calibrate_mod.calibrate(hosts=[client.host], write=args.write)  # type: ignore[attr-defined]
+            logger.info("calibration:\n%s", json.dumps(report, indent=2, default=str))
+        elif args.command == "identify":
+            import calibrate as calibrate_mod
+
+            target_client = fleet_obj if fleet_obj is not None else client
+            logger.info(calibrate_mod.identify(target_client, target=args.target, flashes=args.flashes))
     except KeyboardInterrupt:
         logger.info("Stopped.")
         return 130

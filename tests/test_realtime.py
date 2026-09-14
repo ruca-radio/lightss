@@ -3,10 +3,17 @@ from __future__ import annotations
 import struct
 import time
 
+import color_lab
 import fleet
 import lightctl
 import mcp_light
+import pytest
 import realtime
+
+
+@pytest.fixture(autouse=True)
+def isolated_memory(tmp_path, monkeypatch):
+    monkeypatch.setattr(lightctl, "_SCENE_DIR", str(tmp_path))
 
 
 class FakeFleet:
@@ -20,6 +27,26 @@ class FakeTransport:
     def __init__(self): self.sent = []; self.closed = False
     def sendto(self, data, address): self.sent.append((data, address)); return len(data)
     def close(self): self.closed = True
+
+
+class FlakyTransport:
+    """Transport that raises OSError for the first `fail_times` sends (None = forever)."""
+
+    def __init__(self, fail_times=None):
+        self.sent = []
+        self.closed = False
+        self.fail_times = fail_times
+
+    def sendto(self, data, address):
+        if self.fail_times is None or self.fail_times > 0:
+            if self.fail_times is not None:
+                self.fail_times -= 1
+            raise OSError("network is unreachable")
+        self.sent.append((data, address))
+        return len(data)
+
+    def close(self):
+        self.closed = True
 
 
 def test_ddp_header_and_push_split():
@@ -96,8 +123,8 @@ def test_mcp_realtime_tools(monkeypatch):
 
 def test_custom_colors_paint_the_frame_instead_of_stock_mood_palette():
     entries = realtime.ddp_topology(FakeFleet())
-    teal = realtime.render_frames(entries, shader="liquid_gradient", colors=[[0, 180, 160], [0, 40, 90]], t=0.2)
-    magma = realtime.render_frames(entries, shader="liquid_gradient", colors=[[180, 30, 8], [80, 8, 2]], t=0.2)
+    teal = realtime.render_frames(entries, shader="liquid_gradient", composition_mode="unison", colors=[[0, 180, 160], [0, 40, 90]], t=0.2)
+    magma = realtime.render_frames(entries, shader="liquid_gradient", composition_mode="unison", colors=[[180, 30, 8], [80, 8, 2]], t=0.2)
     assert teal != magma
     left = list(teal["left"][:3])
     assert left[1] >= left[0]
@@ -231,3 +258,54 @@ def test_auto_shader_and_status_include_built_look():
         assert payload["mood"] == "ember rise"
     finally:
         realtime._runner = None
+
+
+def test_runner_survives_transient_send_errors():
+    f = FakeFleet()
+    tx = FlakyTransport(fail_times=3)
+    runner = realtime.RealtimeRunner(f, fps=40, duration_s=0.3, transport=tx, seed=1)
+    runner.start()
+    runner.join(timeout=5)
+    assert tx.sent  # recovered and kept painting
+    assert runner.sent_frames >= 1
+
+
+def test_runner_aborts_after_sustained_send_errors_without_raising():
+    f = FakeFleet()
+    tx = FlakyTransport(fail_times=None)  # always fails
+    runner = realtime.RealtimeRunner(f, fps=40, duration_s=600, transport=tx, seed=1)
+    runner.start()
+    runner.join(timeout=15)  # must exit on its own after the error cap
+    assert not runner.is_alive()
+    assert runner.sent_frames == 0
+
+
+def test_realtime_start_stops_running_show(monkeypatch):
+    import shows
+
+    calls = []
+    monkeypatch.setattr(shows, "stop_show", lambda: calls.append("stop") or "stopped")
+    f = FakeFleet()
+    OriginalRunner = realtime.RealtimeRunner
+
+    def make_runner(fleet_, **kwargs):
+        kwargs["transport"] = FakeTransport()
+        kwargs["duration_s"] = 0.05
+        return OriginalRunner(fleet_, **kwargs)
+
+    monkeypatch.setattr(realtime, "RealtimeRunner", make_runner)
+    realtime.realtime_start(f, shader="aurora_flow")
+    assert calls == ["stop"]
+    realtime.realtime_stop()
+
+
+def test_runner_unspecified_composition_rotates_per_seed():
+    modes = set()
+    for seed in range(12):
+        runner = realtime.RealtimeRunner(
+            FakeFleet(), mood="moody lounge", seed=seed,
+            transport=FakeTransport(), duration_s=0.1,
+        )
+        assert runner.composition_mode in color_lab.COMPOSITION_MODES
+        modes.add(runner.composition_mode)
+    assert len(modes) >= 3

@@ -34,13 +34,22 @@ import shows
 class RecordingClient(lightctl.LightClient):
     """dry_run LightClient that records every posted payload."""
 
-    def __init__(self, host: str):
+    def __init__(self, host: str, state: dict | None = None, info: dict | None = None):
         super().__init__(host, dry_run=True)
         self.payloads: list[dict] = []
+        self._state = state or {}
+        self._info = info or {}
 
     def post_state(self, payload: dict) -> None:
         lightctl.validate_wled_payload(payload)
         self.payloads.append(payload)
+
+    # Hermetic: zone segment allocation reads state/info; never hit the network.
+    def get_state(self) -> dict:
+        return dict(self._state)
+
+    def get_info(self) -> dict:
+        return dict(self._info)
 
 
 def make_fleet() -> fleet.LightFleet:
@@ -484,8 +493,10 @@ class McpZoneToolTests(unittest.TestCase):
         right = fleet_.clients["right"].payloads
         self.assertEqual(len(right), 1)
         seg = right[0]["seg"][0]
-        # channel "middle-right" is segment id 1 on controller "right"
-        self.assertEqual(seg["id"], 1)
+        # The zone is carved as a NEW segment on controller "right" (ids 0/1
+        # are taken), so the channel's main segment keeps the rest of the
+        # column lit instead of being resized to the zone.
+        self.assertEqual(seg["id"], 2)
         self.assertEqual((seg["start"], seg["stop"]), lightctl.zone_bounds("top half"))
         self.assertEqual(seg["fx"], 9)
         self.assertEqual(seg["pal"], 0)
@@ -501,8 +512,65 @@ class McpZoneToolTests(unittest.TestCase):
         left = fleet_.clients["left"].payloads
         self.assertEqual(len(left), 1)
         seg = left[0]["seg"][0]
-        self.assertEqual(seg["id"], 1)
+        self.assertEqual(seg["id"], 2)
         self.assertEqual(seg["col"][0][:3], [255, 136, 0])
+
+    def test_set_zone_uses_absolute_bus_bounds_from_segment_geometry(self):
+        """With configured pixels/start/stop, zone bounds offset onto the bus."""
+        controllers = [
+            fleet.ControllerConfig(
+                "left",
+                "http://10.27.27.112",
+                {
+                    0: fleet.SegmentConfig(channel="far-left", pixels=34, start=0, stop=34),
+                    1: fleet.SegmentConfig(channel="middle-left", pixels=48, start=34, stop=82),
+                },
+            ),
+        ]
+        fleet_ = fleet.LightFleet({"left": RecordingClient("http://10.27.27.112")}, controllers)
+        mcp_light.call_tool(
+            fleet_,
+            "set_zone",
+            {"channel": "middle-left", "zone": "top half", "fx": 9},
+            FakeModes(),
+        )
+        seg = fleet_.clients["left"].payloads[0]["seg"][0]
+        self.assertEqual(seg["id"], 2)  # 0 and 1 are configured
+        # "top half" of a 48-pixel column is local (24, 48) -> bus (58, 82).
+        self.assertEqual((seg["start"], seg["stop"]), (58, 82))
+
+    def test_set_zone_allocation_skips_live_state_segment_ids(self):
+        controllers = [
+            fleet.ControllerConfig("right", "http://10.27.27.110", {0: "far-right", 1: "middle-right"}),
+        ]
+        client = RecordingClient("http://10.27.27.110", state={"seg": [{"id": 0}, {"id": 1}, {"id": 2}]})
+        fleet_ = fleet.LightFleet({"right": client}, controllers)
+        mcp_light.call_tool(
+            fleet_,
+            "set_zone",
+            {"channel": "middle-right", "zone": "top half", "fx": 9},
+            FakeModes(),
+        )
+        self.assertEqual(client.payloads[0]["seg"][0]["id"], 3)
+
+    def test_set_zone_raises_when_no_segment_is_free(self):
+        controllers = [
+            fleet.ControllerConfig("right", "http://10.27.27.110", {0: "far-right", 1: "middle-right"}),
+        ]
+        client = RecordingClient(
+            "http://10.27.27.110",
+            state={"seg": [{"id": 0}, {"id": 1}]},
+            info={"leds": {"maxseg": 2}},
+        )
+        fleet_ = fleet.LightFleet({"right": client}, controllers)
+        with self.assertRaises(ValueError):
+            mcp_light.call_tool(
+                fleet_,
+                "set_zone",
+                {"channel": "middle-right", "zone": "top half", "fx": 9},
+                FakeModes(),
+            )
+        self.assertEqual(client.payloads, [])
 
     def test_set_leds_color_list_targets_segment(self):
         fleet_ = make_fleet()
@@ -515,9 +583,11 @@ class McpZoneToolTests(unittest.TestCase):
         self.assertIn("content", result)
         self.assertEqual(fleet_.clients["right"].payloads, [])
         left = fleet_.clients["left"].payloads
-        self.assertEqual(len(left), 1)
-        self.assertEqual(left[0]["seg"][0]["id"], 0)
-        self.assertEqual(left[0]["seg"][0]["i"], ["FF0000", "00FF00"])
+        # Power primer first: WLED ignores per-LED 'i' frames from an off state.
+        self.assertEqual(len(left), 2)
+        self.assertEqual(left[0], {"on": True, "udpn": {"nn": True}})
+        self.assertEqual(left[1]["seg"][0]["id"], 0)
+        self.assertEqual(left[1]["seg"][0]["i"], ["FF0000", "00FF00"])
 
     def test_set_leds_range_form_with_explicit_segment(self):
         fleet_ = make_fleet()
@@ -528,8 +598,9 @@ class McpZoneToolTests(unittest.TestCase):
             FakeModes(),
         )
         right = fleet_.clients["right"].payloads
-        self.assertEqual(len(right), 1)
-        seg = right[0]["seg"][0]
+        self.assertEqual(len(right), 2)
+        self.assertEqual(right[0], {"on": True, "udpn": {"nn": True}})
+        seg = right[1]["seg"][0]
         self.assertEqual(seg["id"], 1)
         self.assertEqual(seg["i"], [0, 10, "FF0000", 10, 20, "00FF00"])
 
@@ -580,6 +651,17 @@ class McpZoneToolTests(unittest.TestCase):
             self.assertTrue(wait_for(lambda: not shows.show_status()["running"]))
         finally:
             shows.stop_show()
+
+    def test_start_show_stops_realtime_session(self):
+        """A running DDP session repaints every frame; a new show must stop it."""
+        fleet_ = make_fleet()
+        with mock.patch("realtime.realtime_stop", return_value="Realtime stopped.") as stop_mock:
+            shows.start_show(
+                fleet_,
+                {"steps": [{"look": {"payload": {"seg": [{"fx": 9}]}}, "duration_s": 0.05}]},
+            )
+            stop_mock.assert_called_once_with()
+        shows.stop_show()
 
 
 # ---------------------------------------------------------------------------
@@ -781,11 +863,23 @@ class MatchLightsToSongTests(unittest.TestCase):
         with (
             mock.patch("subprocess.run", side_effect=OSError("no dbus")),
             mock.patch.object(mcp_light.music_recognizer, "is_available", return_value=True),
-            mock.patch.object(mcp_light.music_recognizer, "recognize_sync", return_value=song),
+            mock.patch.object(mcp_light.music_recognizer, "recognize_ambient_sync", return_value=song),
         ):
             result = mcp_light.call_tool(client, "match_lights_to_song", {}, FakeModes())
         text = result["content"][0]["text"]
         self.assertIn("Now playing: T by A", text)
+
+    def test_recognize_music_uses_ambient_mic(self):
+        client = RecordingClient("http://10.27.27.110")
+        song = {"title": "Poker Face", "artist": "Lady Gaga", "album": "The Fame", "genre": "Pop"}
+        with (
+            mock.patch.object(mcp_light.music_recognizer, "is_available", return_value=True),
+            mock.patch.object(mcp_light.music_recognizer, "recognize_ambient_sync", return_value=song),
+        ):
+            result = mcp_light.call_tool(client, "recognize_music", {}, FakeModes())
+        text = result["content"][0]["text"]
+        self.assertIn("Recognized: Poker Face", text)
+        self.assertIn("Lady Gaga", text)
 
 
 if __name__ == "__main__":

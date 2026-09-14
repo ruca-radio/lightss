@@ -287,6 +287,61 @@ class ServerHttpTest(unittest.TestCase):
         self.assertTrue(summary_payload["ok"])
         self.assertEqual(summary_payload["message"], "Look memory summary text")
 
+    def test_post_recognize_without_audio_uses_ambient_mic(self) -> None:
+        song = {"title": "Poker Face", "artist": "Lady Gaga", "album": "The Fame", "genre": "Pop"}
+        with (
+            patch.object(light_gui, "get_now_playing", return_value=None),
+            patch.object(light_gui.music_recognizer, "can_identify_song", return_value=True),
+            patch.object(light_gui.music_recognizer, "is_available", return_value=True),
+            patch.object(light_gui.music_recognizer, "recognize_ambient_sync", return_value=song) as ambient,
+        ):
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{self.port}/api/recognize",
+                data=json.dumps({}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+
+        ambient.assert_called_once()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["now_playing"]["title"], "Poker Face")
+        self.assertEqual(payload["now_playing"]["artist"], "Lady Gaga")
+
+    def test_get_recognize_uses_ambient_mic(self) -> None:
+        song = {"title": "Song", "artist": "Artist"}
+        with (
+            patch.object(light_gui, "get_now_playing", return_value=None),
+            patch.object(light_gui.music_recognizer, "can_identify_song", return_value=True),
+            patch.object(light_gui.music_recognizer, "is_available", return_value=True),
+            patch.object(light_gui.music_recognizer, "recognize_ambient_sync", return_value=song),
+        ):
+            with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/api/recognize", timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["now_playing"]["artist"], "Artist")
+
+
+class ShazamFallbackTest(unittest.TestCase):
+    def test_shazam_fallback_uses_ambient_mic(self) -> None:
+        with (
+            patch.object(light_gui, "get_now_playing", return_value=None),
+            patch.object(light_gui.music_recognizer, "can_identify_song", return_value=True),
+            patch.object(light_gui.music_recognizer, "is_available", return_value=True),
+            patch.object(
+                light_gui.music_recognizer,
+                "recognize_ambient_sync",
+                return_value={"title": "Live Song", "artist": "Gaga", "album": "Coachella"},
+            ) as ambient,
+        ):
+            result = light_gui.get_now_playing_with_shazam_fallback(use_shazam=True)
+        ambient.assert_called_once()
+        assert result is not None
+        self.assertEqual(result["title"], "Live Song")
+        self.assertEqual(result["source"], "shazam")
+
 
 if __name__ == "__main__":
     unittest.main()

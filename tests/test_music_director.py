@@ -148,10 +148,15 @@ class LookValidityTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class DirectorThreadTests(unittest.TestCase):
-    def _start(self, fleet_: FakeFleet, mpris, poll_s: float = 0.05, **kwargs):
+    def _start(self, fleet_: FakeFleet, mpris, poll_s: float = 0.05, ambient=None, **kwargs):
         patcher = mock.patch.object(music_recognizer, "now_playing_mpris", mpris)
         patcher.start()
         self.addCleanup(patcher.stop)
+        if ambient is None:
+            ambient = mock.Mock(return_value=None)
+        ambient_patch = mock.patch.object(music_recognizer, "recognize_ambient_sync", ambient)
+        ambient_patch.start()
+        self.addCleanup(ambient_patch.stop)
         director = music_director.MusicDirector(fleet_, poll_s=poll_s, **kwargs)
         director.start()
         self.addCleanup(lambda: (director.stop(), director.join(timeout=3)))
@@ -245,12 +250,86 @@ class DirectorThreadTests(unittest.TestCase):
                                     lambda: None)
         patcher.start()
         self.addCleanup(patcher.stop)
+        ambient_patch = mock.patch.object(
+            music_recognizer, "recognize_ambient_sync", mock.Mock(return_value=None)
+        )
+        ambient_patch.start()
+        self.addCleanup(ambient_patch.stop)
         director = music_director.MusicDirector(fleet_, poll_s=60.0)
         director.start()
         self.assertTrue(wait_for(lambda: director.is_alive()))
         director.stop()
         director.join(timeout=3)
         self.assertFalse(director.is_alive(), "stop() must interrupt the poll sleep")
+
+    def test_ambient_track_applies_look_when_mpris_empty(self):
+        fleet_ = FakeFleet()
+        ambient = mock.Mock(return_value=track("Lady Gaga", "Poker Face", "pop"))
+        director = self._start(fleet_, lambda: None, ambient=ambient, ambient_poll_s=0)
+        self.assertTrue(wait_for(lambda: seg_posts(fleet_) == 2))
+        self.assertEqual(director.current_track, "Lady Gaga — Poker Face")
+        self.assertEqual(director.current_mood, "pop")
+        ambient.assert_called()
+
+    def test_mpris_present_does_not_call_ambient(self):
+        fleet_ = FakeFleet()
+        ambient = mock.Mock(return_value=track("Lady Gaga", "Poker Face", "pop"))
+        self._start(
+            fleet_, lambda: track("Darude", "Sandstorm", "edm"),
+            ambient=ambient, ambient_poll_s=0,
+        )
+        self.assertTrue(wait_for(lambda: seg_posts(fleet_) == 2))
+        time.sleep(0.2)
+        ambient.assert_not_called()
+
+    def test_ambient_same_track_does_not_reapply(self):
+        fleet_ = FakeFleet()
+        ambient = mock.Mock(return_value=track("Lady Gaga", "Poker Face", "pop"))
+        self._start(fleet_, lambda: None, ambient=ambient, ambient_poll_s=0)
+        self.assertTrue(wait_for(lambda: seg_posts(fleet_) == 2))
+        time.sleep(0.25)
+        self.assertEqual(seg_posts(fleet_), 2)
+
+    def test_ambient_new_track_applies_another_look(self):
+        fleet_ = FakeFleet()
+        state = {"song": track("Lady Gaga", "Poker Face", "pop")}
+
+        def ambient(*_a, **_k):
+            return state["song"]
+
+        self._start(fleet_, lambda: None, ambient=ambient, ambient_poll_s=0)
+        self.assertTrue(wait_for(lambda: seg_posts(fleet_) == 2))
+        state["song"] = track("Lady Gaga", "Bad Romance", "pop")
+        self.assertTrue(wait_for(lambda: seg_posts(fleet_) == 4))
+
+    def test_ambient_cooldown_holds_last_track(self):
+        fleet_ = FakeFleet()
+        calls = {"n": 0}
+
+        def ambient(*_a, **_k):
+            calls["n"] += 1
+            return track("Lady Gaga", "Poker Face", "pop")
+
+        director = self._start(
+            fleet_, lambda: None, ambient=ambient, poll_s=0.05, ambient_poll_s=60.0,
+        )
+        self.assertTrue(wait_for(lambda: seg_posts(fleet_) == 2))
+        time.sleep(0.25)
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual(director.current_track, "Lady Gaga — Poker Face")
+        self.assertEqual(seg_posts(fleet_), 2)
+
+    def test_ambient_exception_does_not_kill_director(self):
+        fleet_ = FakeFleet()
+
+        def boom(*_a, **_k):
+            raise RuntimeError("shazam exploded")
+
+        director = self._start(fleet_, lambda: None, ambient=boom, ambient_poll_s=0)
+        time.sleep(0.2)
+        self.assertTrue(director.is_alive())
+        self.assertTrue(director.is_running())
+        self.assertEqual(seg_posts(fleet_), 0)
 
 
 # ---------------------------------------------------------------------------
@@ -292,7 +371,9 @@ class DirectorRegistryTests(unittest.TestCase):
     def test_starting_replaces_running_director(self):
         fleet_ = FakeFleet()
         with mock.patch.object(music_recognizer, "now_playing_mpris",
-                               lambda: None):
+                               lambda: None), \
+             mock.patch.object(music_recognizer, "recognize_ambient_sync",
+                               mock.Mock(return_value=None)):
             music_director.start_director(fleet_, poll_s=0.05)
             first = music_director._current_director
             music_director.start_director(fleet_, poll_s=0.05)

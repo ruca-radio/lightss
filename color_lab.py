@@ -165,11 +165,12 @@ def sample_palette(palette: Sequence[Sequence[int]], amount: float) -> tuple[int
 
 
 def _hue_for(text: str, rng: random.Random) -> float:
-    hue = 32.0
     for words, value in _HUE_HINTS:
         if any(word in text for word in words):
             hue = value
             break
+    else:
+        hue = rng.uniform(0.0, 360.0)
     return (hue + rng.uniform(-18.0, 18.0)) % 360.0
 
 
@@ -197,7 +198,13 @@ def to_rgbw(palette: Sequence[Sequence[int]]) -> list[list[int]]:
     return [[int(red), int(green), int(blue), 0] for red, green, blue in normalize_palette(palette)]
 
 
-def choose_shader(mood: str = "", motion: str = "", energy: str = "", shader: str | None = None) -> str:
+def choose_shader(
+    mood: str = "",
+    motion: str = "",
+    energy: str = "",
+    shader: str | None = None,
+    seed: int | str | None = None,
+) -> str:
     requested = (shader or "").strip().lower().replace("-", "_")
     if requested in SHADERS:
         return requested
@@ -207,10 +214,17 @@ def choose_shader(mood: str = "", motion: str = "", energy: str = "", shader: st
     for name, words in _SHADER_HINTS:
         if any(re.search(rf"\b{re.escape(word)}\b", text) for word in words):
             return name
-    return "liquid_gradient"
+    rng = random.Random(f"shader:{seed}" if seed is not None else None)
+    return rng.choice(sorted(SHADERS))
 
 
-def choose_composition(mood: str = "", motion: str = "", energy: str = "", composition_mode: str | None = None) -> str:
+def choose_composition(
+    mood: str = "",
+    motion: str = "",
+    energy: str = "",
+    composition_mode: str | None = None,
+    seed: int | str | None = None,
+) -> str:
     requested = (composition_mode or "").strip().lower().replace("-", "_")
     if requested in COMPOSITION_MODES:
         return requested
@@ -225,7 +239,8 @@ def choose_composition(mood: str = "", motion: str = "", energy: str = "", compo
         return "alternating"
     if any(word in text for word in ("independent", "each", "unique")):
         return "independent"
-    return "unison"
+    rng = random.Random(f"composition:{seed}" if seed is not None else None)
+    return rng.choice(sorted(COMPOSITION_MODES))
 
 
 def choose_intensity(energy: str = "", intensity: float | None = None) -> float:
@@ -255,9 +270,9 @@ def build_look(
         "mood": mood,
         "energy": energy,
         "motion": motion,
-        "shader": choose_shader(mood, motion, energy, shader),
+        "shader": choose_shader(mood, motion, energy, shader, seed=seed),
         "colors": palette,
-        "composition_mode": choose_composition(mood, motion, energy, composition_mode),
+        "composition_mode": choose_composition(mood, motion, energy, composition_mode, seed=seed),
         "intensity": choose_intensity(energy, intensity),
         "seed": seed,
     }

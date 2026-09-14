@@ -260,3 +260,12 @@ fire/plasma rises (rev=false when orientation up), rain/waterfall falls (rev=tru
 ## Notes
 - Custom palettes were descoped by the user.
 - Existing behavior unchanged; all 268 tests stay green.
+
+## Addendum 2026-08-27: set_zone carves NEW segments
+`set_zone` no longer resizes the channel's main segment (which blanked the rest
+of the column). It allocates the lowest free segment id on the controller
+(configured ∪ live-state ids, capped by `info.leds.maxseg`), computes bounds
+against the channel's configured pixel count, offsets them to absolute bus
+coordinates, and posts them as a new segment — the rest of the column keeps
+its look; `delete_segment` removes the zone. Without configured segment
+geometry it falls back to the legacy raw bounds.

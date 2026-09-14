@@ -5,11 +5,14 @@ Wraps `adb` (no shell=True, stdlib only) to wake/sleep the living-room
 FireTV, launch URLs on it, and query its power/foreground state so the TV
 can complement the light visuals. All actions are gated behind the
 "firetv.enabled" config flag — the user sometimes uses the TV for music,
-so nothing touches it unless the UI switch is on.
+so control stays disabled unless the UI switch is on. Read-only observe()
+uses its own "firetv.observation_enabled" permission and never invokes
+the control methods.
 
 Config (config.json "firetv" object):
   host    — adb target (default 10.27.27.207:5555)
   enabled — master switch (default False)
+  observation_enabled — read-only power/app/media observation (default False)
 """
 
 from __future__ import annotations
@@ -176,6 +179,108 @@ def status(cfg: dict | None = None) -> dict:
     result["connected"] = True
     result["awake"] = _parse_awake(power_dump)
     result["foreground_app"] = _parse_foreground_app(window_dump)
+    return result
+
+
+# Observation is deliberately independent of the permission to control the TV.
+_MUSIC_APPS = {"com.spotify.tv.android", "com.google.android.apps.youtube.music",
+               "com.amazon.music.tv"}
+_VIDEO_APPS = {"com.amazon.avod.tv.client", "com.netflix.ninja",
+               "com.disney.disneyplus", "com.hulu.plus"}
+_MIXED_APPS = {"com.amazon.firetv.youtube", "com.google.android.youtube.tv"}
+
+
+def parse_media_session(text: str, foreground_app: str | None) -> dict | None:
+    """Summarize an active foreground session, not unrelated session history.
+
+    Description is untrusted display text, not proof of genre or music playback.
+    Android's comma-separated description is retained intact: commas also occur
+    inside titles and cannot reliably distinguish title from artist.
+    """
+    if not foreground_app:
+        return None
+    candidates = []
+    for block in re.split(r"(?m)^\s*package=", text)[1:]:
+        if not block.strip():
+            continue
+        package = block.splitlines()[0].strip()
+        if package != foreground_app or not re.search(r"(?m)^\s*active=true\s*$", block):
+            continue
+        state = re.search(r"state=PlaybackState\s*\{state=(\d+)", block)
+        description = re.search(r"(?m)^\s*metadata:.*?description=(.*)$", block)
+        description = description.group(1).strip()[:500] if description else None
+        if description in ("", "null", "null, null, null"):
+            description = None
+        candidates.append({"package": package, "active": True,
+                           "state": int(state.group(1)) if state else None,
+                           "description": description})
+    return next((item for item in candidates if item["state"] == 3),
+                candidates[0] if candidates else None)
+
+
+def activity_hint(awake: bool | None, foreground_app: str | None,
+                  media_session: dict | None) -> tuple[str, str]:
+    """Conservative evidence only; this function never selects a light mode."""
+    if awake is False:
+        return "idle", "TV is asleep."
+    if awake is not True:
+        return "unknown", "TV power state is unavailable."
+    if foreground_app in _MIXED_APPS:
+        return "unknown", "This app plays both music and video; content type is ambiguous."
+    if foreground_app in _VIDEO_APPS:
+        return "tv", "A video app is in the foreground."
+    if foreground_app in _MUSIC_APPS and media_session:
+        if media_session.get("state") == 3:
+            return "music", "A music app has an active playing session."
+        if media_session.get("state") in (0, 1, 2):
+            return "idle", "The foreground music session is not playing."
+    return "unknown", "Not enough evidence to distinguish music from TV viewing."
+
+
+def _observation_read(service: str, config: dict) -> str:
+    """Fixed read-only dumpsys commands, bounded timeouts and one reconnect."""
+    if service not in {"power", "window", "media_session"}:
+        raise ValueError("Unsupported TV observation service")
+    command = ["-s", _serial(config), "shell", "dumpsys", service]
+    try:
+        return _run_adb(command, timeout=2.0)
+    except RuntimeError as exc:
+        if not any(word in str(exc) for word in ("offline", "not found", "no devices")):
+            raise
+        output = _run_adb(["connect", _serial(config)], timeout=2.0)
+        if "unable to connect" in output.lower() or "cannot connect" in output.lower():
+            raise RuntimeError("TV observation connection failed") from exc
+        return _run_adb(command, timeout=2.0)
+
+
+def observe(cfg: dict | None = None) -> dict:
+    """Read TV context only when explicitly allowed; never control TV or lights."""
+    config = load_firetv_config(cfg)
+    result = {"observation_enabled": config.get("observation_enabled") is True,
+              "control_enabled": bool(config.get("enabled")),
+              "connected": False, "awake": None, "foreground_app": None,
+              "media_session": None, "activity_hint": "unknown",
+              "reason": "Read-only TV observation is disabled."}
+    if not result["observation_enabled"]:
+        return result
+    try:
+        power = _observation_read("power", config)
+        focus = _observation_read("window", config)
+    except RuntimeError as exc:
+        result.update(error=str(exc), reason="TV observation is unavailable.")
+        return result
+    wakefulness = re.search(r"mWakefulness=(\w+)", power)
+    awake = {"awake": True, "asleep": False}.get(wakefulness.group(1).lower()) if wakefulness else None
+    result.update(connected=True, awake=awake,
+                  foreground_app=_parse_foreground_app(focus))
+    if result["awake"] is True:
+        try:
+            result["media_session"] = parse_media_session(
+                _observation_read("media_session", config), result["foreground_app"])
+        except RuntimeError as exc:
+            result["media_error"] = str(exc)
+    result["activity_hint"], result["reason"] = activity_hint(
+        result["awake"], result["foreground_app"], result["media_session"])
     return result
 
 

@@ -86,20 +86,70 @@ Capabilities:
   whenever the request implies a sequence over time rather than one state.
 - Look memory: look_feedback records likes/dislikes (score, notes, tags).
   Repeat liked traits; avoid disliked tags/issues.
+- Self-calibration: when the topology looks wrong or the user asks to set up,
+  rediscover, or map the wall: calibrate probes the live controllers for real
+  LED counts, bus GPIOs, segment bounds, and color order (write=true persists
+  them locally), and identify flashes one strip at a time so the user can say
+  which physical column it is and where LED 0 sits — then apply their answer
+  with calibrate assignments/pixel_zero. Never invent missing geometry.
+- Direct WLED access: wled_read pulls any section of the controllers' JSON
+  API (state/info/effects/palettes/fxdata/config/presets/nodes/networks/full);
+  fxdata tells you exactly what each effect's sx/ix/c1/c2/c3 sliders and
+  color slots do. wled_write POSTs a raw /json/state body — use it for
+  anything the typed tools don't cover: playlists, psave presets, nightlight
+  (nl), UDP sync (udpn), segment grp/spc/of, c1-c3 custom sliders. Forbidden
+  effects stay forbidden there too.
+- Live music control: while Smart Director's music renderer is active, use
+  music_show status/tune/accent to adjust its motion, EQ, palette, brightness,
+  intensity, and colorfulness in place. Do not stop its stream by reaching for
+  static tools merely to tune live music. Honor an explicit request for a
+  native WLED effect, static color, or manual/per-strip look: those are valid
+  handoffs and the existing independent strip tools remain available.
+
+WLED JSON API quick reference (for wled_write payloads):
+- Top level: on (bool), bri (0-255), transition (100ms units: 10 = 1s),
+  ps (preset id), pl (playlist id), psave (save current state as preset id),
+  nl (nightlight {on, dur (min), mode, tbri}), udpn (sync {send, recv}),
+  seg (one segment object or a list of them), lor (0=RGB semantic order).
+- Segment: id, start/stop (bus-absolute LED bounds; stop=0 deletes), len,
+  grp/spc/of (grouping/spacing/offset), on, bri, col (up to 3 [R,G,B(,W)]
+  slots), fx, sx (speed), ix (intensity), pal, c1/c2/c3 (custom sliders —
+  read fxdata for their per-effect meaning), rev (reverse direction),
+  mi (mirror), frz (freeze effect). Unknown keys are ignored by WLED.
+- A playlist is a preset whose "playlist" object lists preset ids + durations;
+  load it with pl. Save the current state with psave + "n" (name).
+- Posting seg without id targets the main segment; include id to edit a
+  specific one. Effects read palette OR color slots per their fxdata entry.
 
 Guidance:
-- Gravity on vertical columns: pixel 0 is bottom. Fire/plasma RISE (rev=false).
-  Rain/waterfall FALL (rev=true). rev flips direction. versus/mirror layouts
-  stay physically plausible.
+- VARIETY: never loop the same look. The snapshot lists 'Recently used
+  effects' — do not pick an id from that list for a new request unless the
+  user asks for the same thing again, and vary your go-to choices across
+  requests generally. The catalog has well over a hundred usable effects;
+  explore beyond the obvious ones (match the vibe groups, try ♪ reactive
+  ids for anything musical). Same for palettes — pick by name for the mood,
+  not always Party/Rainbow.
+- Gravity: use pixel_zero and orientation from the runtime topology. Never
+  assume pixel zero is at the bottom; verify direction before composing motion.
 - The device snapshot in the user message contains the full effect catalog
   grouped by mood (♪ audio-reactive, [2D] matrix-style, 🚫 forbidden) and the
   palette list. Match effects to the requested vibe; pick palettes by name.
 - NEVER use 🚫-marked effects (strobe/blink/flash/lightning/fireworks/sparkle
-  — seizure risk). Every other catalog effect id is fair game.
+  — seizure risk). Catalogs are controller-specific; missing data is unknown,
+  not permission. Check all selected controllers before using an effect.
+- The provided functions define what is callable in THIS request. Optional
+  capabilities need their prerequisites: audio input for reactive motion, a
+  matrix for 2D layouts, and live state for verification. Do not invent support.
+- Playback clock is an observer, not a player. Unknown position stays unknown;
+  time since recognition is not time into the song. Run clocks and beat tracking
+  locally. Prefer a cached plan once per track, not repeated AI requests.
 - Effects with palette support ignore color slots; effects with color hints
   look best with primary + secondary colors set.
 - Music: match THIS track (title/artist/genre are data), not a genre cliché.
-  Prefer design_look run=true and a song-unique palette over party rainbow.
+  For live music use music_show and choose a small, intentional hue count over
+  a default rainbow, while keeping strong saturation, contrast, and motion.
+  White accents are allowed, as are explicit user colors and rainbow requests.
+  Prefer design_look run=true for a new non-live song look over party rainbow.
   rage/plugg/pluggnb/trap/drill/yeat-like remix → dark neon (deep wine, acid
   green, cold violet) + bass_bloom or magma_column — never generic EDM rainbow.
   jazz/acoustic/lofi → warm slow flow.
@@ -124,6 +174,22 @@ error politely when the user has disabled TV control in the UI — respect
 that: do not retry, and tell the user TV control is off.
 """
 
+# Always appended at request time, including when the user supplies a legacy
+# system-prompt override. User style stays authoritative; this only repairs the
+# execution protocol/capability boundary that old saved prompts cannot know.
+RUNTIME_TOOL_PROTOCOL_ADDENDUM = """
+Runtime tool protocol (mandatory; preserve the user's style preferences):
+- The provided tools are the only execution channel. Call them to act; never
+  claim that prose, an `actions` array, or other text has changed the lights.
+- `music_show` is available with `status`, `tune`, and `accent`. When a live
+  Smart Director music renderer is active, tune it in place with this tool
+  instead of stopping/replacing its stream. Honor explicit native WLED effect,
+  static color, manual, or per-strip requests as intentional handoffs.
+- If older instructions request a structured response envelope, tool calls
+  still perform the work and the final `response` should be concise,
+  human-readable confirmation rather than an execution claim encoded as text.
+""".strip()
+
 
 class ToolChatError(RuntimeError):
     """Provider/network failure during the tool-chat loop."""
@@ -134,14 +200,19 @@ _CORE_TOOL_NAMES = {
     "set_color", "set_hex_color", "set_temperature", "set_effect",
     "set_scene", "list_scenes", "random_scene", "load_preset",
     "wall_mode", "strips", "atmosphere", "dynamic_scene", "design_look", "realtime_start", "realtime_stop", "realtime_status", "look_feedback", "look_memory_summary", "list_controllers", "list_segments",
+    # Raw JSON API escape hatch: any WLED state key, direct device reads.
+    "wled_read", "wled_write",
+    # Timed multi-step shows are core production capability — never gate them
+    # behind keyword matching ("three-act concert intro" matches no keyword).
+    "start_show", "stop_show", "show_status",
+    # Additive control of the existing Smart Director stream is always visible.
+    "music_show",
 }
 
 _SPECIALIZED_TOOL_GROUPS = (
     (("zone", "segment", "top", "bottom", "middle", "half", "third", "quarter"),
      {"set_zone", "set_segment_bounds", "delete_segment"}),
     (("per-led", "per led", "individual led", "pixel", "exact led"), {"set_leds"}),
-    (("show", "sequence", "loop", "step", "theatrical"),
-     {"start_show", "stop_show", "show_status"}),
     (("tv", "fire tv", "firetv", "cast", "screen"),
      {"tv_status", "tv_wake", "tv_sleep", "tv_open_url"}),
     (("music", "song", "track", "beat", "audio", "director"),
@@ -150,6 +221,9 @@ _SPECIALIZED_TOOL_GROUPS = (
     (("sunrise", "wake up", "wake-up", "fade", "timer"), {"start_sunrise", "fade_off"}),
     (("save scene", "delete scene", "save", "delete"), {"save_scene", "delete_scene"}),
     (("restart", "reboot"), {"restart_controller"}),
+    (("calibrat", "identify", "discover", "mapping", "setup", "set up",
+      "which strip", "which column", "which light", "topology", "axis"),
+     {"calibrate", "identify"}),
 )
 
 
@@ -197,9 +271,9 @@ def _result_text(result: Any) -> str:
 
 
 def _chat_round(url: str, headers: dict, body: dict, timeout: float) -> dict:
-    def _once() -> dict:
+    def _once(payload: dict) -> dict:
         request = urllib.request.Request(
-            url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST"
+            url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST"
         )
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -214,12 +288,18 @@ def _chat_round(url: str, headers: dict, body: dict, timeout: float) -> dict:
 
     with provider_lock:
         try:
-            return _once()
+            return _once(body)
         except ToolChatError as first_exc:
-            if "unreachable" not in str(first_exc):
+            message = str(first_exc)
+            if "reasoning_effort" in message and "reasoning_effort" not in body:
+                # Some providers (OpenAI reasoning models) reject function tools
+                # on /chat/completions while reasoning is on; the error tells us
+                # to retry with reasoning_effort "none".
+                return _once({**body, "reasoning_effort": "none"})
+            if "unreachable" not in message:
                 raise
             # One retry — providers occasionally stall a single connection.
-            return _once()
+            return _once(body)
 
 
 def run_chat(
@@ -251,8 +331,9 @@ def run_chat(
         headers["Authorization"] = f"Bearer {api_key}"
 
     user_content = user_prompt if not context_text else f"{context_text}\n\nUser request: {user_prompt}"
+    effective_system_prompt = f"{system_prompt.rstrip()}\n\n{RUNTIME_TOOL_PROTOCOL_ADDENDUM}"
     messages: list[dict] = [
-        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": effective_system_prompt},
         {"role": "user", "content": user_content},
     ]
     tools = chat_tools(user_prompt)
@@ -295,8 +376,10 @@ def run_chat(
             except Exception as exc:  # tool errors go back to the model, never crash the loop
                 content = f"error: {exc}"
             log.append(f"{name}({json.dumps(args, default=str)})")
+            # 8 KB keeps fleet get_state responses parseable; 2 KB truncated
+            # them into structurally invalid JSON the model couldn't read.
             messages.append(
-                {"role": "tool", "tool_call_id": call.get("id", ""), "content": content[:2000]}
+                {"role": "tool", "tool_call_id": call.get("id", ""), "content": content[:8192]}
             )
 
     return {

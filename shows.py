@@ -165,6 +165,20 @@ def _transition_units(transition_s: float) -> int | None:
     return lightctl.clamp_byte(round(transition_s * 10))
 
 
+def _record_look_fx(look: dict) -> None:
+    """Feed the look's effect ids into the recent-effect memory (AI variety)."""
+    for key in ("fx", "fx_left", "fx_right"):
+        if look.get(key) is not None:
+            lightctl.record_fx_use(look[key], source="show")
+    payload = look.get("payload")
+    if isinstance(payload, dict):
+        seg = payload.get("seg")
+        entries = seg if isinstance(seg, list) else [seg] if isinstance(seg, dict) else []
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("fx") is not None:
+                lightctl.record_fx_use(entry["fx"], source="show")
+
+
 def apply_look(fleet: LightFleet, look: dict, transition_s: float = 0.0) -> None:
     """Apply one normalized look to the fleet.
 
@@ -174,6 +188,7 @@ def apply_look(fleet: LightFleet, look: dict, transition_s: float = 0.0) -> None
     following look POST fades in.
     """
     transition = _transition_units(transition_s)
+    _record_look_fx(look)
     if "atmosphere" in look:
         if transition is not None:
             fleet.post_state({"transition": transition})
@@ -270,6 +285,13 @@ def start_show(fleet: LightFleet, show: dict) -> str:
     loop = show.get("loop", False)
     name = str(show.get("name") or "untitled")
     runner = ShowRunner(fleet, steps, loop=loop)
+
+    try:
+        import realtime
+        # A running DDP session repaints every frame; it would hide the show.
+        realtime.realtime_stop()
+    except Exception:
+        pass
 
     with _registry_lock:
         old = _stop_locked()

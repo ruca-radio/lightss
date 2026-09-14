@@ -1,7 +1,7 @@
 # Integrated Audio Player — Design
 
 Date: 2026-08-19
-Status: First slice implemented on `integrated-audio-player`
+Status: Presentable player stage + Apple ID QR login on `integrated-audio-player`
 
 ## Purpose
 

@@ -456,6 +456,11 @@ class LightFleet:
         Fleet posts carry udpn.nn (no-notify) so per-controller differences are
         not clobbered by WLED UDP sync; manual/UI changes still sync normally.
         """
+        director_module = sys.modules.get("smart_director")
+        if director_module is not None:
+            before_write = getattr(director_module, "before_external_write", None)
+            if before_write is not None:
+                before_write(self)
         resolved = self.resolve(target)
         templates = payload.get("seg")
         if templates:

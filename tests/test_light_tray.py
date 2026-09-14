@@ -1,3 +1,5 @@
+import inspect
+
 import pytest
 
 pytest.importorskip("PySide6", reason="light_tray requires PySide6")
@@ -112,3 +114,17 @@ def test_thread_client_returns_single_client_unchanged():
     worker = light_tray.LightWorker(client)
 
     assert worker.thread_client() is client
+
+
+def test_listen_and_recognize_use_ambient_mic():
+    """Room identification must use the physical mic, not the system monitor."""
+    sources = [
+        inspect.getsource(light_tray.MainWindow._on_listen_song),
+        inspect.getsource(light_tray.TrayApplication._on_recognize_music),
+        inspect.getsource(light_tray.TrayApplication._on_match_lights),
+    ]
+    for src in sources:
+        assert "recognize_ambient_sync" in src
+        assert "recognize_sync()" not in src
+    tab = inspect.getsource(light_tray.MainWindow._on_match_lights_tab)
+    assert "get_now_playing_with_shazam_fallback" in tab

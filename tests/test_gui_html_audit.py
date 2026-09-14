@@ -95,6 +95,54 @@ class GuiHtmlAuditTests(unittest.TestCase):
         ):
             self.assertIn(marker, html)
 
+    def test_player_stage_sits_above_tabs_with_library_and_apple_qr(self):
+        html = light_gui.render_html()
+        stage = html.index('id="playerStage"')
+        library = html.index('id="playerLibrary"')
+        tabs = html.index('id="tab-live"')
+        self.assertLess(stage, tabs)
+        self.assertLess(library, tabs)
+        self.assertLess(html.index('id="ledStrip"'), tabs)
+        for marker in (
+            "appleQr",
+            "qr_png",
+            "/api/player/apple/session",
+            "/api/player/search",
+            "/api/player/playlists",
+            "ensurePlayerAnalyser",
+            "createMediaElementSource",
+            "Sign in with Apple",
+        ):
+            self.assertIn(marker, html)
+        live_right = html[html.index('id="tab-live"'):]
+        self.assertEqual(live_right.count("<h2>Audio Player</h2>"), 0)
+
+    def test_apple_login_page_uses_musickit(self):
+        html = light_gui_html.APPLE_LOGIN_HTML
+        self.assertIn("musickit", html.lower())
+        self.assertIn("Apple ID", html)
+        self.assertIn("/api/player/apple/complete", html)
+
+    def test_player_disable_toggle_wires_settings_card_and_polling(self):
+        html = light_gui.render_html()
+        card = _section(html, "<h2>Player connections</h2>", 'id="playerSettingsMsg"')
+        self.assertIn('id="setPlayerEnabled"', card)
+
+        save = _section(html, "async function savePlayerSettings", "async function saveAudioSettings")
+        self.assertIn("enabled:", save)
+        self.assertIn("setPlayerEnabled", save)
+
+        load = _section(html, "async function loadSettings()", "async function saveAiSettings")
+        self.assertIn("applyPlayerEnabled(player.enabled);", load)
+
+        poll = _section(html, "async function refreshPlayerStatus()", "async function playerCommand")
+        self.assertIn("if (!playerEnabled) return null;", poll)
+
+        # Deck hides and the 4s poller is gated behind applyPlayerEnabled.
+        self.assertIn("document.querySelector('.player-deck')", html)
+        self.assertIn("playerPollTimer = setInterval(refreshPlayerStatus, 4000);", html)
+        self.assertIn("if (!playerEnabled) return;", html)
+
     def test_dynamic_scene_controls_are_visible(self):
         html = light_gui.render_html()
 
@@ -148,6 +196,90 @@ class GuiHtmlAuditTests(unittest.TestCase):
         self.assertIn("fetchJsonWithTimeout('/api/state')", tv)
         self.assertIn("fetchJsonWithTimeout('/api/music-director')", tv)
         self.assertIn("fetchJsonWithTimeout('/api/tv-trivia')", tv)
+
+
+SHARED_ELEMENT_IDS = (
+    "musicTitle",
+    "musicArtist",
+    "musicGenre",
+    "albumArt",
+    "nowPlaying",
+    "ledStrip",
+    "lightInfo",
+    "vizStatus",
+    "waveformCanvas",
+    "musicModeState",
+    "musicModeBtn",
+    "musicModeStopBtn",
+    "micPipelineState",
+    "songSourceState",
+    "nextMatchState",
+    "autoStatus",
+    "smartSuggestions",
+    "modelResponsesPane",
+    "modelResponses",
+    "visualizerHero",
+)
+
+
+class PlayerDisabledRenderTests(unittest.TestCase):
+    """When audio_player.enabled is false the main page is the pre-player UI."""
+
+    def test_disabled_render_omits_player_markup(self):
+        html = light_gui.render_html(player_enabled=False)
+        for marker in (
+            'id="playerStage"',
+            'id="playerLibrary"',
+            'class="player-deck"',
+            'id="appleAuthPanel"',
+            'id="playerSearchInput"',
+            'id="playerSource"',
+        ):
+            self.assertNotIn(marker, html)
+
+    def test_disabled_render_restores_legacy_markup(self):
+        html = light_gui.render_html(player_enabled=False)
+        for marker in (
+            'id="visualizerHero"',
+            "Now Playing",
+            'id="modelResponsesPane"',
+            'id="musicModeState"',
+            'id="musicTitle"',
+            'id="albumArt"',
+            'id="nowPlaying"',
+            'id="musicModeBtn"',
+        ):
+            self.assertIn(marker, html)
+
+    def test_disabled_render_keeps_minimal_player_settings_card(self):
+        html = light_gui.render_html(player_enabled=False)
+        self.assertIn("Onboard audio player", html)
+        self.assertIn('id="setPlayerEnabled"', html)
+        self.assertIn("savePlayerSettings(this)", html)
+        self.assertNotIn('id="setYoutubeHost"', html)
+        self.assertNotIn('id="setAppleDevToken"', html)
+
+    def test_enabled_render_keeps_player_markup(self):
+        html = light_gui.render_html()
+        for marker in (
+            'id="playerStage"',
+            'id="playerLibrary"',
+            'class="player-deck"',
+            'id="appleAuthPanel"',
+            'id="playerSearchInput"',
+            'id="playerSource"',
+        ):
+            self.assertIn(marker, html)
+
+    def test_shared_ids_present_in_both_renders(self):
+        for enabled in (True, False):
+            html = light_gui.render_html(player_enabled=enabled)
+            for element_id in SHARED_ELEMENT_IDS:
+                self.assertIn(
+                    f'id="{element_id}"',
+                    html,
+                    f"{element_id} missing from player_enabled={enabled} render",
+                )
 
 
 if __name__ == "__main__":

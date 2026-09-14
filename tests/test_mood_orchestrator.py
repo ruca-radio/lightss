@@ -37,21 +37,23 @@ class TestTransitionSmoother:
     def test_adds_minimum_transition_for_mood_change(self):
         smoother = mood_orchestrator.TransitionSmoother()
         result = smoother.smooth({"bri": 150}, {"bri": 100}, "recognized")
-        assert result == [{"bri": 150, "tt": 1200}]
+        # WLED 'tt' is in 100ms units: 1200ms -> 12.
+        assert result == [{"bri": 150, "tt": 12}]
 
     def test_ambient_fallback_uses_longer_transition(self):
         smoother = mood_orchestrator.TransitionSmoother()
         result = smoother.smooth({"bri": 60}, {"bri": 120}, "ambient")
-        assert result == [{"bri": 60, "tt": 4000}]
+        # 4000ms -> 40 units (was 4000: a 6.7-minute transition).
+        assert result == [{"bri": 60, "tt": 40}]
 
     def test_splits_large_brightness_jump(self):
         smoother = mood_orchestrator.TransitionSmoother()
         result = smoother.smooth({"bri": 250}, {"bri": 10}, "recognized")
         assert len(result) == 2
         assert result[0]["bri"] == 90  # 10 + 80
-        assert result[0]["tt"] == 800
+        assert result[0]["tt"] == 8  # 800ms intermediate step
         assert result[1]["bri"] == 250
-        assert result[1]["tt"] == 1200
+        assert result[1]["tt"] == 12
 
     def test_exact_threshold_does_not_split(self):
         smoother = mood_orchestrator.TransitionSmoother()
@@ -68,8 +70,9 @@ class TestTransitionSmoother:
 
     def test_preserves_existing_longer_transition(self):
         smoother = mood_orchestrator.TransitionSmoother()
-        result = smoother.smooth({"bri": 150, "tt": 3000}, {"bri": 100}, "recognized")
-        assert result == [{"bri": 150, "tt": 3000}]
+        # 'tt' arrives in WLED 100ms units; 30 units (3s) beats the 12-unit minimum.
+        result = smoother.smooth({"bri": 150, "tt": 30}, {"bri": 100}, "recognized")
+        assert result == [{"bri": 150, "tt": 30}]
 
 
 class TestSongCache:
@@ -283,7 +286,7 @@ class TestMoodSession:
         session.sample(b"audio")
         status = session.status()
 
-        assert status["last_payload"] == {"bri": 222, "tt": 1200}
+        assert status["last_payload"] == {"bri": 222, "tt": 12}
         assert status["last_error"] == "wled offline"
         assert status["last_cache_hit"] is False
         assert status["next_recognition_in"] == 0

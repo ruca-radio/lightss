@@ -228,9 +228,7 @@ def _compose_generated(entries: list[WallEntry], mood: str, energy: str, motion:
         strategy = "symmetric_gradient"
     if strategy not in STRATEGIES and strategy != "symmetric_gradient":
         strategy = "symmetric_gradient"
-    mode = (composition_mode or "unison").strip().lower().replace("-", "_")
-    if mode not in COMPOSITION_MODES:
-        mode = "unison"
+    mode = color_lab.choose_composition(mood, motion, energy, composition_mode, seed=seed)
     bri, _sx, _ix, colors = _profile(mood, energy, intensity, seed, colors)
     payloads: dict[str, dict] = {}
     for entry in entries:
@@ -279,7 +277,7 @@ def compose_dynamic_scene(
     energy: str = "",
     motion: str = "",
     strategy: str = "",
-    composition_mode: str = "unison",
+    composition_mode: str | None = None,
     engine: str = "generated",
     seed: int | str | None = None,
     intensity: float | None = None,
@@ -305,6 +303,12 @@ def apply_dynamic_scene(fleet: Any, **kwargs) -> dict:
                 if seg.get("fx") not in available:
                     seg["fx"] = FALLBACK_FX
                     seg["pal"] = PALETTES["warm"]
+        # Generated scenes carry per-LED 'i' frames, which WLED ignores when
+        # 'on' rides in the same request from an off state (JSON API docs:
+        # set power/brightness first). Prime before the frame post.
+        if any("i" in seg for seg in payload.get("seg", [])):
+            primer = {key: payload[key] for key in ("on", "bri", "transition", "udpn") if key in payload}
+            results.update(fleet.post_state(primer, target=controller))
         results.update(fleet.post_state(payload, target=controller))
     look_memory.record_look(
         source="dynamic_scene",

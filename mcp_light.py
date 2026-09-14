@@ -495,7 +495,9 @@ def build_tools() -> list[dict]:
                 "name": "set_zone",
                 "description": (
                     "Light one named zone of a single column (channel), e.g. the top half of far-left. "
-                    "The installation's runtime topology gives per-column pixel counts; the rest of the column keeps its current look."
+                    "The zone is carved as a NEW segment with absolute bus bounds, so the rest of the "
+                    "column keeps its current look; the reply names the new segment id (remove it with "
+                    "delete_segment). Zones on the same column stack side by side along its height."
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -680,11 +682,213 @@ def build_tools() -> list[dict]:
             },
         }
     )
+    tools.append(
+        {
+            "name": "music_show",
+            "description": (
+                "Inspect or tune the currently active Smart Director music renderer without "
+                "stopping or replacing its live DDP stream. Tune its palette, geometry, EQ "
+                "gains, brightness, and motion; accent triggers one transient EQ-band hit."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["status", "tune", "accent"],
+                        "default": "status",
+                    },
+                    "motion": {
+                        "type": "string",
+                        "enum": ["auto", "flow", "punch", "chase", "spectrum", "comet", "ripple"],
+                    },
+                    "speed": {"type": "number", "minimum": 0.25, "maximum": 4},
+                    "brightness": {"type": "number", "minimum": 0, "maximum": 1},
+                    "intensity": {"type": "number", "minimum": 0, "maximum": 1},
+                    "colorfulness": {"type": "number", "minimum": 0, "maximum": 1},
+                    "colors": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 5,
+                        "items": {
+                            "type": "array",
+                            "minItems": 3,
+                            "maxItems": 3,
+                            "items": {"type": "integer", "minimum": 0, "maximum": 210},
+                        },
+                    },
+                    "composition_mode": {
+                        "type": "string",
+                        "enum": ["unison", "independent", "pairs", "center_vs_outer", "left_vs_right", "alternating", "random_groups"],
+                    },
+                    "band_gains": {
+                        "type": "array",
+                        "minItems": 16,
+                        "maxItems": 16,
+                        "items": {"type": "number", "minimum": 0, "maximum": 3},
+                    },
+                    "band": {"type": "integer", "minimum": 0, "maximum": 15},
+                    "strength": {"type": "number", "minimum": 0, "maximum": 1, "default": 1},
+                },
+                "additionalProperties": False,
+            },
+        }
+    )
+    # Raw WLED JSON API access: the escape hatch that lets the AI use ANY state
+    # key WLED supports (playlists, psave, nightlight, udpn, seg options like
+    # grp/spc/of, c1-c3 custom sliders) without waiting for a bespoke tool.
+    # Appended after the fleet-arg injection loop (own schemas).
+    tools.extend(
+        [
+            {
+                "name": "wled_read",
+                "description": (
+                    "Read raw data straight from the WLED controllers' JSON API. Sections: "
+                    "state (current /json/state), info (version/LED counts), effects (full live "
+                    "effect name list), palettes, fxdata (per-effect parameter metadata: "
+                    "sx/ix/c1-c3 slider labels, color slots, palette support, flags), config, "
+                    "presets, nodes, networks, full (entire /json). Use to answer 'what can this "
+                    "device do' questions or to check exactly what an effect's sliders mean."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "section": {
+                            "type": "string",
+                            "enum": ["state", "info", "effects", "palettes", "fxdata",
+                                     "config", "presets", "nodes", "networks", "full"],
+                            "description": "Which part of the JSON API to read (default: state)",
+                        },
+                        "target": _target_schema(),
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "wled_write",
+                "description": (
+                    "POST a raw WLED /json/state body to the target — full direct control for "
+                    "anything the typed tools don't cover: playlists, psave/pset presets, "
+                    "nightlight (nl), UDP sync (udpn), segment options (grp/spc/of/ranged bounds), "
+                    "c1/c2/c3 custom effect sliders, per-segment bri/on/frz. Effect ids in the "
+                    "payload are still checked against the 🚫 forbidden list. Keep payloads under "
+                    "8KB; split larger writes into multiple calls."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "payload": {
+                            "type": "object",
+                            "description": "Raw WLED /json/state body, e.g. {'seg': {'id': 0, 'fx': 139, 'pal': 6}}",
+                        },
+                        "target": _target_schema(),
+                    },
+                    "required": ["payload"],
+                    "additionalProperties": False,
+                },
+            },
+        ]
+    )
+    # Self-calibration: probe the live controllers for real LED counts, bus
+    # GPIOs, segment bounds, and color order; physically locate strips by
+    # flashing them. Appended last (own schemas, no fleet-arg injection).
+    tools.extend(
+        [
+            {
+                "name": "calibrate",
+                "description": (
+                    "Self-calibrate the installation from the live controllers: probe each device for "
+                    "its real LED counts, bus GPIOs, segment bounds, and color order, and report the "
+                    "calibrated topology. Devices are only read, never written. With write=true the "
+                    "calibrated topology is persisted to the local config (a timestamped backup is "
+                    "written first). Use assignments to name channels after identify() reveals which "
+                    "physical column a segment is; pixel_zero/orientation record the physical axis."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "write": {
+                            "type": "boolean",
+                            "description": "Persist the calibrated topology to the local config (backup first)",
+                        },
+                        "assignments": {
+                            "type": "array",
+                            "description": "Channel names to assign, e.g. [{'controller': 'left', 'segment': 0, 'channel': 'far-left'}]",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "controller": {"type": "string"},
+                                    "segment": {"type": "integer", "minimum": 0, "maximum": 31},
+                                    "channel": {"type": "string"},
+                                },
+                                "required": ["controller", "segment", "channel"],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "pixel_zero": {
+                            "type": "string",
+                            "enum": ["top", "bottom", "left", "right"],
+                            "description": "Physical location of LED 0 (written to the installation config)",
+                        },
+                        "orientation": {
+                            "type": "string",
+                            "enum": ["vertical", "horizontal"],
+                            "description": "Physical column orientation (written to the installation config)",
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "identify",
+                "description": (
+                    "Physically locate a strip or controller by flashing it off/on a few times "
+                    "(segments and master power return to their prior state). Use before calibrate "
+                    "assignments to learn which segment is which physical column."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "target": _target_schema(),
+                        "flashes": int_schema("Number of off/on flashes", 1, 12),
+                    },
+                    "additionalProperties": False,
+                },
+            },
+        ]
+    )
     return tools
 
 
 def text_result(message: str) -> dict:
     return {"content": [{"type": "text", "text": message}]}
+
+
+def _compact_music_show_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Keep renderer facts complete while replacing bulky pixel previews with metadata."""
+    compact = dict(result)
+    status = result.get("status")
+    if not isinstance(status, dict):
+        return compact
+    compact_status = dict(status)
+    compact["status"] = compact_status
+    renderer = status.get("renderer")
+    if not isinstance(renderer, dict):
+        return compact
+    compact_renderer = dict(renderer)
+    compact_status["renderer"] = compact_renderer
+    preview = renderer.get("preview")
+    if isinstance(preview, list):
+        preview_metadata = []
+        for item in preview:
+            if not isinstance(item, dict):
+                continue
+            metadata = {key: value for key, value in item.items() if key != "colors"}
+            colors = item.get("colors")
+            metadata["color_count"] = len(colors) if isinstance(colors, list) else 0
+            preview_metadata.append(metadata)
+        compact_renderer["preview"] = preview_metadata
+    return compact
 
 
 def _kwargs_for(fn: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -705,6 +909,76 @@ def _kwargs_for(fn: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
 
 def _is_fleet(client: Any) -> bool:
     return hasattr(client, "channels") and hasattr(client, "resolve")
+
+
+# ---------------------------------------------------------------------------
+# Live effect-catalog policy
+#
+# The offline SAFE_EFFECTS allowlist in lightctl is a fallback for when no
+# device catalog has been seen. Once a live catalog is seeded here (the GUI
+# seeds it from every AI snapshot; the MCP server seeds it at startup), the
+# AI-facing tools accept every id in the live catalog EXCEPT the 🚫-marked
+# ones (strobe/blink/flash/lightning/fireworks/sparkle names + RSVD
+# placeholders), exactly as the system prompt promises. Everything is
+# cache-only: seeding never happens on the tool-call hot path, so tests and
+# offline runs keep the legacy SAFE_EFFECTS behavior.
+# ---------------------------------------------------------------------------
+
+_fx_policy_lock = threading.Lock()
+_fx_allowed: dict[str, set[int]] = {}  # controller name (or host) -> allowed live effect ids
+
+
+def seed_effect_catalog(key: str, effects: Any, fxdata: Any = None) -> None:
+    """Record the usable effect ids of one controller's live catalog."""
+    if not isinstance(effects, list):
+        with _fx_policy_lock:
+            _fx_allowed.pop(str(key), None)
+        return
+    classified = atmospheres.classify_effects(effects, fxdata if isinstance(fxdata, list) else [])
+    allowed = {effect_id for effect_id, info in classified.items() if not info["unsafe"]}
+    with _fx_policy_lock:
+        _fx_allowed[str(key)] = allowed
+
+
+def allowed_effects_for(client: Any, target: str) -> set[int] | None:
+    """Live effect ids valid for target (unsafe ones excluded); None when unknown.
+
+    Multiple controllers intersect, so an id is only offered when every
+    resolved controller can actually run it.
+    """
+    if _is_fleet(client):
+        try:
+            keys = [name for name, _seg_id in client.resolve(target)]
+        except Exception:
+            return None
+    else:
+        keys = [str(getattr(client, "host", ""))]
+    with _fx_policy_lock:
+        if not any(key in _fx_allowed for key in keys):
+            return None
+        sets = [_fx_allowed.get(key, set(lightctl.SAFE_EFFECTS) | {0}) for key in keys]
+    if not sets:
+        return None
+    allowed = set(sets[0])
+    for extra in sets[1:]:
+        allowed = allowed & extra
+    return allowed
+
+
+def _check_fx_allowed(client: Any, target: str, *fx_ids: Any) -> None:
+    """Validate live catalogs; missing catalogs use the conservative offline set."""
+    allowed = allowed_effects_for(client, target)
+    if allowed is None:
+        allowed = set(lightctl.SAFE_EFFECTS) | {0}
+    for fx in fx_ids:
+        if fx is None:
+            continue
+        if int(fx) not in allowed:
+            raise ValueError(
+                f"Effect {fx} is not usable on the target: it is absent from the "
+                "device's live catalog or 🚫 forbidden (strobe-type). Pick another "
+                "id from the catalog in the device snapshot."
+            )
 
 
 def _post_state(client: Any, payload: lightctl.WledPayload, target: str) -> dict[str, dict] | None:
@@ -756,6 +1030,95 @@ def _controllers_info(client: Any) -> list[dict]:
     return [{"name": "default", "host": getattr(client, "host", None), "channels": []}]
 
 
+# ---------------------------------------------------------------------------
+# Raw WLED JSON API tools (wled_read / wled_write)
+# ---------------------------------------------------------------------------
+
+_WLED_READ_SECTIONS = {
+    "state": "get_state",
+    "info": "get_info",
+    "effects": "get_effects",
+    "palettes": "get_palettes",
+    "fxdata": "get_fxdata",
+    "config": "get_config",
+    "presets": "get_presets",
+    "nodes": "get_nodes",
+    "networks": "get_networks",
+    "full": "get_json",
+}
+
+_WLED_WRITE_MAX_BYTES = 8192
+
+
+def _payload_fx_ids(payload: dict) -> list[int]:
+    """Collect effect ids from a raw /json/state body ('seg' dict or list)."""
+    seg = payload.get("seg")
+    entries = seg if isinstance(seg, list) else [seg] if isinstance(seg, dict) else []
+    fx_ids: list[int] = []
+    for entry in entries:
+        if isinstance(entry, dict) and entry.get("fx") is not None:
+            try:
+                fx_ids.append(int(entry["fx"]))
+            except (TypeError, ValueError):
+                continue
+    return fx_ids
+
+
+def _wled_read(client: Any, args: dict[str, Any]) -> str:
+    section = str(args.get("section") or "state")
+    method_name = _WLED_READ_SECTIONS.get(section)
+    if method_name is None:
+        raise ValueError(
+            f"Unknown wled_read section '{section}' (valid: {', '.join(_WLED_READ_SECTIONS)})."
+        )
+    target = str(args.get("target") or fleet.DEFAULT_TARGET)
+
+    def read_one(ctrl_client: Any) -> Any:
+        method = getattr(ctrl_client, method_name, None)
+        if method is None:
+            return {"error": f"controller does not support reading '{section}'"}
+        return method()
+
+    if _is_fleet(client):
+        clients = getattr(client, "clients", {})
+        out: dict[str, Any] = {}
+        for ctrl_name, _seg_id in client.resolve(target):
+            ctrl_client = clients.get(ctrl_name)
+            try:
+                out[ctrl_name] = read_one(ctrl_client) if ctrl_client is not None else {"error": "no client"}
+            except Exception as exc:
+                out[ctrl_name] = {"error": str(exc)}
+        return json.dumps(out, indent=2)
+    return json.dumps(read_one(client), indent=2)
+
+
+def _wled_write(client: Any, args: dict[str, Any]) -> str:
+    payload = args.get("payload")
+    if not isinstance(payload, dict) or not payload:
+        raise ValueError("wled_write needs a non-empty 'payload' object (a WLED /json/state body).")
+    try:
+        encoded = json.dumps(payload)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"payload is not JSON-serializable: {exc}")
+    if len(encoded) > _WLED_WRITE_MAX_BYTES:
+        raise ValueError(
+            f"payload is {len(encoded)} bytes (max {_WLED_WRITE_MAX_BYTES}); "
+            "split it into multiple wled_write calls."
+        )
+    target = str(args.get("target") or fleet.DEFAULT_TARGET)
+    fx_ids = _payload_fx_ids(payload)
+    if fx_ids:
+        _check_fx_allowed(client, target, *fx_ids)
+    # WLED accepts 'seg' as object or list; the local validation chain requires
+    # a list, so normalize the dict form (on a copy — never mutate the caller's).
+    if isinstance(payload.get("seg"), dict):
+        payload = {**payload, "seg": [payload["seg"]]}
+    result = _post_state(client, payload, target)
+    for fx in fx_ids:
+        lightctl.record_fx_use(fx, source="wled_write")
+    return _with_fleet_status(f"Posted raw WLED state ({len(encoded)} bytes).", result)
+
+
 def _segments_info(client: Any) -> dict:
     if not _is_fleet(client):
         return {
@@ -794,12 +1157,63 @@ def _led_orientation() -> str:
     return str(lightctl.load_config().get("led_orientation", "up"))
 
 
+def _segment_config_for(client: Any, controller: str, seg_id: int | None) -> Any:
+    """The configured SegmentConfig for (controller, seg_id), if available."""
+    for ctrl in getattr(client, "controllers", []):
+        if getattr(ctrl, "name", None) == controller:
+            return getattr(ctrl, "segments", {}).get(seg_id)
+    return None
+
+
+def _used_segment_ids(client: Any, controller: str) -> set[int]:
+    """Segment ids already taken on a controller: configured plus live state."""
+    used = {
+        seg_id
+        for _channel, (ctrl, seg_id) in client.channels().items()
+        if ctrl == controller
+    }
+    try:
+        states = client.get_state(target=controller)
+        state = states.get(controller) if isinstance(states, dict) else None
+    except Exception:
+        state = None  # unreadable state must never block a zone
+    if isinstance(state, dict):
+        for seg in state.get("seg") or []:
+            if isinstance(seg, dict) and isinstance(seg.get("id"), int):
+                used.add(seg["id"])
+    return used
+
+
+def _allocate_segment_id(client: Any, controller: str) -> int:
+    """Lowest segment id free on the controller (honoring the device maxseg)."""
+    used = _used_segment_ids(client, controller)
+    maxseg = 16  # ESP32 default; conservative when the device can't be asked
+    try:
+        ctrl_client = getattr(client, "clients", {}).get(controller)
+        info = ctrl_client.get_info() if ctrl_client is not None else {}
+        reported = int(info.get("leds", {}).get("maxseg") or 0)
+        if reported > 0:
+            maxseg = reported
+    except Exception:
+        pass
+    for candidate in range(maxseg):
+        if candidate not in used:
+            return candidate
+    raise ValueError(
+        f"No free segment on {controller} (maxseg {maxseg}). "
+        "Remove a zone with delete_segment first."
+    )
+
+
 def _set_zone(client: Any, args: dict[str, Any]) -> str:
     if not _is_fleet(client):
         raise ValueError("set_zone requires fleet mode (run without --host).")
     channel = str(args["channel"])
-    client.resolve(channel)  # raises ValueError naming valid targets on unknown channels
-    zone: dict[str, Any] = {"zone": str(args["zone"])}
+    controller, main_seg = client.resolve(channel)[0]  # raises on unknown channels
+    if args.get("fx") is not None:
+        _check_fx_allowed(client, channel, int(args["fx"]))
+    zone_name = str(args["zone"])
+    zone: dict[str, Any] = {}
     if args.get("fx") is not None:
         zone["fx"] = int(args["fx"])
     if args.get("pal") is not None:
@@ -814,9 +1228,36 @@ def _set_zone(client: Any, args: dict[str, Any]) -> str:
         zone["rev"] = bool(args["rev"])
     if args.get("mi") is not None:
         zone["mi"] = bool(args["mi"])
-    payload = lightctl.zone_payload([zone], orientation=_led_orientation())
-    result = _post_state(client, payload, channel)
-    return _with_fleet_status(f"Set {args['zone']} of {channel}.", result)
+
+    # Two fixes relative to the legacy behavior:
+    # 1. The zone becomes a NEW segment on the controller instead of resizing
+    #    the channel's main segment, so the rest of the column keeps its look.
+    # 2. Bounds are computed against the channel's real pixel count and offset
+    #    to its absolute bus range (WLED start/stop are bus-absolute). Without
+    #    configured segment geometry we fall back to the legacy raw bounds.
+    seg_config = _segment_config_for(client, controller, main_seg)
+    pixels = getattr(seg_config, "pixels", None)
+    bus_start = getattr(seg_config, "start", None)
+    bus_stop = getattr(seg_config, "stop", None)
+    orientation = _led_orientation()
+    if pixels and bus_start is not None and bus_stop is not None:
+        local_start, local_stop = lightctl.zone_bounds(zone_name, length=pixels, orientation=orientation)
+        zone["start"] = bus_start + local_start
+        zone["stop"] = bus_start + local_stop
+        payload_length = bus_stop
+    else:
+        zone["zone"] = zone_name
+        payload_length = lightctl.LEDS_PER_COLUMN
+    zone["id"] = _allocate_segment_id(client, controller)
+    payload = lightctl.zone_payload([zone], length=payload_length, orientation=orientation)
+    result = _post_state(client, payload, controller)
+    if "fx" in zone:
+        lightctl.record_fx_use(zone["fx"], source="set_zone")
+    return _with_fleet_status(
+        f"Set {zone_name} of {channel} as new segment {zone['id']} on {controller} "
+        f"(delete_segment target={controller} id={zone['id']} removes it).",
+        result,
+    )
 
 
 def _set_segment_bounds(client: Any, args: dict[str, Any]) -> str:
@@ -860,11 +1301,14 @@ def _wall_mode(client: Any, args: dict[str, Any]) -> str:
     if mode in ("span", "mirror", "chase"):
         if args.get("fx") is None:
             raise ValueError(f"wall_mode '{mode}' requires fx.")
+        _check_fx_allowed(client, fleet.DEFAULT_TARGET, int(args["fx"]))
         composer = {"span": columns.wall_span, "mirror": columns.mirror, "chase": columns.chase}[mode]
         result = composer(client, int(args["fx"]), _opt_int("pal"), **seg_opts)
+        lightctl.record_fx_use(int(args["fx"]), source=f"wall_mode:{mode}")
     elif mode == "versus":
         if args.get("fx_left") is None or args.get("fx_right") is None:
             raise ValueError("wall_mode 'versus' requires fx_left and fx_right.")
+        _check_fx_allowed(client, fleet.DEFAULT_TARGET, int(args["fx_left"]), int(args["fx_right"]))
         result = columns.left_vs_right(
             client,
             int(args["fx_left"]),
@@ -873,6 +1317,8 @@ def _wall_mode(client: Any, args: dict[str, Any]) -> str:
             pal_right=_opt_int("pal_right"),
             **seg_opts,
         )
+        lightctl.record_fx_use(int(args["fx_left"]), source="wall_mode:versus")
+        lightctl.record_fx_use(int(args["fx_right"]), source="wall_mode:versus")
     else:
         raise ValueError(f"Unknown wall mode: {mode} (valid: span, mirror, chase, versus)")
     return _with_fleet_status(f"Wall mode {mode} applied.", result)
@@ -885,6 +1331,14 @@ def call_tool(
     modes: lightctl.ReactiveThread,
 ) -> dict:
     args = arguments or {}
+    # DDP/show workers can bypass fleet.post_state; hand off before spawning one.
+    streaming = name in {"realtime_start", "start_show", "start_audio_reactive", "identify"}
+    streaming = streaming or (name == "design_look" and bool(args.get("run")))
+    streaming = streaming or (name == "music_director" and str(args.get("action", "")).lower() == "start")
+    if streaming:
+        director = sys.modules.get("smart_director")
+        if director is not None:
+            director.before_external_write(client)
     transition_ms = int(args.get("transition", 0))
     target = str(args.get("target", fleet.DEFAULT_TARGET))
     segment = args.get("segment")
@@ -926,8 +1380,12 @@ def call_tool(
     if name == "set_effect":
         effect = int(args["effect"])
         speed = int(args.get("speed", 128))
-        payload = lightctl.effect_payload(effect, speed, transition_ms=transition_ms, **seg_kwargs)
+        # Live catalog (seeded from the device) unlocks every non-forbidden
+        # effect id; offline we fall back to the SAFE_EFFECTS allowlist.
+        allowed = allowed_effects_for(client, target)
+        payload = lightctl.effect_payload(effect, speed, transition_ms=transition_ms, allowed=allowed, **seg_kwargs)
         result = _post_state(client, payload, target)
+        lightctl.record_fx_use(effect, source="set_effect")
         return text_result(_with_fleet_status(f"Set effect {effect} at speed {lightctl.clamp_byte(speed)}.", result))
     if name == "set_scene":
         scene = str(args["name"])
@@ -1027,7 +1485,7 @@ def call_tool(
         if not music_recognizer.is_available():
             return text_result(f"Music recognition unavailable: {music_recognizer.available_reason()}")
         try:
-            result = music_recognizer.recognize_sync()
+            result = music_recognizer.recognize_ambient_sync()
             if result:
                 parts = [f"Recognized: {result.get('title', 'Unknown')}"]
                 if result.get("artist"):
@@ -1092,7 +1550,7 @@ def call_tool(
         # Microphone/Shazam fallback runs even when the playerctl/dbus probing failed.
         if not song and music_recognizer.is_available():
             try:
-                result = music_recognizer.recognize_sync()
+                result = music_recognizer.recognize_ambient_sync()
                 if result:
                     song = {"artist": result.get("artist", ""), "title": result.get("title", ""), "album": result.get("album", ""), "genre": result.get("genre", ""), "status": "Playing", "source": "shazam"}
             except Exception:
@@ -1121,22 +1579,36 @@ def call_tool(
             raise ValueError("strips requires fleet mode (run without --host).")
         assignments = args.get("assignments")
         if isinstance(assignments, list) and assignments:
+            for spec in assignments:
+                if isinstance(spec, dict) and spec.get("fx") is not None:
+                    _check_fx_allowed(client, str(spec.get("channel") or ""), int(spec["fx"]))
             result = columns.per_strip(client, assignments)
+            for spec in assignments:
+                if isinstance(spec, dict) and spec.get("fx") is not None:
+                    lightctl.record_fx_use(int(spec["fx"]), source="strips")
             return text_result(f"Applied per-strip looks: {result}")
         channels = args.get("channels") or []
         if not channels:
             raise ValueError("strips requires channels or assignments.")
+        fx = int(args.get("fx") or 9)
+        _check_fx_allowed(client, ",".join(str(ch) for ch in channels), fx)
         opts = {}
         if args.get("speed") is not None:
             opts["sx"] = args["speed"]
         if args.get("intensity") is not None:
             opts["ix"] = args["intensity"]
-        result = columns.apply_channels(client, list(channels), int(args.get("fx") or 9), args.get("pal"), **opts)
+        result = columns.apply_channels(client, list(channels), fx, args.get("pal"), **opts)
+        lightctl.record_fx_use(fx, source="strips")
         return text_result(f"Applied look to {', '.join(channels)}: {result}")
     if name == "atmosphere":
         if not _is_fleet(client):
             raise ValueError("atmosphere requires fleet mode (run without --host).")
-        return text_result(f"Applied atmosphere: {atmospheres.apply_atmosphere(client, args['name'])}")
+        applied = atmospheres.apply_atmosphere(client, args['name'])
+        definition = atmospheres.ATMOSPHERES.get(str(args["name"]), {})
+        for _func, step_kwargs in definition.get("steps", []):
+            if isinstance(step_kwargs, dict) and step_kwargs.get("fx") is not None:
+                lightctl.record_fx_use(step_kwargs["fx"], source=f"atmosphere:{args['name']}")
+        return text_result(f"Applied atmosphere: {applied}")
     if name == "dynamic_scene":
         if not _is_fleet(client):
             raise ValueError("dynamic_scene requires fleet mode (run without --host).")
@@ -1220,6 +1692,9 @@ def call_tool(
         payload = lightctl.leds_payload(
             args["leds"], seg_id=int(segment) if segment is not None else None
         )
+        # WLED ignores per-LED colors when the light is off and 'on' rides in
+        # the same request (JSON API docs: brightness/on must be set first).
+        _post_state(client, lightctl.on_payload(True), target)
         result = _post_state(client, payload, target)
         return text_result(
             _with_fleet_status("Set individual LEDs (running effect frozen until a segment property changes).", result)
@@ -1232,6 +1707,15 @@ def call_tool(
         return text_result(shows.stop_show())
     if name == "show_status":
         return text_result(json.dumps(shows.show_status(), indent=2))
+    if name == "music_show":
+        import smart_director
+
+        result = _compact_music_show_result(smart_director.control_show(client, args))
+        return text_result(json.dumps(result, separators=(",", ":")))
+    if name == "wled_read":
+        return text_result(_wled_read(client, args))
+    if name == "wled_write":
+        return text_result(_wled_write(client, args))
     if name == "tv_status":
         import firetv
 
@@ -1246,6 +1730,29 @@ def call_tool(
     if name == "tv_open_url":
         url = str(args["url"])
         return _tv_action(lambda tv: tv.open_url(url), f"Opened {url} on the Fire TV.")
+    if name == "calibrate":
+        import calibrate as calibrate_mod
+
+        updates: dict[str, Any] = {}
+        if args.get("pixel_zero"):
+            updates["pixel_zero"] = str(args["pixel_zero"])
+        if args.get("orientation"):
+            updates["orientation"] = str(args["orientation"])
+        cal_kwargs: dict[str, Any] = {
+            "assignments": args.get("assignments"),
+            "installation_updates": updates or None,
+            "write": bool(args.get("write")),
+        }
+        if _is_fleet(client):
+            cal_kwargs["clients"] = {ctrl: client.clients[ctrl] for ctrl in client.names()}
+            cal_kwargs["topology"] = (client.installation, client.controllers)
+        report = calibrate_mod.calibrate(**cal_kwargs)
+        return text_result(json.dumps(report, indent=2, default=str))
+    if name == "identify":
+        import calibrate as calibrate_mod
+
+        flashes = int(args.get("flashes") or 4)
+        return text_result(calibrate_mod.identify(client, target=target, flashes=flashes))
     if name == "music_director":
         if not _is_fleet(client):
             raise ValueError("music_director requires fleet mode (run without --host).")
@@ -1348,8 +1855,18 @@ def main() -> int:
     client: lightctl.LightClient | fleet.LightFleet
     if args.host:
         client = StderrDryRunClient(args.host) if args.dry_run else lightctl.LightClient(args.host)
+        try:
+            seed_effect_catalog(client.host, client.get_effects(), client.get_fxdata())
+        except Exception:
+            pass  # offline: SAFE_EFFECTS fallback stays in effect
     else:
         client = fleet.LightFleet.from_config(dry_run=args.dry_run)
+        for controller in client.names():
+            try:
+                ctrl_client = client.clients[controller]
+                seed_effect_catalog(controller, ctrl_client.get_effects(), ctrl_client.get_fxdata())
+            except Exception:
+                pass  # offline: SAFE_EFFECTS fallback stays in effect
     McpServer(client).serve()
     return 0
 

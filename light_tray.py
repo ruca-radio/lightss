@@ -805,7 +805,7 @@ class MainWindow(QMainWindow):
         self.btn_detect_song.clicked.connect(self._on_detect_song)
 
         self.btn_listen = QPushButton("🎤 Listen")
-        self.btn_listen.setToolTip("Listen to the microphone for 5 seconds and identify the song via Shazam")
+        self.btn_listen.setToolTip("Listen to the room microphone (~10s) and identify the song via Shazam")
         self.btn_listen.clicked.connect(self._on_listen_song)
 
         self.btn_match_lights = QPushButton("✨ Match Lights")
@@ -1360,13 +1360,13 @@ class MainWindow(QMainWindow):
             self.beat_label.setText("Beat: paused for music recognition")
             self.song_detail_label.setText("Paused Mode 1 so Shazam can use the microphone...")
         else:
-            self.song_detail_label.setText("Please wait 5 seconds...")
+            self.song_detail_label.setText("Please wait ~10 seconds...")
         self.btn_match_lights.setEnabled(False)
 
         def _do_listen():
             resume_mode1 = self._pause_mode1_for_microphone()
             try:
-                result = music_recognizer.recognize_sync()
+                result = music_recognizer.recognize_ambient_sync()
                 if result:
                     song = {
                         "title": result.get("title", ""),
@@ -1632,7 +1632,7 @@ class TrayApplication(QApplication):
             return
         self.tray.showMessage(
             "Music Recognition",
-            "Listening for 5 seconds...",
+            "Listening on the microphone (~10s)...",
             QSystemTrayIcon.MessageIcon.Information,
             5000,
         )
@@ -1640,7 +1640,7 @@ class TrayApplication(QApplication):
         def _do_recognize():
             resume_mode1 = self.window._pause_mode1_for_microphone()
             try:
-                result = music_recognizer.recognize_sync()
+                result = music_recognizer.recognize_ambient_sync()
                 if result:
                     lines = [f"🎵 {result.get('title', 'Unknown')}"]
                     if result.get("artist"):
@@ -1682,7 +1682,7 @@ class TrayApplication(QApplication):
                         song = {"artist": lines[0], "title": lines[1], "album": lines[2] if len(lines) > 2 else ""}
                 if not song and music_recognizer.is_available():
                     resume_mode1 = self.window._pause_mode1_for_microphone()
-                    result = music_recognizer.recognize_sync()
+                    result = music_recognizer.recognize_ambient_sync()
                     if result:
                         song = {"artist": result.get("artist", ""), "title": result.get("title", ""), "album": result.get("album", ""), "genre": result.get("genre", "")}
             except Exception as exc:
