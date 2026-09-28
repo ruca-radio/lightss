@@ -5,6 +5,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 import pytest
 from PySide6.QtCore import QObject, Signal, QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QLineEdit, QPushButton
+pytest.importorskip("PySide6.QtWebEngineCore")
 from PySide6.QtWebEngineCore import QWebEngineWebAuthUxRequest as Auth
 
 

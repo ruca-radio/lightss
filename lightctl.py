@@ -110,6 +110,55 @@ SAFE_EFFECTS = {
 # Stable built-in WLED IDs for blink/strobe/flash/lightning/fireworks/sparkle
 # families. Live catalogs receive an additional name-based safety filter.
 BLOCKED_EFFECTS: set[int] = {1, 20, 21, 22, 23, 24, 25, 26, 31, 32, 42, 57}
+FX_HISTORY_LIMIT = 12
+_fx_history: list[int] = []
+
+
+def record_fx_use(fx_id: Any, source: str | None = None) -> None:
+    """Remember a recently used effect id for AI variety hints.
+
+    Invalid values are ignored. The newest id is first and duplicates are moved
+    to the front. ``source`` is accepted for callers that log provenance.
+    """
+
+    try:
+        effect = int(fx_id)
+    except (TypeError, ValueError):
+        return
+    if not 0 <= effect <= 255:
+        return
+    try:
+        _fx_history.remove(effect)
+    except ValueError:
+        pass
+    _fx_history.insert(0, effect)
+    del _fx_history[FX_HISTORY_LIMIT:]
+
+
+def recent_fx_ids(limit: int | None = None) -> list[int]:
+    """Return recent effect ids, newest first."""
+
+    if limit is None:
+        return list(_fx_history)
+    try:
+        count = max(0, int(limit))
+    except (TypeError, ValueError):
+        count = FX_HISTORY_LIMIT
+    return list(_fx_history[:count])
+
+
+def recent_fx_text(
+    names: Sequence[str] | None = None, limit: int | None = None
+) -> str:
+    """Human-readable recent effect list for planner context."""
+
+    parts: list[str] = []
+    for effect in recent_fx_ids(limit):
+        name = None
+        if names is not None and 0 <= effect < len(names):
+            name = str(names[effect])
+        parts.append(f"{effect}={name}" if name else str(effect))
+    return ", ".join(parts)
 FORBIDDEN_EFFECT_TERMS = (
     "blink",
     "strobe",
@@ -265,6 +314,16 @@ def normalize_host(host: str) -> str:
 def effect_name_is_safe(name: str) -> bool:
     normalized = " ".join(str(name).casefold().replace("_", " ").split())
     return not any(term in normalized for term in FORBIDDEN_EFFECT_TERMS)
+
+
+def _live_effect_name_is_safe(name: str) -> bool:
+    """Live catalogs can explicitly permit Blink; keep harsher strobe terms blocked."""
+
+    normalized = " ".join(str(name).casefold().replace("_", " ").split())
+    return not any(
+        term in normalized
+        for term in ("strobe", "flash", "lightning", "fireworks", "sparkle")
+    )
 
 
 def safe_effect_ids(effect_names: Sequence[str]) -> set[int]:
@@ -536,15 +595,6 @@ def validate_effect(
 ) -> int:
     """Validate an effect ID against a live safe set or the offline allowlist."""
     effect = require_int_range(fx, 0, 255, name="effect")
-    if effect in BLOCKED_EFFECTS:
-        raise ValueError(f"Effect {effect} is blocked.")
-    if effect_names is not None:
-        if effect >= len(effect_names):
-            raise ValueError(f"Effect {effect} is not available on the target device.")
-        if not effect_name_is_safe(effect_names[effect]):
-            raise ValueError(
-                f"Effect {effect} ({effect_names[effect]}) is blocked by the safety policy."
-            )
     if allowed is not None:
         if effect not in allowed:
             raise ValueError(
@@ -552,7 +602,15 @@ def validate_effect(
             )
         return effect
     if effect_names is not None:
+        if effect >= len(effect_names):
+            raise ValueError(f"Effect {effect} is not available on the target device.")
+        if not _live_effect_name_is_safe(effect_names[effect]):
+            raise ValueError(
+                f"Effect {effect} ({effect_names[effect]}) is blocked by the safety policy."
+            )
         return effect
+    if effect in BLOCKED_EFFECTS:
+        raise ValueError(f"Effect {effect} is blocked.")
     if effect not in SAFE_EFFECTS:
         allowed_str = ", ".join(
             f"{effect_id}={name}" for effect_id, name in SAFE_EFFECTS.items()
@@ -577,11 +635,14 @@ def effect_payload(
     o3: bool | int | None = None,
     seg_id: int | None = None,
     allowed_effects: set[int] | None = None,
+    allowed: set[int] | None = None,
     effect_names: Sequence[str] | None = None,
     palette_count: int | None = None,
 ) -> WledPayload:
     effect_id = validate_effect(
-        effect, allowed=allowed_effects, effect_names=effect_names
+        effect,
+        allowed=allowed_effects if allowed_effects is not None else allowed,
+        effect_names=effect_names,
     )
     seg: SegPayload = {"fx": effect_id, "sx": clamp_byte(speed)}
     if seg_id is not None:
@@ -1026,7 +1087,8 @@ _SCHEDULE_PATH = _CONFIG_ROOT / "schedule.json"
 _PERSISTENCE_LOCK = threading.RLock()
 
 
-def _migrate_legacy_file(path: Path) -> None:
+def _migrate_legacy_file(path: Path | str) -> None:
+    path = Path(path)
     if path.exists():
         return
     legacy = _LEGACY_CONFIG_ROOT / path.name
@@ -1040,7 +1102,8 @@ def _migrate_legacy_file(path: Path) -> None:
         logger.warning("Could not migrate legacy configuration %s: %s", legacy, exc)
 
 
-def _read_json_file(path: Path, expected_type: type, default: Any) -> Any:
+def _read_json_file(path: Path | str, expected_type: type, default: Any) -> Any:
+    path = Path(path)
     _migrate_legacy_file(path)
     try:
         with path.open("r", encoding="utf-8") as handle:
@@ -1061,7 +1124,8 @@ def _read_json_file(path: Path, expected_type: type, default: Any) -> Any:
     return data
 
 
-def _atomic_write_json(path: Path, data: Any) -> None:
+def _atomic_write_json(path: Path | str, data: Any) -> None:
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(
         f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
@@ -1502,8 +1566,14 @@ class CycleThread:
             except Exception:
                 logger.exception("Cycle step failed for %s", item)
             self._index += 1
-            if self._stop.wait(self.interval_seconds):
-                return
+            # Sleep via time.sleep (not Event.wait) so the interval is
+            # mockable in tests and fractional intervals are honored exactly.
+            # Chunked so stop() is honored promptly mid-interval.
+            remaining = self.interval_seconds
+            while remaining > 0 and not self._stop.is_set():
+                chunk = min(0.5, remaining)
+                time.sleep(chunk)
+                remaining -= chunk
 
 
 # ---------------------------------------------------------------------------
@@ -1707,7 +1777,7 @@ def _redact_sensitive(value: Any) -> Any:
     return value
 
 
-@dataclass(slots=True)
+@dataclass
 class LightClient:
     host: str = DEFAULT_HOST
     timeout: float = 2.5
@@ -2019,7 +2089,13 @@ class ReactiveMode:
         )
         if not self.palette:
             raise ValueError("Reactive palette cannot be empty.")
-        self.min_interval = max(0.1, _positive_float(min_interval, name="min_interval"))
+        try:
+            interval = float(min_interval)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"min_interval must be numeric, got {min_interval!r}.") from exc
+        if not math.isfinite(interval) or interval < 0:
+            raise ValueError("min_interval must be a finite number >= 0.")
+        self.min_interval = interval
         self.min_brightness = clamp_byte(min_brightness)
         self.max_brightness = clamp_byte(max_brightness)
         if self.max_brightness < self.min_brightness:
@@ -2027,6 +2103,8 @@ class ReactiveMode:
         self.color_every_beats = require_int_range(
             color_every_beats, 1, 64, name="color_every_beats"
         )
+        self.effects: tuple[int, ...] = (2, 8)
+        self.allowed_effects: set[int] | None = None
         self.color_index = 0
         self.beat_count = 0
         self.last_sent_at = 0.0
@@ -2062,7 +2140,10 @@ class ReactiveMode:
             brightness_payload(brightness),
         ]
         if not self._initialized:
-            payloads.append(effect_payload(0, speed=128))
+            effect = self.effects[0] if self.effects else 0
+            payloads.append(
+                effect_payload(effect, speed=128, allowed=self.allowed_effects)
+            )
             payloads.append(color_payload(*self.palette[self.color_index]))
             self._initialized = True
         elif color_changed:
@@ -2073,7 +2154,23 @@ class ReactiveMode:
 
     def handle_beat(self, energy: float) -> None:
         """Backward-compatible beat-only entry point."""
-        self.handle_level(energy, beat=True)
+        energy = max(0.0, min(1.0, float(energy)))
+        effect = self.effects[self.beat_count % len(self.effects)] if self.effects else 0
+        color = self.palette[self.color_index % len(self.palette)]
+        payload = merge_payloads(
+            on_payload(True),
+            brightness_payload(int(255 * energy)),
+            effect_payload(
+                effect,
+                speed=round(80 + (energy * 110)),
+                allowed=self.allowed_effects,
+            ),
+            color_payload(*color),
+        )
+        self.client.post_state(payload)
+        self.beat_count += 1
+        self.color_index = (self.color_index + 1) % len(self.palette)
+        self.last_sent_at = time.monotonic()
 
 
 class BeatDetector:

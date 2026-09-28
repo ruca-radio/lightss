@@ -2047,7 +2047,7 @@ HTML_TEMPLATE = """<!doctype html>
         setMusicModeUi(true, 'Checking now');
         if (st) st.textContent = 'Beat matching live audio; checking media metadata and browser mic.';
         musicRecognitionTimer = setInterval(() => runMusicRecognitionCycle(false), MUSIC_RECOGNITION_INTERVAL_MS);
-        await runMusicRecognitionCycle(true);
+        await runMusicRecognitionCycle(false);
       } catch (err) {
         musicModeRunning = false;
         setMoodSessionRunning(false);
@@ -2078,25 +2078,46 @@ HTML_TEMPLATE = """<!doctype html>
       try {
         status.textContent = 'Checking media metadata...';
         setText('nextMatchState', 'Checking now');
+        await refreshNowPlaying();
         const result = await matchLightsFromNowPlaying();
         const st = document.getElementById('autoStatus');
         if (result && result.ok && result.now_playing) {
           if (st) st.textContent = `Matched ${result.now_playing.title || 'song'}; beat mode continues.`;
-        } else {
+        } else if (force) {
           if (st) st.textContent = 'No media metadata detected; listening with browser mic.';
-          const recognizedSong = await recognizeSongOnce();
-          if (recognizedSong) {
-            await matchLightsFromRecognizedSong(recognizedSong);
-            if (st) st.textContent = `Matched ${recognizedSong.title || 'song'} with browser mic; beat mode continues.`;
+          const song = await recognizeSongOnce();
+          if (song) {
+            await matchLightsFromRecognizedSong(song);
+            if (st) st.textContent = `Matched ${song.title || 'song'} with browser mic; beat mode continues.`;
           } else {
             if (st) st.textContent = 'No Shazam match; beat matching live audio.';
             if (status.textContent === 'Checking media metadata...') status.textContent = 'No Shazam match; beat matching live audio.';
           }
+        } else {
+          if (st) st.textContent = 'No media metadata detected; beat matching live audio.';
+          if (status.textContent === 'Checking media metadata...') status.textContent = 'Beat matching live audio.';
         }
       } finally {
         if (musicModeRunning) setText('nextMatchState', 'Every 30s');
         musicRecognitionBusy = false;
       }
+    }
+
+    function parseTagList(value) {
+      return String(value || '')
+        .split(/[\\n,]+/)
+        .map((tag) => tag.trim())
+        .filter(Boolean);
+    }
+
+    async function applyDynamicScene() {
+      const promptEl = document.getElementById('dynamicPrompt');
+      const tagsEl = document.getElementById('dynamicTags');
+      const payload = {
+        prompt: promptEl ? promptEl.value : '',
+        tags: parseTagList(tagsEl ? tagsEl.value : ''),
+      };
+      return postJson('/api/action', {action: 'dynamic_scene', ...payload});
     }
 
     async function startAudioReactive() {
