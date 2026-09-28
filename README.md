@@ -27,16 +27,19 @@ single controller, or a single channel/segment.
 
 The `dynamic_scene` action/tool is a high-level lighting director for creative
 or vague requests (for example, "dreamy calm ocean" or "tasteful party motion").
-By default `engine="generated"` paints exact-length static pixel frames for each
-strip using real wall order, live segment ids, calibrated pixel counts,
-orientation, and bottom-origin direction. Pass `colors` (hex or RGB stops) and a
+By default `engine="generated"` composes exact-length static pixel frames for
+each strip using real wall order, live segment ids, calibrated pixel counts,
+orientation, and bottom-origin direction, and keeps them on screen by streaming
+them at a bounded rate over the DDP transport (WLED 0.15+ no longer persists
+JSON per-LED `seg.i` frames). Pass `colors` (hex or RGB stops) and a
 `seed` to build a unique palette instead of the stock mood colors. Composition
 modes (`unison`, `independent`, `pairs`, `center_vs_outer`, `left_vs_right`,
 `alternating`, `random_groups`) decide whether strips match, differ, or form
-groups. Optional `engine="effect"` preserves the stock safe-effect behavior.
-Dynamic scenes reassert configured segment start/stop bounds in payloads but
-never mutate WLED hardware configuration or create/delete extra segments. Use
-explicit actions (`color`, `effect`, `brightness`, wall modes, etc.) when a
+groups, with per-segment brightness variance baked into the pixels. Optional
+`engine="effect"` preserves the stock safe-effect behavior. Dynamic scenes
+reassert configured segment start/stop bounds in payloads but never mutate
+WLED hardware configuration or create/delete extra segments. Use explicit
+actions (`color`, `effect`, `brightness`, wall modes, etc.) when a
 request gives exact values.
 
 Lightss also keeps a small local look memory in
@@ -133,12 +136,18 @@ only from that configured controller. Other controllers can receive its audio to
     power, wiring, microphone and firmware settings are unchanged. The preview
     displays successfully sent DDP pixels, not a fabricated WLED effect.
   - **AI live control:** `music_show` status/tune/accent adjusts the existing
-    stream, including palette, grouping and EQ. Tuning is session-only; explicit
-    UI settings override matching AI adjustments. Native WLED effects, raw JSON,
-    per-strip tools and manual shows remain available for an explicit handoff.
+    DDP stream, including palette, grouping and EQ. `native` hands the show to
+    a currently available common 1D WLED audio-reactive effect; `ddp` reclaims
+    pixel streaming. One engine owns the LEDs at a time, while the microphone
+    listener remains active. Tuning is session-only; explicit UI settings
+    override matching AI adjustments. Raw JSON, per-strip tools and manual
+    shows remain available for an explicit handoff.
     HTTP clients use `GET/POST /api/music-show`; for example
     `{"action":"accent","band":3,"strength":1}` or
     `{"action":"tune","motion":"comet","speed":2,"colors":[[210,30,0],[0,150,210]]}`.
+    A native handoff is `{"action":"native","effect":155,"colors":[[20,140,180]],"native_speed":160}`;
+    `{"action":"ddp"}` returns to the pixel renderer. Validate effect IDs
+    against each controller's current `/json/eff` and `/json/fxdata` first.
   - **Now playing and responses:** the header uses active local-player or
     foreground-TV track metadata. Model Responses retains readable full text
     and distinguishes automated decision summaries from model replies.

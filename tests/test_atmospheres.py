@@ -49,16 +49,23 @@ class ClassifyTests(unittest.TestCase):
 
     def test_unsafe_marks_strobe_family_and_placeholders(self):
         classified = atmospheres.classify_effects(EFFECTS, FXDATA)
-        self.assertTrue(classified[1]["unsafe"])   # Blink
+        self.assertFalse(classified[1]["unsafe"])  # Blink remains available
         self.assertTrue(classified[6]["unsafe"])   # RSVD
         self.assertFalse(classified[2]["unsafe"])  # Breathe
         self.assertFalse(classified[3]["unsafe"])  # Fire 2012
 
-    def test_unsafe_substrings_cover_the_seizure_family(self):
+    def test_effect_policy_blocks_strobes_but_preserves_blink_and_particles(self):
         names = ["Strobe", "Strobe Mega", "Blink Rainbow", "Chase Flash",
                  "Lightning", "Fireworks 1D", "Sparkle+", "PS Sparkler"]
         classified = atmospheres.classify_effects(names)
-        self.assertTrue(all(info["unsafe"] for info in classified.values()))
+        self.assertTrue(all(classified[i]["unsafe"] for i in (0,1,3,4)))
+        self.assertTrue(all(not classified[i]["unsafe"] for i in (2,5,6,7)))
+
+    def test_1d_compatible_effect_with_both_flags_is_not_matrix_only(self):
+        classified = atmospheres.classify_effects(
+            ["Fireworks 1D", "Matrix"], ["!;!;!;12", "!;!;!;2"])
+        self.assertFalse(classified[0]["2d"])
+        self.assertTrue(classified[1]["2d"])
 
 
 class CatalogTextTests(unittest.TestCase):
@@ -69,7 +76,7 @@ class CatalogTextTests(unittest.TestCase):
         self.assertIn("3=Fire 2012", text)
         self.assertIn("4=Noisemeter♪", text)
         self.assertIn("5=Matrix[2D]", text)
-        self.assertIn("1=Blink🚫", text)
+        self.assertIn("1=Blink◉", text)
 
 
 class AtmosphereTests(unittest.TestCase):

@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 import firetv
 import lightctl
+import light_gui
 import mcp_light
 
 DEFAULT_HOST = "10.27.27.207:5555"
@@ -139,6 +140,12 @@ class EnabledGatingTests(FireTVTestCase):
             for call in (
                 firetv.wake,
                 firetv.sleep,
+                firetv.play_pause,
+                firetv.next_track,
+                firetv.previous_track,
+                firetv.volume_up,
+                firetv.volume_down,
+                firetv.mute,
                 lambda: firetv.open_url("http://10.0.0.1:8123/tv"),
                 lambda: firetv.keyevent(224),
             ):
@@ -220,6 +227,24 @@ class ActionTests(FireTVTestCase):
         self.assertTrue(keyevents, f"no keyevent call in {self.adb.calls}")
         self.assertIn("223", keyevents[0])
 
+    def test_media_controls_send_safe_named_keyevents(self):
+        cases = (
+            (firetv.play_pause, "85"),
+            (firetv.next_track, "87"),
+            (firetv.previous_track, "88"),
+            (firetv.volume_up, "24"),
+            (firetv.volume_down, "25"),
+            (firetv.mute, "164"),
+        )
+        for method, code in cases:
+            with self.subTest(method=method.__name__):
+                self.adb.calls.clear()
+                with self.enable():
+                    method()
+                keyevents = self.adb.matching("keyevent")
+                self.assertTrue(keyevents, f"no keyevent call in {self.adb.calls}")
+                self.assertIn(code, keyevents[0])
+
     def test_keyevent_passes_code_through(self):
         with self.enable():
             firetv.keyevent(4)
@@ -285,6 +310,30 @@ class ActionTests(FireTVTestCase):
         self.assertTrue(self.adb.matching("connect"), f"no reconnect in {self.adb.calls}")
 
 
+class GuiFireTVActionTests(unittest.TestCase):
+    def test_media_actions_route_to_named_firetv_methods(self):
+        mappings = {
+            "previous": "previous_track",
+            "play_pause": "play_pause",
+            "next": "next_track",
+            "volume_down": "volume_down",
+            "mute": "mute",
+            "volume_up": "volume_up",
+        }
+        for action, method_name in mappings.items():
+            with self.subTest(action=action), patch(f"firetv.{method_name}", return_value="") as method:
+                result = light_gui.run_firetv_action({"action": action})
+            method.assert_called_once_with()
+            self.assertTrue(result["ok"])
+
+    def test_unknown_firetv_action_message_lists_media_actions(self):
+        with self.assertRaises(ValueError) as caught:
+            light_gui.run_firetv_action({"action": "rewind"})
+        message = str(caught.exception)
+        self.assertIn("play_pause", message)
+        self.assertIn("volume_up", message)
+
+
 class FakeModes:
     def start(self) -> str:
         return "started"
@@ -301,7 +350,11 @@ class McpToolTests(FireTVTestCase):
     def test_firetv_tools_are_registered(self):
         tools = {tool["name"]: tool for tool in mcp_light.build_tools()}
 
-        for name in ("tv_status", "tv_wake", "tv_sleep", "tv_open_url"):
+        for name in (
+            "tv_status", "tv_wake", "tv_sleep", "tv_open_url",
+            "tv_play_pause", "tv_next", "tv_previous", "tv_volume_up",
+            "tv_volume_down", "tv_mute",
+        ):
             self.assertIn(name, tools)
 
         schema = tools["tv_open_url"]["inputSchema"]
@@ -345,6 +398,21 @@ class McpToolTests(FireTVTestCase):
         text = result["content"][0]["text"]
         self.assertIn("connected", text)
         self.assertIn(FOREGROUND_PACKAGE, text)
+
+    def test_tv_media_tools_call_through(self):
+        cases = {
+            "tv_play_pause": "play_pause",
+            "tv_next": "next_track",
+            "tv_previous": "previous_track",
+            "tv_volume_up": "volume_up",
+            "tv_volume_down": "volume_down",
+            "tv_mute": "mute",
+        }
+        for tool_name, method_name in cases.items():
+            with self.subTest(tool=tool_name), patch(f"firetv.{method_name}") as method:
+                result = mcp_light.call_tool(self.client, tool_name, {}, FakeModes())
+            method.assert_called_once_with()
+            self.assertIn("content", result)
 
     def test_disabled_error_surfaces_to_the_caller(self):
         with patch("firetv.open_url", side_effect=ValueError(DISABLED_MESSAGE)):

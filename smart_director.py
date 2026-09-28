@@ -27,6 +27,9 @@ DEFAULTS = dict(enabled=False, mode='auto', tv_theme='warm', music_brightness=.6
                 music_colorfulness=.9)
 THEMES = {'warm': [210, 145, 85], 'neutral': [190, 195, 210], 'blue': [80, 120, 210]}
 CACHE_TTL_S = 300.0
+CHAPTER_FIRST_S = 15.0
+CHAPTER_INTERVAL_S = 120.0
+CHAPTER_RETRY_S = 30.0
 RENDERER_MAX_ATTEMPTS = 2
 RENDERER_RETRY_DELAY_S = 2.0
 _write_context = threading.local()
@@ -88,7 +91,7 @@ def owned_write():
 class SmartDirector(threading.Thread):
     def __init__(self, fleet, config=None, *, listener=None, renderer_factory=None,
                  observe_fn=None, classify_fn=None, ai_settings=None, clock=time.monotonic,
-                 wall_clock=None, persist_manual=False):
+                 wall_clock=None, persist_manual=False, chapter_fn=None):
         super().__init__(name='lightss-smart-director',daemon=True)
         self.fleet=fleet;self.config=validate_config(config);self.clock=clock
         self.wall_clock=wall_clock or (lambda: datetime.now(ZoneInfo(self.config['timezone'])))
@@ -110,6 +113,14 @@ class SmartDirector(threading.Thread):
         self._listener_stopped=False
         self._cache=OrderedDict()
         self._renderer_attempts=0;self._renderer_retry_at=0.0;self._renderer_fault=None
+        self.chapter_fn=chapter_fn
+        self._chapter_executor=None;self._chapter_future=None
+        self._chapter_request_key=None;self._chapter_request_generation=None
+        self._chapter_key=None;self._chapter_generation=0;self._chapter_due_at=None
+        self._chapter_look={};self._chapter_count=0;self._chapter_error=None
+        self._chapter_history=deque(maxlen=5)
+        self._output_engine='ddp';self._native_effect=None;self._native_look={}
+        self._audio_history=deque(maxlen=180);self._chapter_beats=deque(maxlen=256)
 
     def configure(self, updates):
         with self._lock:
@@ -176,7 +187,10 @@ class SmartDirector(threading.Thread):
         self._cache.move_to_end(key)
         return result
 
-    def _stop_renderer(self):
+    def _stop_renderer(self, *, reset_chapter=True):
+        if reset_chapter:
+            self._chapter_generation+=1
+            self._chapter_key=None;self._chapter_due_at=None;self._chapter_look={}
         if self.renderer is not None:
             renderer=self.renderer
             was_alive=renderer.is_alive()
@@ -224,6 +238,7 @@ class SmartDirector(threading.Thread):
     def _tv(self, reason):
         renderer_was_healthy=bool(self.renderer and self.renderer.is_alive())
         self._stop_renderer()
+        self._output_engine='ddp';self._native_effect=None;self._native_look={}
         if renderer_was_healthy:
             self._renderer_attempts=0;self._renderer_retry_at=0.0;self._renderer_fault=None
         brightness=tv_brightness(self.config,self.wall_clock())
@@ -238,9 +253,15 @@ class SmartDirector(threading.Thread):
 
     def _music(self, decision, reason):
         if self._mode!='music':self._last_music_at=self.clock()
+        if self._output_engine=='native':
+            brightness=self.config['music_brightness']
+            if brightness!=self._brightness:
+                self._post({'bri':round(brightness*255)})
+            self._brightness=brightness;self._mode='music';self._reason=reason
+            return
         if self.renderer is None or not self.renderer.is_alive():
             renderer_failed=self.renderer is not None
-            self._stop_renderer()
+            self._stop_renderer(reset_chapter=False)
             now=self.clock()
             if renderer_failed:
                 self._renderer_attempts+=1
@@ -288,6 +309,7 @@ class SmartDirector(threading.Thread):
         look = dict(colors=[list(c) for c in colors], brightness=self.config['music_brightness'],
                     composition_mode=composition, motion=motion, speed=speed, intensity=intensity,
                     colorfulness=self.config['music_colorfulness'], band_gains=[1.0]*16)
+        look.update(self._chapter_look)
         look.update(self._show_overrides)
         recipe = (tuple(tuple(c) for c in look['colors']), look['brightness'], look['composition_mode'],
                   look['motion'], look['speed'], look['intensity'], look['colorfulness'], tuple(look['band_gains']))
@@ -297,6 +319,111 @@ class SmartDirector(threading.Thread):
             self._look_dirty = False
         self._brightness=look['brightness'];self._mode='music';self._reason=reason
         self._applied_tv=None
+
+    def _apply_native_chapter(self, chapter):
+        """Validate the live common catalog before revoking the DDP owner."""
+        import music_chapters
+        effect=chapter.get('effect')
+        if type(effect) is not int or effect not in {item['id'] for item in music_chapters.available_native_effects(self.fleet)}:
+            raise ValueError('Native effect is not available as a common 1D audio effect.')
+        colors=chapter.get('colors')
+        _,validated=_validate_show_request({'action':'tune','colors':colors})
+        speed=chapter.get('native_speed',160);intensity=chapter.get('native_intensity',180)
+        if type(speed) is not int or not 0<=speed<=255 or type(intensity) is not int or not 0<=intensity<=255:
+            raise ValueError('Native speed and intensity must be WLED bytes (0-255).')
+        payload={'on':True,'bri':round(self.config['music_brightness']*255),'transition':10,
+                 'seg':[{'fx':effect,'sx':speed,'ix':intensity,'frz':False,'on':True,'bri':255,
+                         'col':validated['colors'][:3]}]}
+        self._stop_renderer(reset_chapter=False)
+        self._post(payload)
+        self._output_engine='native';self._native_effect=effect
+        self._native_look={'colors':validated['colors'],'effect':effect,'engine':'native',
+                           'native_speed':speed,'native_intensity':intensity}
+        self._brightness=self.config['music_brightness'];self._mode='music'
+        self._applied_tv=None
+
+    def _chapter_audio(self, now, audio):
+        """Compact recent mic measurements; never send raw audio or per-frame pixels."""
+        if audio.get('active'):
+            fft=audio.get('fft') or []
+            if len(fft)==16:
+                self._audio_history.append((now,float(audio.get('level',0)),tuple(float(v) for v in fft)))
+        recent=[sample for sample in self._audio_history if now-sample[0]<=30]
+        levels=[sample[1] for sample in recent]
+        bands=[round(sum(sample[2][i] for sample in recent)/len(recent),3) if recent else 0.0
+               for i in range(16)]
+        renderer=self.renderer.status() if self.renderer else {}
+        return {'window_s':30,'level_avg':round(sum(levels)/len(levels),3) if levels else 0.0,
+                'level_peak':round(max(levels),3) if levels else 0.0,
+                'beat_count':sum(now-beat_at<=30 for beat_at in self._chapter_beats),
+                'fft_avg':bands,'bpm':renderer.get('bpm',0),
+                'energy':renderer.get('energy',0), 'bass':renderer.get('bass',0),
+                'mid':renderer.get('mid',0),'treble':renderer.get('treble',0)}
+
+    def _maybe_chapter(self, obs, audio, now, decision):
+        media=obs.get('media_session') or {}
+        track=str(media.get('description') or '').strip()
+        if track and track!=self._chapter_key:
+            self._chapter_key=track;self._chapter_look={}
+            self._chapter_generation+=1
+            self._chapter_due_at=now if self._chapter_count else now+CHAPTER_FIRST_S
+        elif self._chapter_key is None:
+            self._chapter_key='ambient';self._chapter_due_at=now+CHAPTER_FIRST_S
+        features=self._chapter_audio(now,audio)
+        future=self._chapter_future
+        if future is not None:
+            if not future.done():return
+            self._chapter_future=None
+            try: chapter=future.result()
+            except Exception as exc:
+                chapter=None;self._chapter_error=str(exc)
+            if (self._chapter_request_generation==self._chapter_generation
+                    and self._chapter_request_key==self._chapter_key):
+                try:
+                    if not isinstance(chapter,dict):raise ValueError('Model returned no fresh chapter.')
+                    engine=chapter.get('engine','ddp')
+                    if engine=='native':
+                        self._apply_native_chapter(chapter)
+                        look=dict(self._native_look)
+                    elif engine=='ddp':
+                        _,look=_validate_show_request({'action':'tune',**{key:value for key,value in chapter.items() if key!='engine'}})
+                        if not look:raise ValueError('Model returned an empty chapter.')
+                        self._chapter_look=look;self._output_engine='ddp'
+                        self._native_effect=None;self._native_look={}
+                        self._look_dirty=True;self._music(decision,self._reason)
+                        look={**look,'engine':'ddp'}
+                    else:raise ValueError('Unknown music output engine.')
+                    self._chapter_count+=1;self._chapter_error=None
+                    self._chapter_history.append({key:look[key] for key in ('colors','motion','composition_mode','engine','effect') if key in look})
+                except Exception as exc:
+                    self._chapter_error=str(exc);self._chapter_due_at=now+CHAPTER_RETRY_S
+            else:
+                self._chapter_due_at=now
+        if not audio.get('active') or not features['level_avg']>.025:return
+        if self._chapter_due_at is None or now<self._chapter_due_at:return
+        if self._chapter_executor is None:
+            self._chapter_executor=ThreadPoolExecutor(max_workers=1,thread_name_prefix='smart-music-chapter')
+        if self._output_engine=='native':
+            previous={**self._native_look,'recent':list(self._chapter_history)}
+        elif self._last_recipe:
+            previous={'colors':[list(c) for c in self._last_recipe[0]],
+                      'motion':self._last_recipe[3], 'composition_mode':self._last_recipe[2],
+                      'engine':'ddp','recent':list(self._chapter_history)}
+        else:previous={}
+        if self.chapter_fn is None:
+            import music_chapters
+            chapter_fn=music_chapters.design_chapter
+        else:chapter_fn=self.chapter_fn
+        request_key=self._chapter_key
+        request_index=self._chapter_count+1
+        self._chapter_request_key=request_key
+        self._chapter_request_generation=self._chapter_generation
+        def request_chapter():
+            import music_chapters
+            context={**previous,'native_effects':music_chapters.available_native_effects(self.fleet)}
+            return chapter_fn(self.ai_settings,request_key,features,context,request_index)
+        self._chapter_future=self._chapter_executor.submit(request_chapter)
+        self._chapter_due_at=now+CHAPTER_INTERVAL_S
 
     def _manual_locked(self):
         self._stop_renderer();self._mode='manual';self._reason='Manual override; select Auto to resume.'
@@ -323,7 +450,8 @@ class SmartDirector(threading.Thread):
             seq=audio.get('receive_sequence')
             if seq is not None and seq!=self._last_seq:
                 self._last_seq=seq
-                if audio.get('beat'):self._beat_times.append(now)
+                if audio.get('beat'):
+                    self._beat_times.append(now);self._chapter_beats.append(now)
             while self._beat_times and now-self._beat_times[0]>12:self._beat_times.popleft()
             sounding=bool(audio.get('active')) and float(audio.get('level',0))>.025
             if sounding:self._quiet_since=None
@@ -356,7 +484,9 @@ class SmartDirector(threading.Thread):
                 else:self._pending_mode=None
             try:
                 if desired=='manual':self._manual_locked()
-                elif desired=='music':self._music(decision,reason)
+                elif desired=='music':
+                    self._music(decision,reason)
+                    if self._mode=='music':self._maybe_chapter(obs,audio,now,decision)
                 else:self._tv(reason)
                 self._error=self._renderer_fault
             except Exception as exc:self._error=str(exc)
@@ -370,6 +500,11 @@ class SmartDirector(threading.Thread):
             return {'running':self.is_alive() and not self._stop_event.is_set(),
                     'selected_mode':self.config['mode'],'mode':self._mode,'reason':self._reason,
                     'show_overrides':dict(self._show_overrides),
+                    'output_engine':self._output_engine if self._mode=='music' else None,
+                    'native_effect':self._native_effect if self._mode=='music' else None,
+                    'chapters':{'applied':self._chapter_count,'track':self._chapter_key,
+                                'pending':bool(self._chapter_future and not self._chapter_future.done()),
+                                'last_error':self._chapter_error},
                     'brightness_percent':round(self._brightness*100,1),'audio':audio,'renderer':renderer,
                     'tv':dict(self._observation),'intelligence':dict(self._decision),'last_error':self._error}
 
@@ -401,6 +536,9 @@ class SmartDirector(threading.Thread):
             self._stop_event.set()
             try:self._cleanup_components()
             finally:
+                if self._chapter_executor is not None:
+                    self._chapter_executor.shutdown(wait=False,cancel_futures=True)
+                    self._chapter_executor=None
                 renderer=self.renderer
                 renderer_alive=bool(renderer and renderer.is_alive())
                 if not renderer_alive:_release_process_lock(self)
@@ -414,6 +552,9 @@ class SmartDirector(threading.Thread):
             with self._lock:self._error='Smart director did not stop cleanly.'
             raise RuntimeError(self._error)
         self._cleanup_components()
+        if self._chapter_executor is not None:
+            self._chapter_executor.shutdown(wait=False,cancel_futures=True)
+            self._chapter_executor=None
         if self.renderer is not None and self.renderer.is_alive():
             raise RuntimeError('Smart director renderer is still running.')
 
@@ -518,11 +659,12 @@ def _validate_show_request(request):
     if not isinstance(request, dict):
         raise ValueError('Live show controls must be an object.')
     action=request.get('action', 'status')
-    if not isinstance(action, str) or action not in {'status','tune','accent'}:
-        raise ValueError('action must be status, tune, or accent.')
+    if not isinstance(action, str) or action not in {'status','tune','accent','native','ddp'}:
+        raise ValueError('action must be status, tune, accent, native, or ddp.')
     allowed={'action'}
     if action=='accent':allowed |= {'band','strength'}
     if action=='tune':allowed |= {'motion','speed','brightness','intensity','colorfulness','colors','composition_mode','band_gains'}
+    if action=='native':allowed |= {'effect','colors','native_speed','native_intensity'}
     if set(request)-allowed:raise ValueError('Unknown live show control: '+', '.join(sorted(set(request)-allowed)))
     updates={k:v for k,v in request.items() if k!='action'}
     if action=='accent':
@@ -551,11 +693,18 @@ def _validate_show_request(request):
                 isinstance(rgb,list) and len(rgb)==3 and all(type(v) is int and 0<=v<=210 for v in rgb) for rgb in colors):
             raise ValueError('colors must contain 1 through 5 RGB triplets with integers from 0 through 210.')
         updates['colors']=[list(rgb) for rgb in colors]
+    if action=='native':
+        if type(updates.get('effect')) is not int or updates['effect']<0:
+            raise ValueError('effect must be a nonnegative WLED effect ID.')
+        if 'colors' not in updates:raise ValueError('native requires colors.')
+        for key in ('native_speed','native_intensity'):
+            if key in updates and (type(updates[key]) is not int or not 0<=updates[key]<=255):
+                raise ValueError(f'{key} must be a WLED byte (0-255).')
     return action,updates
 
 
 def control_show(fleet, request):
-    """Additive music controls: no handoff, new owner, or persistent EQ impulses."""
+    """Control the current music owner or deliberately hand off between engines."""
     action,updates=_validate_show_request(request)
     director=current()
     if action=='status':
@@ -563,9 +712,18 @@ def control_show(fleet, request):
     if director is None or director.fleet is not fleet:
         raise RuntimeError('Start Smart Director music mode before using live show controls.')
     with director._lock:
-        if director._mode!='music' or not director.renderer or not director.renderer.is_alive() or director._stop_event.is_set():
+        if director._mode!='music' or director._stop_event.is_set():
             raise RuntimeError('Start Smart Director music mode before using live show controls.')
-        if action=='accent':
+        if action=='native':
+            director._apply_native_chapter(updates)
+            director._chapter_generation+=1
+        elif action=='ddp':
+            director._output_engine='ddp';director._native_effect=None;director._native_look={}
+            director._music(director._decision,director._reason)
+            director._chapter_generation+=1
+        elif not director.renderer or not director.renderer.is_alive():
+            raise RuntimeError('Start Smart Director DDP music renderer before tuning or accenting it.')
+        elif action=='accent':
             director.renderer.accent(**updates)
         else:
             director.renderer.update_look(**updates)

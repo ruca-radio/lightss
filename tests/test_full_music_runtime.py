@@ -113,6 +113,50 @@ def test_stopped_renderer_is_not_started_by_accent(rig,monkeypatch):
     assert not f.posts
 
 
+def test_music_show_native_and_ddp_handoff_keeps_listener(rig,monkeypatch):
+    d,f,l,c=rig;l.start();d.configure({'mode':'music'});d.step(tv(),music(),l.get_snapshot())
+    monkeypatch.setattr(sd,'_director',d)
+    monkeypatch.setattr('music_chapters.available_native_effects',lambda fleet:[{'id':155,'name':'Freqmap','audio':'f'}])
+    old=d.renderer
+    result=sd.control_show(f,{'action':'native','effect':155,'colors':[[12,100,180]],
+                              'native_speed':120,'native_intensity':200})
+    assert result['status']['output_engine']=='native'
+    assert old.running is False and d.renderer is None and l.started is True
+    assert f.posts[-1][0]['seg'][0]['fx']==155
+    assert f.posts[-1][0]['seg'][0]['col']==[[12,100,180]]
+    d.step(tv(),music(),l.get_snapshot())
+    assert d.renderer is None
+    result=sd.control_show(f,{'action':'ddp'})
+    assert result['status']['output_engine']=='ddp'
+    assert d.renderer is not None and d.renderer.running
+
+
+def test_invalid_native_handoff_never_stops_ddp(rig,monkeypatch):
+    d,f,l,c=rig;d.configure({'mode':'music'});d.step(tv(),music(),l.get_snapshot())
+    monkeypatch.setattr(sd,'_director',d)
+    monkeypatch.setattr('music_chapters.available_native_effects',lambda fleet:[])
+    renderer=d.renderer;before=len(f.posts)
+    with pytest.raises(ValueError):
+        sd.control_show(f,{'action':'native','effect':155,'colors':[[12,100,180]]})
+    assert renderer.running and d.renderer is renderer and len(f.posts)==before
+
+
+def test_native_post_failure_recovers_ddp_on_next_tick(rig,monkeypatch):
+    d,f,l,c=rig;d.configure({'mode':'music'});d.step(tv(),music(),l.get_snapshot())
+    monkeypatch.setattr(sd,'_director',d)
+    monkeypatch.setattr('music_chapters.available_native_effects',lambda fleet:[{'id':155,'name':'Freqmap','audio':'f'}])
+    original=f.post_state
+    def fail_once(payload,target='all'):
+        f.post_state=original
+        return {'left':{'ok':False,'error':'timeout'}}
+    f.post_state=fail_once
+    with pytest.raises(RuntimeError,match='timeout'):
+        sd.control_show(f,{'action':'native','effect':155,'colors':[[12,100,180]]})
+    assert d.renderer is None and d._output_engine=='ddp'
+    d.step(tv(),music(),l.get_snapshot())
+    assert d.renderer is not None and d.renderer.running
+
+
 def request_api(server,body,origin=None):
     conn=http.client.HTTPConnection('127.0.0.1',server.server_port,timeout=3)
     headers={'Content-Type':'application/json'}

@@ -18,7 +18,7 @@ def clean_policy():
 def test_all_forbidden_refresh_revokes_previous_allowlist():
     client = lightctl.LightClient('http://example.test', dry_run=True)
     mcp_light.seed_effect_catalog(client.host, ['Solid', 'Breathe'])
-    mcp_light.seed_effect_catalog(client.host, ['Strobe', 'Blink'])
+    mcp_light.seed_effect_catalog(client.host, ['Strobe', 'Lightning'])
     assert mcp_light.allowed_effects_for(client, 'all') == set()
 
 

@@ -76,9 +76,13 @@ Capabilities:
   segment), delete_segment (remove a zone). Zones on the same column run
   different effects side by side along its height.
 - Per-LED precision: set_leds writes exact RRGGBB colors per LED or per
-  [start, stop, color] range on a segment. WARNING: writing LEDs freezes
-  the running effect on that segment — it stays frozen until you change a
-  segment property (effect, colors, bounds) again.
+  [start, stop, color] range and keeps the exact frame on screen by streaming
+  it over DDP (fps 1-40, duration_s up to 900; defaults 6 fps / 5 min).
+  While a set_leds frame streams, every strip on the affected controller(s)
+  shows that frame (DDP owns the whole controller); controllers outside the
+  target are untouched. The frame stops on the next state write or
+  realtime_stop. For animated per-pixel looks prefer realtime_start with a
+  shader — set_leds paints one exact static frame, not an animation.
 - Timed shows: start_show runs a multi-step light show — each step is a
   look (an atmosphere, a wall_mode with kwargs, or a raw payload plus
   optional target) plus duration_s (optional transition_s), with optional
@@ -99,12 +103,12 @@ Capabilities:
   anything the typed tools don't cover: playlists, psave presets, nightlight
   (nl), UDP sync (udpn), segment grp/spc/of, c1-c3 custom sliders. Forbidden
   effects stay forbidden there too.
-- Live music control: while Smart Director's music renderer is active, use
-  music_show status/tune/accent to adjust its motion, EQ, palette, brightness,
-  intensity, and colorfulness in place. Do not stop its stream by reaching for
-  static tools merely to tune live music. Honor an explicit request for a
-  native WLED effect, static color, or manual/per-strip look: those are valid
-  handoffs and the existing independent strip tools remain available.
+- Live music control: use music_show status/tune/accent for the live DDP show.
+  For a controller-rendered audio effect, first read wled_read effects/fxdata,
+  then use music_show native with a common 1D audio-reactive effect ID, colors,
+  and optional native_speed/native_intensity. Use music_show ddp to return to
+  local pixel choreography. Only one engine owns output at a time. Static or
+  manual/per-strip requests remain valid independent handoffs.
 
 WLED JSON API quick reference (for wled_write payloads):
 - Top level: on (bool), bri (0-255), transition (100ms units: 10 = 1s),
@@ -134,8 +138,8 @@ Guidance:
 - The device snapshot in the user message contains the full effect catalog
   grouped by mood (♪ audio-reactive, [2D] matrix-style, 🚫 forbidden) and the
   palette list. Match effects to the requested vibe; pick palettes by name.
-- NEVER use 🚫-marked effects (strobe/blink/flash/lightning/fireworks/sparkle
-  — seizure risk). Catalogs are controller-specific; missing data is unknown,
+- NEVER use 🚫-marked effects. Blink, sparkle, and fireworks are available
+  when the live catalog lists them without 🚫. Catalogs are controller-specific; missing data is unknown,
   not permission. Check all selected controllers before using an effect.
 - The provided functions define what is callable in THIS request. Optional
   capabilities need their prerequisites: audio input for reactive motion, a
@@ -181,10 +185,10 @@ RUNTIME_TOOL_PROTOCOL_ADDENDUM = """
 Runtime tool protocol (mandatory; preserve the user's style preferences):
 - The provided tools are the only execution channel. Call them to act; never
   claim that prose, an `actions` array, or other text has changed the lights.
-- `music_show` is available with `status`, `tune`, and `accent`. When a live
-  Smart Director music renderer is active, tune it in place with this tool
-  instead of stopping/replacing its stream. Honor explicit native WLED effect,
-  static color, manual, or per-strip requests as intentional handoffs.
+- `music_show` supports `status`, `tune`, `accent`, `native`, and `ddp`.
+  Tune/accent the DDP show in place. Native accepts a common 1D audio effect ID
+  from live WLED effects/fxdata plus colors; ddp reclaims the stream. Do not
+  run competing output engines. Honor static/manual/per-strip handoffs too.
 - If older instructions request a structured response envelope, tool calls
   still perform the work and the final `response` should be concise,
   human-readable confirmation rather than an execution claim encoded as text.

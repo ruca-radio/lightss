@@ -197,6 +197,20 @@ class GuiHtmlAuditTests(unittest.TestCase):
         self.assertIn("fetchJsonWithTimeout('/api/music-director')", tv)
         self.assertIn("fetchJsonWithTimeout('/api/tv-trivia')", tv)
 
+    def test_firetv_media_controls_are_wired_to_safe_action_names(self):
+        html = light_gui.render_html()
+
+        for marker in (
+            'role="group" aria-label="TV media controls"',
+            "firetvMediaAction('previous')",
+            "firetvMediaAction('play_pause')",
+            "firetvMediaAction('next')",
+            "firetvMediaAction('volume_down')",
+            "firetvMediaAction('mute')",
+            "firetvMediaAction('volume_up')",
+        ):
+            self.assertIn(marker, html)
+
 
 SHARED_ELEMENT_IDS = (
     "musicTitle",

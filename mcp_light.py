@@ -66,7 +66,7 @@ def int_schema(description: str, minimum: int = 0, maximum: int = 255) -> dict:
 def safe_effect_schema() -> dict:
     return {
         "type": "integer",
-        "description": "Effect id from the device's live catalog (0-255; avoid strobe/blink/flash/lightning/fireworks/sparkle types)",
+        "description": "Effect id from the device's live catalog (0-255); 🚫 marks blocked or unavailable effects. Blink, sparkle, and fireworks remain selectable when the live catalog permits them.",
         "minimum": 0,
         "maximum": 255,
     }
@@ -561,8 +561,11 @@ def build_tools() -> list[dict]:
             {
                 "name": "set_leds",
                 "description": (
-                    "Set individual LED colors on the target. Setting individual LEDs freezes the running "
-                    "effect on that segment until any segment property changes."
+                    "Set exact individual LED colors on the target and keep them on screen by streaming "
+                    "the frame over DDP (WLED 0.15+ ignores seg.i persistence). Bounded: fps 1-40 (default 6), "
+                    "duration_s 0.1-900 (default 300). While the frame streams, every strip on the affected "
+                    "controller(s) shows this frame (DDP owns the whole controller); other controllers are "
+                    "untouched. Stops on the next state write or realtime_stop."
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -573,10 +576,13 @@ def build_tools() -> list[dict]:
                             "type": "array",
                             "description": (
                                 "Per-LED colors: either ['RRGGBB', ...] starting from LED 0, or "
-                                "[[start, stop, 'RRGGBB'], ...] ranges (stop exclusive)."
+                                "[[start, stop, 'RRGGBB'], ...] ranges (stop exclusive), bounded by the "
+                                "segment's real pixel count (34/48/40/47 on this wall)."
                             ),
                             "items": {"type": ["string", "array"]},
                         },
+                        "fps": int_schema("Frame re-send rate (persistence rate)", 1, 40),
+                        "duration_s": int_schema("Stream duration in seconds", 1, 900),
                     },
                     "required": ["target", "leds"],
                     "additionalProperties": False,
@@ -655,6 +661,36 @@ def build_tools() -> list[dict]:
                     "additionalProperties": False,
                 },
             },
+            {
+                "name": "tv_play_pause",
+                "description": "Toggle play/pause on the Fire TV media app. Requires Fire TV control to be enabled in the GUI settings.",
+                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
+            {
+                "name": "tv_next",
+                "description": "Skip to the next track on the Fire TV media app. Requires Fire TV control to be enabled in the GUI settings.",
+                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
+            {
+                "name": "tv_previous",
+                "description": "Skip to the previous track on the Fire TV media app. Requires Fire TV control to be enabled in the GUI settings.",
+                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
+            {
+                "name": "tv_volume_up",
+                "description": "Raise Fire TV volume. Requires Fire TV control to be enabled in the GUI settings.",
+                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
+            {
+                "name": "tv_volume_down",
+                "description": "Lower Fire TV volume. Requires Fire TV control to be enabled in the GUI settings.",
+                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
+            {
+                "name": "tv_mute",
+                "description": "Toggle Fire TV mute. Requires Fire TV control to be enabled in the GUI settings.",
+                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
         ]
     )
     # Music Director: mood-matching music mode. Appended after the fleet-arg
@@ -686,16 +722,16 @@ def build_tools() -> list[dict]:
         {
             "name": "music_show",
             "description": (
-                "Inspect or tune the currently active Smart Director music renderer without "
-                "stopping or replacing its live DDP stream. Tune its palette, geometry, EQ "
-                "gains, brightness, and motion; accent triggers one transient EQ-band hit."
+                "Inspect or tune Smart Director music. Tune/accent adjust the live DDP renderer; "
+                "native hands off to a validated common WLED 1D audio-reactive effect, and "
+                "ddp reclaims the pixel stream. Only one output engine runs at a time."
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["status", "tune", "accent"],
+                        "enum": ["status", "tune", "accent", "native", "ddp"],
                         "default": "status",
                     },
                     "motion": {
@@ -729,6 +765,9 @@ def build_tools() -> list[dict]:
                     },
                     "band": {"type": "integer", "minimum": 0, "maximum": 15},
                     "strength": {"type": "number", "minimum": 0, "maximum": 1, "default": 1},
+                    "effect": {"type": "integer", "minimum": 0},
+                    "native_speed": {"type": "integer", "minimum": 0, "maximum": 255},
+                    "native_intensity": {"type": "integer", "minimum": 0, "maximum": 255},
                 },
                 "additionalProperties": False,
             },
@@ -918,8 +957,8 @@ def _is_fleet(client: Any) -> bool:
 # device catalog has been seen. Once a live catalog is seeded here (the GUI
 # seeds it from every AI snapshot; the MCP server seeds it at startup), the
 # AI-facing tools accept every id in the live catalog EXCEPT the 🚫-marked
-# ones (strobe/blink/flash/lightning/fireworks/sparkle names + RSVD
-# placeholders), exactly as the system prompt promises. Everything is
+# ones (explicit strobe/rapid-flash names + RSVD placeholders), exactly as
+# the system prompt promises. Everything is
 # cache-only: seeding never happens on the tool-call hot path, so tests and
 # offline runs keep the legacy SAFE_EFFECTS behavior.
 # ---------------------------------------------------------------------------
@@ -1285,6 +1324,73 @@ def _set_segment_bounds(client: Any, args: dict[str, Any]) -> str:
     )
 
 
+def _set_leds_stream(client: Any, args: dict[str, Any], target: str, segment: Any) -> str:
+    """Paint exact per-LED colors and persist them via bounded DDP streaming.
+
+    WLED 0.15+ renders JSON 'seg.i' writes for a single frame only (freeze is
+    no longer honored), so persistence needs the realtime transport. Scope
+    keeps the old set_leds semantics: a channel target paints that strip; a
+    controller target paints both its strips; an explicit segment overrides;
+    'all' paints the whole wall. DDP owns the whole controller while the
+    frame streams, so non-targeted strips on affected controllers hold black.
+    """
+    if not _is_fleet(client):
+        raise ValueError(
+            "set_leds requires fleet mode (run without --host): per-LED frames are streamed "
+            "over DDP now, which needs the wall topology."
+        )
+    import realtime
+
+    fps = int(args.get("fps", 6))
+    duration_s = float(args.get("duration_s", 300))
+    if not 1 <= fps <= 40:
+        raise ValueError("fps must be between 1 and 40.")
+    if not 0.1 <= duration_s <= 900:
+        raise ValueError("duration_s must be between 0.1 and 900.")
+
+    entries = realtime.ddp_topology(client)
+    scope: set[tuple[str, int]] = set()
+    seg_override = int(segment) if segment is not None else None
+    for name, seg_id in client.resolve(target):
+        if seg_override is not None:
+            scope.add((name, seg_override))
+        elif seg_id is None:
+            scope.update((name, e.seg_id) for e in entries if e.controller == name)
+        else:
+            scope.add((name, seg_id))
+    if not scope:
+        raise ValueError(f"Target {target!r} resolved to no configured segments.")
+    known = {(e.controller, e.seg_id) for e in entries}
+    missing = sorted(scope - known)
+    if missing:
+        raise ValueError(f"Segment(s) not configured with topology: {missing}.")
+
+    lengths: dict[str, int] = {}
+    for entry in entries:
+        lengths[entry.controller] = max(lengths.get(entry.controller, 0), entry.ddp_offset + entry.ddp_length)
+    scope_controllers = {name for name, _seg in scope}
+    frames = {name: bytearray(lengths[name] * 3) for name in lengths if name in scope_controllers}
+    for entry in entries:
+        if (entry.controller, entry.seg_id) not in scope:
+            continue
+        row = lightctl.led_rgb_list(args["leds"], length=entry.pixels)
+        for index, rgb in enumerate(row):
+            position = (entry.ddp_offset + index) * 3
+            frames[entry.controller][position:position + 3] = bytes(rgb)
+    frames = {name: bytes(data) for name, data in frames.items()}
+
+    # WLED realtime shows nothing while off or at bri 0; prime power first
+    # (fleet post_state also hands the lights off to the caller).
+    result = _post_state(client, lightctl.on_payload(True), target)
+    realtime.frame_start(client, frames, fps=fps, duration_s=duration_s)
+    names = ", ".join(sorted(scope_controllers))
+    return _with_fleet_status(
+        f"Set individual LEDs: per-LED frame streaming at {fps} fps for {duration_s:g}s on {names}. "
+        "Stops on the next state write or realtime_stop.",
+        result,
+    )
+
+
 def _wall_mode(client: Any, args: dict[str, Any]) -> str:
     if not _is_fleet(client):
         raise ValueError("wall_mode requires fleet mode (run without --host).")
@@ -1332,7 +1438,7 @@ def call_tool(
 ) -> dict:
     args = arguments or {}
     # DDP/show workers can bypass fleet.post_state; hand off before spawning one.
-    streaming = name in {"realtime_start", "start_show", "start_audio_reactive", "identify"}
+    streaming = name in {"realtime_start", "start_show", "start_audio_reactive", "identify", "set_leds"}
     streaming = streaming or (name == "design_look" and bool(args.get("run")))
     streaming = streaming or (name == "music_director" and str(args.get("action", "")).lower() == "start")
     if streaming:
@@ -1689,16 +1795,7 @@ def call_tool(
         result = _post_state(client, payload, str(args["target"]))
         return text_result(_with_fleet_status(f"Deleted segment {seg_id} (stop=0).", result))
     if name == "set_leds":
-        payload = lightctl.leds_payload(
-            args["leds"], seg_id=int(segment) if segment is not None else None
-        )
-        # WLED ignores per-LED colors when the light is off and 'on' rides in
-        # the same request (JSON API docs: brightness/on must be set first).
-        _post_state(client, lightctl.on_payload(True), target)
-        result = _post_state(client, payload, target)
-        return text_result(
-            _with_fleet_status("Set individual LEDs (running effect frozen until a segment property changes).", result)
-        )
+        return text_result(_set_leds_stream(client, args, target, segment))
     if name == "start_show":
         if not _is_fleet(client):
             raise ValueError("start_show requires fleet mode (run without --host).")
@@ -1730,6 +1827,18 @@ def call_tool(
     if name == "tv_open_url":
         url = str(args["url"])
         return _tv_action(lambda tv: tv.open_url(url), f"Opened {url} on the Fire TV.")
+    if name == "tv_play_pause":
+        return _tv_action(lambda tv: tv.play_pause(), "Toggled Fire TV playback.")
+    if name == "tv_next":
+        return _tv_action(lambda tv: tv.next_track(), "Skipped to the next Fire TV track.")
+    if name == "tv_previous":
+        return _tv_action(lambda tv: tv.previous_track(), "Skipped to the previous Fire TV track.")
+    if name == "tv_volume_up":
+        return _tv_action(lambda tv: tv.volume_up(), "Raised Fire TV volume.")
+    if name == "tv_volume_down":
+        return _tv_action(lambda tv: tv.volume_down(), "Lowered Fire TV volume.")
+    if name == "tv_mute":
+        return _tv_action(lambda tv: tv.mute(), "Toggled Fire TV mute.")
     if name == "calibrate":
         import calibrate as calibrate_mod
 

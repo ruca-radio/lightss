@@ -572,8 +572,49 @@ class McpZoneToolTests(unittest.TestCase):
             )
         self.assertEqual(client.payloads, [])
 
+    def _geometry_fleet(self) -> fleet.LightFleet:
+        """Fleet with full SegmentConfig geometry so DDP topology resolves.
+        Defined on the test case: class is unittest-style; pytest fixtures can
+        still be injected into methods (monkeypatch below).
+        """
+        controllers = [
+            fleet.ControllerConfig(
+                "right",
+                "http://10.27.27.110",
+                {
+                    0: fleet.SegmentConfig(channel="far-right", pixels=40, start=47, stop=87),
+                    1: fleet.SegmentConfig(channel="middle-right", pixels=47, start=0, stop=47),
+                },
+            ),
+            fleet.ControllerConfig(
+                "left",
+                "http://10.27.27.112",
+                {
+                    0: fleet.SegmentConfig(channel="far-left", pixels=34, start=0, stop=34),
+                    1: fleet.SegmentConfig(channel="middle-left", pixels=48, start=34, stop=82),
+                },
+            ),
+        ]
+        clients = {
+            "right": RecordingClient("http://10.27.27.110"),
+            "left": RecordingClient("http://10.27.27.112"),
+        }
+        return fleet.LightFleet(clients, controllers)
+
+    def _record_frame_start(self, bucket):
+        """Capture realtime.frame_start calls instead of streaming to the LAN."""
+        import realtime
+
+        original = realtime.frame_start
+        realtime.frame_start = (
+            lambda fleet_, frames, fps=6, duration_s=300: bucket.append((frames, fps, duration_s)) or "ok"
+        )
+        self.addCleanup(setattr, realtime, "frame_start", original)
+
     def test_set_leds_color_list_targets_segment(self):
-        fleet_ = make_fleet()
+        fleet_ = self._geometry_fleet()
+        started = []
+        self._record_frame_start(started)
         result = mcp_light.call_tool(
             fleet_,
             "set_leds",
@@ -583,14 +624,25 @@ class McpZoneToolTests(unittest.TestCase):
         self.assertIn("content", result)
         self.assertEqual(fleet_.clients["right"].payloads, [])
         left = fleet_.clients["left"].payloads
-        # Power primer first: WLED ignores per-LED 'i' frames from an off state.
-        self.assertEqual(len(left), 2)
+        # Power primer first: WLED realtime shows nothing while the controller is off.
+        self.assertEqual(len(left), 1)
         self.assertEqual(left[0], {"on": True, "udpn": {"nn": True}})
-        self.assertEqual(left[1]["seg"][0]["id"], 0)
-        self.assertEqual(left[1]["seg"][0]["i"], ["FF0000", "00FF00"])
+        frames, fps, duration_s = started[0]
+        self.assertEqual(fps, 6)
+        self.assertEqual(duration_s, 300)
+        # Only the targeted controller streams; middle-left sits at bus 34..82.
+        self.assertEqual(set(frames), {"left"})
+        self.assertEqual(len(frames["left"]), 82 * 3)
+        bus = frames["left"]
+        self.assertEqual(bus[34 * 3:36 * 3], b"\xff\x00\x00\x00\xff\x00")
+        # exactly the two painted LEDs on the bus: red R=255 + green G=255
+        self.assertEqual(sum(bus), 510)
+
 
     def test_set_leds_range_form_with_explicit_segment(self):
-        fleet_ = make_fleet()
+        fleet_ = self._geometry_fleet()
+        started = []
+        self._record_frame_start(started)
         mcp_light.call_tool(
             fleet_,
             "set_leds",
@@ -598,11 +650,33 @@ class McpZoneToolTests(unittest.TestCase):
             FakeModes(),
         )
         right = fleet_.clients["right"].payloads
-        self.assertEqual(len(right), 2)
+        self.assertEqual(len(right), 1)
         self.assertEqual(right[0], {"on": True, "udpn": {"nn": True}})
-        seg = right[1]["seg"][0]
-        self.assertEqual(seg["id"], 1)
-        self.assertEqual(seg["i"], [0, 10, "FF0000", 10, 20, "00FF00"])
+        frames, fps, duration_s = started[0]
+        # segment 1 = middle-right at bus 0..47: first 20 LEDs painted, rest black.
+        self.assertEqual(set(frames), {"right"})
+        bus = frames["right"]
+        self.assertEqual(len(bus), 87 * 3)
+        self.assertEqual(bus[0:3], b"\xff\x00\x00")
+        self.assertEqual(bus[27:33], b"\xff\x00\x00\x00\xff\x00")
+        # 10 red (R=255) + 10 green (G=255) LEDs; everything past LED 19 is black
+        self.assertEqual(sum(bus), 5100)
+        self.assertEqual(sum(bus[60:]), 0)
+
+    def test_set_leds_rejects_ranges_beyond_the_real_segment(self):
+        fleet_ = self._geometry_fleet()
+        started = []
+        self._record_frame_start(started)
+        # middle-left has 48 pixels; a range past 48 must fail, not be clamped
+        # to the old fixed 40-pixel column constant.
+        with self.assertRaises(ValueError):
+            mcp_light.call_tool(
+                fleet_,
+                "set_leds",
+                {"target": "middle-left", "leds": [[40, 49, "FF0000"]]},
+                FakeModes(),
+            )
+        self.assertEqual(started, [])
 
     def test_set_segment_bounds_posts_raw_bounds(self):
         fleet_ = make_fleet()

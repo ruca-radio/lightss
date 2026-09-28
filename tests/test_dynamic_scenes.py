@@ -6,6 +6,7 @@ import lightctl
 import look_memory
 import mcp_light
 import pytest
+import realtime
 
 
 @pytest.fixture(autouse=True)
@@ -40,10 +41,6 @@ class RecordingFleet:
         return {target: {"ok": True}}
 
 
-def _segments(payloads):
-    return {controller: payload["seg"] for controller, payload in payloads.items()}
-
-
 def test_dynamic_catalog_is_canonical_safe_and_non_strobe_named():
     forbidden = ("strobe", "blink", "flash", "lightning", "fireworks", "sparkle", "2d")
     for effect_id in dynamic_scenes.SAFE_EFFECTS.values():
@@ -60,28 +57,34 @@ def test_compose_is_deterministic_with_seed():
 
 def test_uses_calibrated_wall_order_segment_ids_and_pixels():
     f = RecordingFleet()
-    payloads = dynamic_scenes.compose_dynamic_scene(f, strategy="left_to_right", seed=1)
-    assert list(payloads) == ["left", "right"]
-    left, right = _segments(payloads)["left"], _segments(payloads)["right"]
+    composed = dynamic_scenes.compose_dynamic_scene(f, strategy="left_to_right", seed=1)
+    assert sorted(composed) == ["brightness", "frames", "segments"]
+    left, right = composed["segments"]["left"], composed["segments"]["right"]
     assert [seg["id"] for seg in left] == [0, 1]
     assert [seg["id"] for seg in right] == [1, 0]
     # right controller payload follows wall order: seg1 middle-right, seg0 far-right.
-    assert [len(seg["i"]) for seg in left + right] == [34, 48, 47, 40]
+    assert [len(seg["pixels"]) for seg in left + right] == [34, 48, 47, 40]
     assert [(seg["start"], seg["stop"]) for seg in left + right] == [(0, 34), (34, 82), (0, 47), (47, 87)]
+    # Whole-controller DDP buffers: full bus, no gaps, bounded bytes.
+    assert len(composed["frames"]["left"]) == 82 * 3
+    assert len(composed["frames"]["right"]) == 87 * 3
+    assert all(0 <= byte <= 255 for frame in composed["frames"].values() for byte in frame)
 
 
-def test_payloads_are_safe_bounded_and_reassert_topology_bounds():
+def test_frames_are_bounded_and_reassert_topology_bounds():
     f = RecordingFleet()
-    payloads = dynamic_scenes.compose_dynamic_scene(f, mood="party", intensity=1, seed=9)
-    for payload in payloads.values():
-        assert payload["bri"] <= 180
-        assert payload["transition"] >= 10
-        assert payload["udpn"] == {"nn": True}
-        for seg in payload["seg"]:
-            assert seg["fx"] == 0
-            assert "i" in seg
-            assert "start" in seg and "stop" in seg and "len" not in seg
-            assert seg["on"] is True and seg["frz"] is False
+    composed = dynamic_scenes.compose_dynamic_scene(f, mood="party", intensity=1, seed=9)
+    assert set(composed["brightness"]) == {"left", "right"}
+    assert all(bri <= 180 for bri in composed["brightness"].values())
+    for controller, segments in composed["segments"].items():
+        assert segments
+        for seg in segments:
+            assert all(key in seg for key in ("start", "stop", "pixels"))
+            assert seg["stop"] - seg["start"] == len(seg["pixels"])
+            assert 0 < seg["bri"] <= 180
+    for frame in composed["frames"].values():
+        assert len(frame) % 3 == 0
+        assert all(0 <= byte <= 255 for byte in frame)
 
 
 def test_auto_strategy_from_mood_energy_motion():
@@ -95,16 +98,27 @@ def test_auto_strategy_from_mood_energy_motion():
     assert rise["left"]["seg"][0]["rev"] is False
 
 
-def test_apply_primes_power_before_per_led_frames():
+def test_apply_primes_power_then_streams_frames(monkeypatch):
     f = RecordingFleet()
+    started = []
+    monkeypatch.setattr(
+        realtime,
+        "frame_start",
+        lambda fleet_, frames, fps=6, duration_s=300: started.append((frames, fps, duration_s)) or "ok",
+    )
     result = dynamic_scenes.apply_dynamic_scene(f, mood="ocean calm", seed=4)
-    # Per controller: an on/bri primer (WLED ignores 'i' frames when 'on'
-    # rides in the same request from an off state), then the frame payload.
-    assert [target for target, _payload in f.posts] == ["left", "left", "right", "right"]
-    for (_t1, primer), (_t2, frame) in ((f.posts[0], f.posts[1]), (f.posts[2], f.posts[3])):
+    # Per controller: an on/bri primer (WLED realtime shows nothing while the
+    # controller is off), then one DDP frame stream for the whole wall.
+    assert [target for target, _payload in f.posts] == ["left", "right"]
+    for _target, primer in f.posts:
         assert "seg" not in primer
-        assert primer["on"] is True and "bri" in primer
-        assert any("i" in seg for seg in frame["seg"])
+        assert primer["on"] is True and "bri" in primer and primer["bri"] > 0
+    assert len(started) == 1
+    frames, fps, duration_s = started[0]
+    assert fps == 6 and duration_s == 300  # bounded defaults
+    assert set(frames) == {"left", "right"}
+    assert len(frames["left"]) == 82 * 3
+    assert len(frames["right"]) == 87 * 3
     assert set(result) == {"left", "right"}
     assert look_memory.last_look()["parameters"]["mood"] == "ocean calm"
 
@@ -119,17 +133,17 @@ def test_missing_pixel_metadata_fails_closed():
 def test_extra_non_wall_channel_is_not_touched():
     f = RecordingFleet()
     f.controllers[0].segments[9] = fleet.SegmentConfig("ceiling", gpio=4, pixels=12)
-    payloads = dynamic_scenes.compose_dynamic_scene(f)
-    ids = [seg["id"] for payload in payloads.values() for seg in payload["seg"]]
+    composed = dynamic_scenes.compose_dynamic_scene(f)
+    ids = [seg["id"] for segments in composed["segments"].values() for seg in segments]
     assert 9 not in ids
 
 
 def test_custom_installation_wall_order_is_honored():
     f = RecordingFleet()
     f.installation = fleet.InstallationConfig(wall_order=["middle-right", "middle-left"])
-    payloads = dynamic_scenes.compose_dynamic_scene(f, strategy="left_to_right")
-    assert [seg["id"] for seg in payloads["right"]["seg"]] == [1]
-    assert [seg["id"] for seg in payloads["left"]["seg"]] == [1]
+    composed = dynamic_scenes.compose_dynamic_scene(f, strategy="left_to_right")
+    assert [seg["id"] for seg in composed["segments"]["right"]] == [1]
+    assert [seg["id"] for seg in composed["segments"]["left"]] == [1]
 
 
 def test_effect_availability_falls_back_to_breathe():
@@ -149,26 +163,26 @@ def test_effect_availability_raises_when_fallback_missing():
 
 def test_generated_top_glow_maps_to_high_indices_for_bottom_zero():
     f = RecordingFleet()
-    seg = dynamic_scenes.compose_dynamic_scene(f, strategy="top_glow")["left"]["seg"][0]
-    low = sum(seg["i"][0])
-    high = sum(seg["i"][-1])
+    seg = dynamic_scenes.compose_dynamic_scene(f, strategy="top_glow")["segments"]["left"][0]
+    low = sum(seg["pixels"][0])
+    high = sum(seg["pixels"][-1])
     assert high > low
 
 
 def test_generated_top_glow_inverts_when_pixel_zero_top():
     f = RecordingFleet()
     f.installation = fleet.InstallationConfig(pixel_zero="top")
-    seg = dynamic_scenes.compose_dynamic_scene(f, strategy="top_glow")["left"]["seg"][0]
-    assert sum(seg["i"][0]) > sum(seg["i"][-1])
+    seg = dynamic_scenes.compose_dynamic_scene(f, strategy="top_glow")["segments"]["left"][0]
+    assert sum(seg["pixels"][0]) > sum(seg["pixels"][-1])
 
 
 def test_composition_modes_and_brightness_vary():
     f = RecordingFleet()
-    payloads = dynamic_scenes.compose_dynamic_scene(f, composition_mode="independent", strategy="center_bloom")
-    bris = [seg["bri"] for payload in payloads.values() for seg in payload["seg"]]
+    composed = dynamic_scenes.compose_dynamic_scene(f, composition_mode="independent", strategy="center_bloom")
+    bris = [seg["bri"] for segments in composed["segments"].values() for seg in segments]
     assert len(set(bris)) > 1
     unison = dynamic_scenes.compose_dynamic_scene(f, composition_mode="unison")
-    assert len({seg["bri"] for payload in unison.values() for seg in payload["seg"]}) == 1
+    assert len({seg["bri"] for segments in unison["segments"].values() for seg in segments}) == 1
 
 
 def test_random_groups_shimmer_is_seed_deterministic():
@@ -180,12 +194,15 @@ def test_random_groups_shimmer_is_seed_deterministic():
     assert a != c
 
 
-def test_mcp_dynamic_scene_posts_per_controller():
+def test_mcp_dynamic_scene_posts_per_controller(monkeypatch):
     f = RecordingFleet()
+    started = []
+    monkeypatch.setattr(realtime, "frame_start", lambda fleet_, frames, fps=6, duration_s=300: started.append(frames) or "ok")
     result = mcp_light.call_tool(f, "dynamic_scene", {"mood": "dreamy", "seed": 3}, None)
     assert "Applied dynamic scene" in result["content"][0]["text"]
-    # Primer + frame payload per controller (generated engine paints 'i' frames).
-    assert [target for target, _payload in f.posts] == ["left", "left", "right", "right"]
+    # On/bri primer per controller, then one DDP frame stream (generated engine).
+    assert [target for target, _payload in f.posts] == ["left", "right"]
+    assert len(started) == 1 and set(started[0]) == {"left", "right"}
 
 
 def test_mcp_segments_info_uses_runtime_wall_order():
@@ -194,8 +211,9 @@ def test_mcp_segments_info_uses_runtime_wall_order():
     assert mcp_light._segments_info(f)["wall_order"] == ["middle-right", "middle-left"]
 
 
-def test_dynamic_scene_records_compact_memory_without_frames():
+def test_dynamic_scene_records_compact_memory_without_frames(monkeypatch):
     f = RecordingFleet()
+    monkeypatch.setattr(realtime, "frame_start", lambda fleet_, frames, fps=6, duration_s=300: "ok")
     dynamic_scenes.apply_dynamic_scene(f, mood="calm", composition_mode="independent", seed=5)
     event = look_memory.last_look()
     assert event["source"] == "dynamic_scene"
@@ -212,7 +230,7 @@ def test_custom_colors_override_stock_mood_palette():
         strategy="quiet_gradient",
         seed=1,
     )
-    frame = teal["left"]["seg"][0]["i"]
+    frame = teal["segments"]["left"][0]["pixels"]
     assert frame[0][1] >= frame[0][0]
     assert frame[0][1] >= frame[0][2]
 
@@ -221,7 +239,7 @@ def test_generated_palettes_change_with_seed():
     f = RecordingFleet()
     a = dynamic_scenes.compose_dynamic_scene(f, mood="ember dusk", strategy="quiet_gradient", seed=3)
     b = dynamic_scenes.compose_dynamic_scene(f, mood="ember dusk", strategy="quiet_gradient", seed=9)
-    assert a["left"]["seg"][0]["i"] != b["left"]["seg"][0]["i"]
+    assert a["segments"]["left"][0]["pixels"] != b["segments"]["left"][0]["pixels"]
 
 
 def test_look_memory_feedback_summary_and_bounded_history():
@@ -248,8 +266,8 @@ def test_unspecified_composition_rotates_instead_of_always_unison():
     bri_patterns = set()
     unison_seeds = 0
     for seed in range(12):
-        payloads = dynamic_scenes.compose_dynamic_scene(f, mood="moody lounge", seed=seed)
-        bris = tuple(sorted(seg["bri"] for payload in payloads.values() for seg in payload["seg"]))
+        composed = dynamic_scenes.compose_dynamic_scene(f, mood="moody lounge", seed=seed)
+        bris = tuple(sorted(seg["bri"] for segments in composed["segments"].values() for seg in segments))
         bri_patterns.add(bris)
         if len(set(bris)) == 1:
             unison_seeds += 1

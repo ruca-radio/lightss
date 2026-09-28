@@ -309,3 +309,104 @@ def test_runner_unspecified_composition_rotates_per_seed():
         assert runner.composition_mode in color_lab.COMPOSITION_MODES
         modes.add(runner.composition_mode)
     assert len(modes) >= 3
+
+
+# ---------------------------------------------------------------------------
+# Static per-LED frame streaming (set_leds / dynamic_scene persistence on
+# WLED 0.15+, where JSON seg.i frames no longer stay on screen)
+# ---------------------------------------------------------------------------
+
+
+def test_frame_runner_restreams_until_stopped():
+    f = FakeFleet()
+    entries = realtime.ddp_topology(f)
+    frames = realtime.render_frames(entries, shader="liquid_gradient", seed=1, t=0.3)
+    tx = FakeTransport()
+    runner = realtime.StaticFrameRunner(f, frames, fps=40, duration_s=0.4, transport=tx)
+    runner.start(); runner.join(timeout=2)
+    assert runner.sent_frames >= 2
+    assert tx.sent
+    assert {addr[1] for _data, addr in tx.sent} == {4048}
+
+
+def test_frame_runner_rejects_misaligned_frames_before_opening_socket():
+    f = FakeFleet()
+    with pytest.raises(ValueError, match="Frame for 'left'"):
+        realtime.StaticFrameRunner(f, {"left": b"\x00" * 3}, transport=FakeTransport())
+    with pytest.raises(ValueError, match="Unknown controller"):
+        realtime.StaticFrameRunner(f, {"nope": b""}, transport=FakeTransport())
+
+
+def test_frame_start_status_replace_and_stop(monkeypatch):
+    f = FakeFleet()
+    entries = realtime.ddp_topology(f)
+    frames = realtime.render_frames(entries, shader="aurora_flow", seed=2, t=0.1)
+    transports = []
+    OriginalRunner = realtime.StaticFrameRunner
+
+    def make_runner(fleet_, frames, fps=6, duration_s=300, transport=None):
+        tx = FakeTransport()
+        transports.append(tx)
+        return OriginalRunner(fleet_, frames, fps=fps, duration_s=duration_s, transport=tx)
+
+    monkeypatch.setattr(realtime, "StaticFrameRunner", make_runner)
+    try:
+        assert "streaming" in realtime.frame_start(f, frames, fps=30, duration_s=999)
+        assert realtime.frame_status()["running"] is True
+        assert realtime.frame_status()["controllers"] == ["left", "right"]
+        assert "streaming" in realtime.frame_start(f, frames, fps=12, duration_s=60)  # replaces previous
+        assert len(transports) == 2
+        assert "stopped" in realtime.frame_stop()
+        assert realtime.frame_status()["running"] is False
+        assert realtime.frame_stop() == "Static frame not running."
+    finally:
+        realtime.frame_stop()
+
+
+def test_realtime_stop_also_stops_frame_runner(monkeypatch):
+    f = FakeFleet()
+    entries = realtime.ddp_topology(f)
+    frames = realtime.render_frames(entries, shader="bass_bloom", seed=3, t=0.0)
+    OriginalRunner = realtime.StaticFrameRunner
+
+    def make_runner(fleet_, frames, fps=6, duration_s=300, transport=None):
+        return OriginalRunner(fleet_, frames, fps=fps, duration_s=duration_s, transport=FakeTransport())
+
+    monkeypatch.setattr(realtime, "StaticFrameRunner", make_runner)
+    try:
+        realtime.frame_start(f, frames)
+        assert realtime.frame_status()["running"] is True
+        result = realtime.realtime_stop()
+        assert "stopped" in result
+        assert realtime.frame_status()["running"] is False
+        assert realtime._frame_runner is None
+    finally:
+        realtime.realtime_stop()
+
+
+def test_realtime_start_replaces_frame_runner(monkeypatch):
+    f = FakeFleet()
+    entries = realtime.ddp_topology(f)
+    frames = realtime.render_frames(entries, shader="ember_rise", seed=5, t=0.5)
+    OriginalFrame = realtime.StaticFrameRunner
+
+    def make_frame(fleet_, frames, fps=6, duration_s=300, transport=None):
+        return OriginalFrame(fleet_, frames, fps=fps, duration_s=duration_s, transport=FakeTransport())
+
+    monkeypatch.setattr(realtime, "StaticFrameRunner", make_frame)
+    OriginalRT = realtime.RealtimeRunner
+
+    def make_rt(fleet_, **kwargs):
+        kwargs["transport"] = FakeTransport()
+        kwargs["duration_s"] = 0.05
+        return OriginalRT(fleet_, **kwargs)
+
+    monkeypatch.setattr(realtime, "RealtimeRunner", make_rt)
+    try:
+        realtime.frame_start(f, frames)
+        assert realtime.frame_status()["running"] is True
+        realtime.realtime_start(f, shader="aurora_flow")
+        assert realtime.frame_status()["running"] is False
+        assert realtime.realtime_status()["running"] is True
+    finally:
+        realtime.realtime_stop()

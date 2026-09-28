@@ -32,6 +32,12 @@ DISABLED_MESSAGE = "FireTV control is disabled in settings"
 
 KEYCODE_WAKEUP = 224
 KEYCODE_SLEEP = 223
+KEYCODE_MEDIA_PLAY_PAUSE = 85
+KEYCODE_MEDIA_NEXT = 87
+KEYCODE_MEDIA_PREVIOUS = 88
+KEYCODE_VOLUME_UP = 24
+KEYCODE_VOLUME_DOWN = 25
+KEYCODE_VOLUME_MUTE = 164
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +310,36 @@ def wake(cfg: dict | None = None) -> str:
 def sleep(cfg: dict | None = None) -> str:
     """Put the FireTV screen to sleep (KEYCODE_SLEEP)."""
     return keyevent(KEYCODE_SLEEP, cfg)
+
+
+def play_pause(cfg: dict | None = None) -> str:
+    """Toggle media playback (KEYCODE_MEDIA_PLAY_PAUSE)."""
+    return keyevent(KEYCODE_MEDIA_PLAY_PAUSE, cfg)
+
+
+def next_track(cfg: dict | None = None) -> str:
+    """Skip to the next media track (KEYCODE_MEDIA_NEXT)."""
+    return keyevent(KEYCODE_MEDIA_NEXT, cfg)
+
+
+def previous_track(cfg: dict | None = None) -> str:
+    """Skip to the previous media track (KEYCODE_MEDIA_PREVIOUS)."""
+    return keyevent(KEYCODE_MEDIA_PREVIOUS, cfg)
+
+
+def volume_up(cfg: dict | None = None) -> str:
+    """Raise FireTV volume (KEYCODE_VOLUME_UP)."""
+    return keyevent(KEYCODE_VOLUME_UP, cfg)
+
+
+def volume_down(cfg: dict | None = None) -> str:
+    """Lower FireTV volume (KEYCODE_VOLUME_DOWN)."""
+    return keyevent(KEYCODE_VOLUME_DOWN, cfg)
+
+
+def mute(cfg: dict | None = None) -> str:
+    """Toggle FireTV mute (KEYCODE_VOLUME_MUTE)."""
+    return keyevent(KEYCODE_VOLUME_MUTE, cfg)
 
 
 def open_url(url: str, cfg: dict | None = None) -> str:

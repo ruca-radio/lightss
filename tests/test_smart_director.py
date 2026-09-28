@@ -72,6 +72,142 @@ def test_confident_music_starts_after_debounce_not_each_track_beat(rig):
     c.advance(10);d.step(tv(description='Another song'),music(),l.get_snapshot())
     assert d.renderer is renderer and len(f.posts)==n
 
+
+def test_music_requests_new_chapter_from_mic_without_restarting_renderer(rig):
+    d,f,l,c=rig
+    calls=[]
+    def chapter(settings, track, audio, previous, index):
+        calls.append((track,audio,previous,index))
+        return {'colors': [[30, 180, 90], [180, 30, 110]], 'motion': 'ripple'}
+    d.chapter_fn=chapter
+    d.configure({'mode':'music'})
+    d.step(tv(description='Song A'),music(),l.get_snapshot())
+    renderer=d.renderer
+    c.advance(16)
+    d.step(tv(description='Song A'),music(),l.get_snapshot())
+    assert d._chapter_future.result(timeout=2)['motion']=='ripple'
+    d.step(tv(description='Song A'),music(),l.get_snapshot())
+    assert d.renderer is renderer
+    assert renderer.looks[-1]['colors']==[[30, 180, 90], [180, 30, 110]]
+    assert calls[0][0]=='Song A'
+    assert calls[0][1]['level_avg']>.0
+    assert len(calls[0][1]['fft_avg'])==16
+    c.advance(121)
+    d.step(tv(description='Song A'),music(),l.get_snapshot())
+    assert d._chapter_future.result(timeout=2)
+    assert len(calls)==2
+
+
+def test_stale_chapter_cannot_overwrite_new_track_or_manual_mode(rig):
+    from concurrent.futures import Future
+    d,f,l,c=rig
+    d.configure({'mode':'music'})
+    d.step(tv(description='Song A'),music(),l.get_snapshot())
+    old=Future();d._chapter_future=old;d._chapter_request_key='Song A'
+    d.step(tv(description='Song B'),music(),l.get_snapshot())
+    old.set_result({'colors': [[50, 180, 70], [180, 50, 80]], 'motion':'chase'})
+    d.step(tv(description='Song B'),music(),l.get_snapshot())
+    assert d.renderer.looks[-1]['colors']!=[[50, 180, 70], [180, 50, 80]]
+    d.configure({'mode':'manual'})
+    assert d.status()['mode']=='manual'
+
+
+def test_pending_chapter_cannot_change_tv_after_mode_handoff(rig):
+    from concurrent.futures import Future
+    d,f,l,c=rig
+    d.configure({'mode':'music'})
+    d.step(tv(description='Song A'),music(),l.get_snapshot())
+    pending=Future();d._chapter_future=pending
+    d._chapter_request_key='Song A';d._chapter_request_generation=d._chapter_generation
+    d.configure({'mode':'tv'})
+    d.step(tv(description='Song A'),music(),l.get_snapshot())
+    pending.set_result({'colors':[[40,180,80],[170,40,90]],'motion':'chase'})
+    d.step(tv(description='Song A'),music(),l.get_snapshot())
+    assert d.status()['mode']=='tv'
+    assert d.status()['renderer']['running'] is False
+    assert d.status()['chapters']['applied']==0
+
+
+def test_failed_model_chapter_retries_without_interrupting_renderer(rig):
+    d,f,l,c=rig
+    calls=[]
+    def unavailable(*args):
+        calls.append(1)
+        return None
+    d.chapter_fn=unavailable;d.configure({'mode':'music'})
+    d.step(tv(description='Song A'),music(),l.get_snapshot())
+    renderer=d.renderer
+    c.advance(16);d.step(tv(description='Song A'),music(),l.get_snapshot())
+    assert d._chapter_future.result(timeout=2) is None
+    d.step(tv(description='Song A'),music(),l.get_snapshot())
+    assert d.renderer is renderer and d.status()['mode']=='music'
+    assert d.status()['chapters']['last_error']
+    c.advance(29);d.step(tv(description='Song A'),music(),l.get_snapshot())
+    assert len(calls)==1
+    c.advance(2);d.step(tv(description='Song A'),music(),l.get_snapshot())
+    assert d._chapter_future.result(timeout=2) is None
+    assert len(calls)==2
+
+
+def test_next_chapter_receives_recent_looks_and_model_eq_reaches_renderer(rig):
+    d,f,l,c=rig
+    calls=[]
+    def chapter(settings, track, audio, previous, index):
+        calls.append(previous)
+        if index==1:
+            return {'colors':[[30,160,90],[170,35,125]],'motion':'ripple',
+                    'band_gains':[1.5]*4+[.7]*12}
+        return {'colors':[[170,110,30],[40,50,170]],'motion':'chase'}
+    d.chapter_fn=chapter;d.configure({'mode':'music'})
+    d.step(tv(description='Song A'),music(),l.get_snapshot())
+    c.advance(16);d.step(tv(description='Song A'),music(),l.get_snapshot())
+    d._chapter_future.result(timeout=2)
+    d.step(tv(description='Song A'),music(),l.get_snapshot())
+    assert d.renderer.looks[-1]['band_gains']==[1.5]*4+[.7]*12
+    c.advance(121);d.step(tv(description='Song A'),music(),l.get_snapshot())
+    d._chapter_future.result(timeout=2)
+    assert calls[1]['recent'][-1]['motion']=='ripple'
+
+
+def test_model_chapter_hands_ddp_to_native_and_back_without_restarting_mic(rig,monkeypatch):
+    import music_chapters
+    d,f,l,c=rig
+    catalog=[{'id':155,'name':'Freqmap','audio':'f'}]
+    monkeypatch.setattr(music_chapters,'available_native_effects',lambda fleet:catalog)
+    def chapter(settings,track,audio,previous,index):
+        if index==1:return {'engine':'native','effect':155,'native_speed':170,
+                            'native_intensity':180,'colors':[[30,160,90],[170,35,125]]}
+        return {'engine':'ddp','colors':[[170,110,30],[40,50,170]],'motion':'chase'}
+    d.chapter_fn=chapter;d.configure({'mode':'music'})
+    d.step(tv(description='Song A'),music(),l.get_snapshot())
+    original=d.renderer
+    c.advance(16);d.step(tv(description='Song A'),music(),l.get_snapshot())
+    d._chapter_future.result(timeout=2);d.step(tv(description='Song A'),music(),l.get_snapshot())
+    assert not original.is_alive()
+    assert d.status()['output_engine']=='native'
+    assert d.status()['native_effect']==155
+    assert f.posts[-1][0]['seg'][0]['fx']==155
+    assert l.started is False or not d._listener_stopped
+    c.advance(121);d.step(tv(description='Song A'),music(),l.get_snapshot())
+    d._chapter_future.result(timeout=2);d.step(tv(description='Song A'),music(),l.get_snapshot())
+    assert d.status()['output_engine']=='ddp'
+    assert d.renderer is not original and d.renderer.is_alive()
+    assert d._listener_stopped is False
+
+
+def test_invalid_native_effect_does_not_stop_ddp(rig,monkeypatch):
+    import music_chapters
+    d,f,l,c=rig
+    monkeypatch.setattr(music_chapters,'available_native_effects',lambda fleet:[{'id':155,'name':'Freqmap','audio':'f'}])
+    d.chapter_fn=lambda *args:{'engine':'native','effect':23,'colors':[[30,160,90],[170,35,125]]}
+    d.configure({'mode':'music'});d.step(tv(description='Song A'),music(),l.get_snapshot())
+    renderer=d.renderer;posts=len(f.posts)
+    c.advance(16);d.step(tv(description='Song A'),music(),l.get_snapshot())
+    d._chapter_future.result(timeout=2);d.step(tv(description='Song A'),music(),l.get_snapshot())
+    assert d.renderer is renderer and renderer.is_alive()
+    assert len(f.posts)==posts
+    assert d.status()['chapters']['last_error']
+
 def test_video_app_overrides_soundtrack_music_decision(rig):
     d,f,l,c=rig;d.configure({'mode':'music'});d.step(tv(),music(),l.get_snapshot());r=d.renderer
     d.configure({'mode':'auto'});d.step(tv('com.netflix.ninja','tv'),music(),l.get_snapshot())

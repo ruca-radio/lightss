@@ -31,7 +31,7 @@ def test_music_show_schema_exposes_full_bounded_status_tune_accent_contract():
     schema = _music_tool()["inputSchema"]
     props = schema["properties"]
     assert schema["additionalProperties"] is False
-    assert props["action"]["enum"] == ["status", "tune", "accent"]
+    assert props["action"]["enum"] == ["status", "tune", "accent", "native", "ddp"]
     assert props["action"]["default"] == "status"
     assert props["motion"]["enum"] == ["auto", "flow", "punch", "chase", "spectrum", "comet", "ripple"]
     assert (props["speed"]["minimum"], props["speed"]["maximum"]) == (0.25, 4)

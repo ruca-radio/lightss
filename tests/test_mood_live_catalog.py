@@ -22,11 +22,20 @@ def test_mood_accepts_tri_fade_from_live_controller_catalog():
     assert payload['seg'][0]['col'][0][:3] == [90, 15, 110]
 
 
-def test_mood_still_rejects_controller_effect_marked_blink():
+def test_mood_preserves_live_controller_blink_effect():
+    plan = {'actions': [{'action': 'effect', 'effect': 1}]}
+    with patch.dict(mcp_light._fx_allowed, {}, clear=True), patch.object(light_gui, 'call_openai_for_plan', return_value=plan):
+        assert light_gui.generate_mood_for_song(controller(), {'title': 'Ride'})['seg'][0]['fx'] == 1
+
+
+def test_mood_still_rejects_controller_effect_marked_strobe():
+    client = controller()
+    effects = client.get_device_snapshot()['effects']
+    effects[1] = 'Strobe'
     plan = {'actions': [{'action': 'effect', 'effect': 1}]}
     with patch.dict(mcp_light._fx_allowed, {}, clear=True), patch.object(light_gui, 'call_openai_for_plan', return_value=plan):
         with pytest.raises(ValueError):
-            light_gui.generate_mood_for_song(controller(), {'title': 'Ride'})
+            light_gui.generate_mood_for_song(client, {'title': 'Ride'})
 
 
 def test_mood_without_catalog_cannot_inherit_unrelated_client_policy():

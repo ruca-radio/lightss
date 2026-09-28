@@ -774,7 +774,78 @@ class AudioReactiveRunner(threading.Thread):
 
 
 _runner: RealtimeRunner | None = None
+_frame_runner: StaticFrameRunner | None = None
 _lock = threading.Lock()
+
+
+class StaticFrameRunner(threading.Thread):
+    """Re-stream one fixed per-controller bus frame over DDP.
+
+    WLED 0.15+ renders a JSON ``seg.i`` write for a single frame (the old
+    freeze flag is set but never honored), so an exact per-LED picture only
+    persists while frames keep arriving. This runner re-sends the same frames
+    at a low bounded rate — persistence, not animation. It owns whole
+    controllers while running (DDP realtime overrides every segment), so
+    painting one strip blanks its controller's other strips for the duration.
+    """
+
+    MAX_CONSECUTIVE_ERRORS = 100
+
+    def __init__(self, fleet, frames, fps=6, duration_s=300, transport=None):
+        super().__init__(daemon=True, name="static-frame-ddp")
+        self.fleet = fleet
+        # Validate topology before allocating the default socket.
+        self.entries = ddp_topology(fleet)
+        lengths: dict[str, int] = {}
+        for entry in self.entries:
+            lengths[entry.controller] = max(lengths.get(entry.controller, 0), entry.ddp_offset + entry.ddp_length)
+        expected = {name: length * 3 for name, length in lengths.items()}
+        if not isinstance(frames, dict) or not frames:
+            raise ValueError("frame_start requires a dict of {controller: bytes} frames.")
+        for controller, data in frames.items():
+            if controller not in expected:
+                raise ValueError(f"Unknown controller {controller!r} in frame set (known: {sorted(expected)}).")
+            if len(data) != expected[controller]:
+                raise ValueError(
+                    f"Frame for {controller!r} is {len(data)} bytes, expected {expected[controller]} "
+                    f"({lengths[controller]} pixels RGB)."
+                )
+        self.frames = {name: bytes(data) for name, data in frames.items()}
+        self.fps = min(40, max(1, int(fps or 6)))
+        self.duration_s = min(900, max(1.0, float(duration_s or 300)))
+        self.transport = transport or UdpTransport()
+        self.stop_event = threading.Event()
+        self.sent_frames = 0
+        self.hosts = {controller.name: _host_ip(controller.host) for controller in fleet.controllers}
+
+    def run(self):
+        start = time.monotonic(); next_tick = start; seq = 0
+        send_errors = 0
+        while not self.stop_event.is_set() and time.monotonic() - start < self.duration_s:
+            now = time.monotonic()
+            if now < next_tick:
+                time.sleep(min(0.01, next_tick - now)); continue
+            try:
+                for controller, data in self.frames.items():
+                    for packet in build_ddp_packets(data, 0, seq):
+                        self.transport.sendto(packet, (self.hosts[controller], DDP_PORT))
+            except OSError as exc:
+                send_errors += 1
+                if send_errors <= 3 or send_errors % 50 == 0:
+                    logger.warning("static frame DDP send error (#%d): %s", send_errors, exc)
+                if send_errors >= self.MAX_CONSECUTIVE_ERRORS:
+                    logger.error("static frame DDP aborting after %d consecutive send errors", send_errors)
+                    break
+                next_tick += 1 / self.fps
+                continue
+            send_errors = 0
+            self.sent_frames += 1; seq = (seq + 1) % 256
+            next_tick += 1 / self.fps
+            if time.monotonic() - next_tick > 1 / self.fps:
+                next_tick = time.monotonic()
+
+    def stop(self):
+        self.stop_event.set()
 
 
 def realtime_start(fleet, **kwargs) -> str:
@@ -792,16 +863,65 @@ def realtime_start(fleet, **kwargs) -> str:
     return f"Realtime started: {_runner.shader} at {_runner.fps} fps for {_runner.duration_s:g}s with {len(_runner.colors)} colors."
 
 
+def _stop_runner(runner: threading.Thread | None) -> None:
+    if runner is None:
+        return
+    runner.stop()
+    runner.join(timeout=2)
+    try:
+        runner.transport.close()
+    except Exception:
+        pass
+
+
 def realtime_stop() -> str:
-    global _runner
-    if _runner:
-        _runner.stop(); _runner.join(timeout=2)
-        try: _runner.transport.close()
-        except Exception: pass
+    global _runner, _frame_runner
+    if _runner or _frame_runner:
+        _stop_runner(_runner); _runner = None
+        _stop_runner(_frame_runner); _frame_runner = None
         look_memory.record_look(source="realtime", action="realtime_stop", summary="realtime stopped")
-        _runner = None
         return "Realtime stopped."
     return "Realtime not running."
+
+
+def frame_start(fleet, frames, fps=6, duration_s=300) -> str:
+    """Persist one exact per-LED frame on the wall via bounded DDP streaming."""
+    global _frame_runner
+    try:
+        import shows
+        # DDP repaints every frame; a running show's steps would be invisible.
+        shows.stop_show()
+    except Exception:
+        pass
+    with _lock:
+        frame_stop()
+        _frame_runner = StaticFrameRunner(fleet, frames, fps=fps, duration_s=duration_s)
+        _frame_runner.start()
+    return (
+        f"Per-LED frame streaming at {_frame_runner.fps} fps for {_frame_runner.duration_s:g}s "
+        f"across {', '.join(sorted(_frame_runner.frames))}; stops on the next state write or realtime_stop."
+    )
+
+
+def frame_stop() -> str:
+    global _frame_runner
+    if _frame_runner:
+        _stop_runner(_frame_runner)
+        _frame_runner = None
+        return "Static frame stopped."
+    return "Static frame not running."
+
+
+def frame_status() -> dict:
+    r = _frame_runner
+    return {
+        "running": bool(r and r.is_alive()),
+        "fps": getattr(r, "fps", None),
+        "duration_s": getattr(r, "duration_s", None),
+        "remaining_s": max(0.0, r.duration_s - r.sent_frames / max(1, r.fps)) if r else None,
+        "sent_frames": getattr(r, "sent_frames", 0),
+        "controllers": sorted(r.frames) if r else [],
+    }
 
 
 def realtime_status() -> dict:

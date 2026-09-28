@@ -57,6 +57,7 @@ py-modules = [
     "player_library",
     "lightctl",
     "look_agents",
+    "music_chapters",
     "look_memory",
     "main",
     "mcp_light",

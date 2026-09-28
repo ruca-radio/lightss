@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Opinionated dynamic scene composer for the calibrated Lightss wall.
 
-Pure composition lives in ``compose_dynamic_scene``; ``apply_dynamic_scene`` only
-posts the composed per-controller payloads. V2 defaults to generated static
-pixel frames; stock WLED effects remain available with engine='effect'.
+Pure composition lives in ``compose_dynamic_scene``; ``apply_dynamic_scene``
+posts primes and streams composed frames/effects. The default generated engine
+composes exact-length pixel frames and persists them via the bounded DDP frame
+runner (JSON seg.i persistence is dead on WLED 0.15+); stock WLED effects
+remain available with engine='effect'.
 """
 
 from __future__ import annotations
@@ -221,7 +223,33 @@ def _frame(entry: WallEntry, strategy: str, colors: list[list[int]], group: int,
     return frame
 
 
-def _compose_generated(entries: list[WallEntry], mood: str, energy: str, motion: str, strategy: str, composition_mode: str, seed: int | str | None, intensity: float | None, colors: list | None = None) -> dict[str, dict]:
+def _scale_rows(rows: list[list[int]], factor: float) -> list[list[int]]:
+    """Dim rows uniformly toward a per-strip brightness (0 < factor <= 1)."""
+    if factor >= 1.0:
+        return [list(row[:3]) for row in rows]
+    return [[min(255, int(channel * factor)) for channel in row[:3]] for row in rows]
+
+
+def _compose_generated_frames(
+    entries: list[WallEntry],
+    mood: str,
+    energy: str,
+    motion: str,
+    strategy: str,
+    composition_mode: str | None,
+    seed: int | str | None,
+    intensity: float | None,
+    colors: list | None = None,
+) -> tuple[dict[str, bytes], dict[str, list[dict]], dict[str, int]]:
+    """Compose exact per-LED frames as whole-controller DDP bus buffers.
+
+    Returns (frames, segments, brightness): ``frames`` is one bytes buffer
+    per controller covering its full bus (unpainted pixels black), ready for
+    realtime.frame_start; ``segments`` mirrors the old per-segment payload
+    shape (id/start/stop/pixels/bri) minus the dead JSON 'i' grammar;
+    ``brightness`` is each controller's priming brightness. Per-strip group
+    brightness variance is baked into the pixels so it survives DDP.
+    """
     rng = random.Random(seed)
     strategy = (strategy or _auto_strategy(mood, energy, motion)).strip().lower().replace("-", "_")
     if strategy == "quiet_gradient":
@@ -230,14 +258,37 @@ def _compose_generated(entries: list[WallEntry], mood: str, energy: str, motion:
         strategy = "symmetric_gradient"
     mode = color_lab.choose_composition(mood, motion, energy, composition_mode, seed=seed)
     bri, _sx, _ix, colors = _profile(mood, energy, intensity, seed, colors)
-    payloads: dict[str, dict] = {}
+    controller_bri = min(180, bri)
+    lengths: dict[str, int] = {}
+    for entry in entries:
+        lengths[entry.controller] = max(lengths.get(entry.controller, 0), entry.stop)
+    frames = {controller: bytearray(length * 3) for controller, length in lengths.items()}
+    segments: dict[str, list[dict]] = {}
     for entry in entries:
         group = _group_for(entry, mode, rng)
-        strip_bri = bri if mode == "unison" else max(25, min(180, int(bri * (0.78 + 0.07 * ((group + entry.wall_index) % 4)))))
-        seg = {"id": entry.seg_id, "start": entry.start, "stop": entry.stop, "on": True, "fx": 0, "frz": False, "bri": strip_bri, "i": _frame(entry, strategy, colors, group, rng)}
-        payloads.setdefault(entry.controller, {"on": True, "bri": min(180, bri), "transition": 10, "seg": [], "udpn": {"nn": True}})
-        payloads[entry.controller]["seg"].append(seg)
-    return payloads
+        strip_bri = (
+            bri
+            if mode == "unison"
+            else max(25, min(180, int(bri * (0.78 + 0.07 * ((group + entry.wall_index) % 4)))))
+        )
+        rows = _frame(entry, strategy, colors, group, rng)
+        factor = min(1.0, strip_bri / max(1, controller_bri)) if controller_bri else 0.0
+        painted = _scale_rows(rows, factor)
+        offset = entry.start * 3
+        data = bytearray(entry.pixels * 3)
+        for index, rgb in enumerate(painted):
+            data[index * 3:index * 3 + 3] = bytes(rgb)
+        frames[entry.controller][offset:offset + entry.pixels * 3] = data
+        segments.setdefault(entry.controller, []).append(
+            {
+                "id": entry.seg_id,
+                "start": entry.start,
+                "stop": entry.stop,
+                "bri": strip_bri,
+                "pixels": [list(row[:3]) for row in rows],
+            }
+        )
+    return {name: bytes(data) for name, data in frames.items()}, segments, {name: controller_bri for name in lengths}
 
 
 def _compose_effect(entries: list[WallEntry], mood: str, energy: str, motion: str, strategy: str, seed: int | str | None, intensity: float | None, colors: list | None = None) -> dict[str, dict]:
@@ -287,45 +338,72 @@ def compose_dynamic_scene(
     engine = (engine or "generated").strip().lower()
     if engine == "effect":
         return _compose_effect(entries, mood, energy, motion, strategy, seed, intensity, colors)
-    return _compose_generated(entries, mood, energy, motion, strategy, composition_mode, seed, intensity, colors)
+    frames, segments, brightness = _compose_generated_frames(
+        entries, mood, energy, motion, strategy, composition_mode, seed, intensity, colors
+    )
+    return {"frames": frames, "segments": segments, "brightness": brightness}
 
 
 def apply_dynamic_scene(fleet: Any, **kwargs) -> dict:
     results: dict = {}
-    payloads = compose_dynamic_scene(fleet, **kwargs)
-    for controller, payload in payloads.items():
-        available = fleet.effect_ids(controller) if hasattr(fleet, "effect_ids") else None
-        if available is not None:
-            stock_segments = [seg for seg in payload.get("seg", []) if seg.get("fx") != 0]
-            if stock_segments and FALLBACK_FX not in available:
-                raise ValueError(f"dynamic_scene safe fallback effect {FALLBACK_FX} unavailable on {controller}")
-            for seg in stock_segments:
-                if seg.get("fx") not in available:
-                    seg["fx"] = FALLBACK_FX
-                    seg["pal"] = PALETTES["warm"]
-        # Generated scenes carry per-LED 'i' frames, which WLED ignores when
-        # 'on' rides in the same request from an off state (JSON API docs:
-        # set power/brightness first). Prime before the frame post.
-        if any("i" in seg for seg in payload.get("seg", [])):
-            primer = {key: payload[key] for key in ("on", "bri", "transition", "udpn") if key in payload}
-            results.update(fleet.post_state(primer, target=controller))
-        results.update(fleet.post_state(payload, target=controller))
+    engine = (kwargs.get("engine") or "generated").strip().lower()
+    if engine == "effect":
+        payloads = compose_dynamic_scene(fleet, **kwargs)
+        for controller, payload in payloads.items():
+            available = fleet.effect_ids(controller) if hasattr(fleet, "effect_ids") else None
+            if available is not None:
+                stock_segments = [seg for seg in payload.get("seg", []) if seg.get("fx") != 0]
+                if stock_segments and FALLBACK_FX not in available:
+                    raise ValueError(f"dynamic_scene safe fallback effect {FALLBACK_FX} unavailable on {controller}")
+                for seg in stock_segments:
+                    if seg.get("fx") not in available:
+                        seg["fx"] = FALLBACK_FX
+                        seg["pal"] = PALETTES["warm"]
+            results.update(fleet.post_state(payload, target=controller))
+        look_memory.record_look(
+            source="dynamic_scene",
+            action="dynamic_scene",
+            mood=str(kwargs.get("mood") or ""),
+            parameters={key: value for key, value in kwargs.items() if key != "seed" or value is not None},
+            summary="dynamic_scene effect",
+            payload_summary=_payload_summary(payloads),
+        )
+        return results
+
+    import realtime
+
+    composed = compose_dynamic_scene(fleet, **kwargs)
+    frames, segments, brightness = composed["frames"], composed["segments"], composed["brightness"]
+    fps = min(40, max(1, int(kwargs.get("fps") or 6)))
+    duration_s = min(900, max(0.1, float(kwargs.get("duration_s") or 300)))
+    # WLED realtime shows nothing while off or at bri 0; prime power and the
+    # scene brightness first, then stream the exact frames over DDP (JSON
+    # seg.i persistence is dead on WLED 0.15+, freeze is no longer honored).
+    for controller, bri in brightness.items():
+        results.update(fleet.post_state({"on": True, "bri": bri, "transition": 10}, target=controller))
+    realtime.frame_start(fleet, frames, fps=fps, duration_s=duration_s)
     look_memory.record_look(
         source="dynamic_scene",
         action="dynamic_scene",
         mood=str(kwargs.get("mood") or ""),
         parameters={key: value for key, value in kwargs.items() if key != "seed" or value is not None},
-        summary=f"dynamic_scene {kwargs.get('engine', 'generated')}",
-        payload_summary=_payload_summary(payloads),
+        summary=f"dynamic_scene generated ({fps} fps, {duration_s:g}s)",
+        payload_summary=_payload_summary(segments),
     )
     return results
 
 
-def _payload_summary(payloads: dict[str, dict]) -> dict:
+def _payload_summary(payloads: dict[str, dict] | dict[str, list[dict]]) -> dict:
     summary: dict[str, list[dict]] = {}
-    for controller, payload in payloads.items():
+    for controller, body in payloads.items():
+        if isinstance(body, dict) and "seg" in body:
+            segments = body["seg"]
+        elif isinstance(body, list):
+            segments = body
+        else:
+            segments = []
         entries = []
-        for seg in payload.get("seg", []):
+        for seg in segments:
             entries.append(
                 {
                     "id": seg.get("id"),
@@ -333,7 +411,7 @@ def _payload_summary(payloads: dict[str, dict]) -> dict:
                     "stop": seg.get("stop"),
                     "fx": seg.get("fx"),
                     "bri": seg.get("bri"),
-                    "frame_len": len(seg.get("i") or []),
+                    "frame_len": len(seg.get("pixels") or seg.get("i") or []),
                 }
             )
         summary[controller] = entries
