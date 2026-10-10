@@ -79,12 +79,9 @@ class MirrorTests(unittest.TestCase):
         self.assertIsInstance(result, dict)
         left_segs = segs_by_id(fleet_.clients["left"].payloads[0])
         right_segs = segs_by_id(fleet_.clients["right"].payloads[0])
-        for seg in left_segs.values():
+        for seg in list(left_segs.values()) + list(right_segs.values()):
             self.assertEqual(seg["fx"], 9)
-            self.assertTrue(seg["mi"])
-        for seg in right_segs.values():
-            self.assertEqual(seg["fx"], 9)
-            self.assertFalse(seg.get("mi", False))
+            self.assertNotIn("mi", seg)
 
 
 class ChaseTests(unittest.TestCase):
@@ -100,17 +97,8 @@ class ChaseTests(unittest.TestCase):
         right_segs = segs_by_id(fleet_.clients["right"].payloads[0])
         for seg in list(left_segs.values()) + list(right_segs.values()):
             self.assertEqual(seg["fx"], 28)
-            self.assertIn("of", seg)
-
-        # physical wall order: far-left, middle-left, middle-right, far-right
-        # four 40-pixel columns, chase phase step = LEDS_PER_COLUMN // 4 = 10
-        offsets = [
-            left_segs[0]["of"],   # far-left
-            left_segs[1]["of"],   # middle-left
-            right_segs[1]["of"],  # middle-right
-            right_segs[0]["of"],  # far-right
-        ]
-        self.assertEqual(offsets, [0, 10, 20, 30])
+            self.assertNotIn("of", seg)
+            self.assertNotIn("mi", seg)
 
 
 class LeftVsRightTests(unittest.TestCase):

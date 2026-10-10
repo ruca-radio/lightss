@@ -14,11 +14,16 @@ def test_model_context_names_actual_wled_catalog_routes():
     assert "/json/palettes" not in knowledge
 
 
-def test_model_effect_instructions_follow_live_catalog_markers():
+def test_model_effect_instructions_describe_the_live_catalog():
+    """The prompts must describe the catalog as it now is, with no family bans."""
     knowledge = light_gui.system_knowledge_prompt()
     tool_prompt = ai_chat.TOOL_CHAT_SYSTEM_PROMPT
     schema = mcp_light.safe_effect_schema()["description"]
     for text in (knowledge, tool_prompt, schema):
-        assert "🚫" in text or "blocked" in text
         assert "strobe/blink/flash/lightning/fireworks/sparkle" not in text
         assert "strobe, blink, flash, lightning" not in text
+        assert "never use effects" not in text.lower()
+    # The only remaining exclusion is reserved/placeholder entries, and the
+    # effect families are advertised as selectable.
+    assert "reserved" in schema.lower() or "placeholder" in schema.lower()
+    assert "blink" in schema.lower() and "sparkle" in schema.lower()

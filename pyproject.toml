@@ -70,6 +70,8 @@ py-modules = [
     "song_tracking",
     "tv_trivia",
     "wled_audio",
+    "wled_files",
+    "vision_calibration",
     "youtopia_bridge",
     "youtopia_daemon",
 ]

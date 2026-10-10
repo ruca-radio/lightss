@@ -284,6 +284,9 @@ class SmartDirector(threading.Thread):
                                       brightness=self.config['music_brightness'],colors=decision.get('colors'))
                 self.renderer.start()
                 self._renderer_fault=None
+                # A healthy start clears the consecutive-failure count, so two
+                # crashes hours apart cannot permanently disable music mode.
+                self._renderer_attempts=0
             except Exception as exc:
                 self._renderer_attempts+=1
                 self._renderer_retry_at=now+RENDERER_RETRY_DELAY_S
@@ -321,10 +324,10 @@ class SmartDirector(threading.Thread):
         self._applied_tv=None
 
     def _apply_native_chapter(self, chapter):
-        """Validate the live common catalog before revoking the DDP owner."""
-        import music_chapters
+        """Validate the cached common catalog before revoking the DDP owner."""
+        import show_library
         effect=chapter.get('effect')
-        if type(effect) is not int or effect not in {item['id'] for item in music_chapters.available_native_effects(self.fleet)}:
+        if type(effect) is not int or effect not in show_library.allowed_native_ids(self.fleet, self.ai_settings):
             raise ValueError('Native effect is not available as a common 1D audio effect.')
         colors=chapter.get('colors')
         _,validated=_validate_show_request({'action':'tune','colors':colors})
@@ -419,8 +422,13 @@ class SmartDirector(threading.Thread):
         self._chapter_request_key=request_key
         self._chapter_request_generation=self._chapter_generation
         def request_chapter():
-            import music_chapters
-            context={**previous,'native_effects':music_chapters.available_native_effects(self.fleet)}
+            import show_library
+            index=show_library.index_for_fleet(self.fleet, settings=self.ai_settings)
+            short=show_library.candidates(index, request_key, features, previous)
+            context={**previous, 'native_effects': short['effects']}
+            hint=show_library.palette_hint(self.ai_settings, request_key, features, previous)
+            if hint:
+                context['palette_hint']=hint
             return chapter_fn(self.ai_settings,request_key,features,context,request_index)
         self._chapter_future=self._chapter_executor.submit(request_chapter)
         self._chapter_due_at=now+CHAPTER_INTERVAL_S

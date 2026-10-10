@@ -291,8 +291,11 @@ def test_ui_has_independent_read_only_observation_control():
     assert 'TV control' in html
     assert 'id="tvObservationRefresh"' in html
     assert 'id="tvObservationStatus"' in html
-    assert 'This switch only permits observation' in html
-    assert 'Smart lighting uses TV context when enabled' in html
+    # The copy must keep stating that observation is read-only and does not by
+    # itself change the lights.
+    assert 'Read-only TV context.' in html
+    assert 'this does not control lighting' in html
+    assert 'Smart lighting uses TV context when enabled' not in html
 
 
 def test_ui_observation_toggle_uses_only_observation_permission():

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 import unittest
 from unittest import mock
@@ -368,6 +369,17 @@ class DirectorRegistryTests(unittest.TestCase):
             self.assertTrue(wait_for(
                 lambda: not music_director.director_status()["running"]))
 
+    def test_start_replaces_director_that_never_started(self):
+        stuck = music_director.MusicDirector(FakeFleet(), poll_s=60)
+        music_director._current_director = stuck
+        self.assertIsNone(stuck.ident)
+        with mock.patch.object(music_recognizer, "now_playing_mpris", lambda: None), \
+             mock.patch.object(music_recognizer, "recognize_ambient_sync", mock.Mock(return_value=None)):
+            message = music_director.start_director(FakeFleet(), poll_s=0.05)
+        self.assertIn("started", message)
+        self.assertIsNot(music_director._current_director, stuck)
+        self.assertTrue(music_director._current_director.is_running())
+
     def test_starting_replaces_running_director(self):
         fleet_ = FakeFleet()
         with mock.patch.object(music_recognizer, "now_playing_mpris",
@@ -388,6 +400,11 @@ if __name__ == "__main__":
 
 
 class AiMoodClassifyTests(unittest.TestCase):
+    def setUp(self):
+        composer = patch.object(music_director.MusicDirector, "_maybe_compose_ai_show")
+        composer.start()
+        self.addCleanup(composer.stop)
+
     SETTINGS = {"base_url": "https://example.test/v1", "model": "m", "api_key_env": "NO_SUCH_KEY"}
 
     def _mock_response(self, text):
@@ -398,6 +415,14 @@ class AiMoodClassifyTests(unittest.TestCase):
             mock_open.return_value.__enter__.return_value.read.return_value = \
                 json.dumps(self._mock_response("edm")).encode()
             assert music_director.classify_track_ai("NGHTMRE", "FEELING GUD", self.SETTINGS) == "edm"
+
+    def test_classifier_avoids_unsupported_legacy_token_parameter(self):
+        with patch("urllib.request.urlopen") as opened:
+            opened.return_value.__enter__.return_value.read.return_value = json.dumps(self._mock_response("rock")).encode()
+            assert music_director.classify_track_ai("Imagine Dragons", "Bones", self.SETTINGS) == "rock"
+        body = json.loads(opened.call_args.args[0].data)
+        assert "max_tokens" not in body
+        assert "tools" not in body
 
     def test_label_extracted_from_noisy_answer(self):
         with patch("urllib.request.urlopen") as mock_open:
@@ -453,21 +478,41 @@ class AiShowComposerTests(unittest.TestCase):
             prompt = mock_chat.call_args[0][1]
             assert "Rumble" in prompt and "Sullivan King" in prompt
             assert mock_chat.call_args.kwargs["timeout"] == 15.0
+            assert "music_show" in mock_chat.call_args.kwargs["exclude_tools"]
+            assert director.last_response == "fire show"
+            assert director.last_error is None
 
-    def test_composer_skipped_when_one_already_running(self):
+    def test_failed_composer_tool_is_not_reported_as_live(self):
         fleet_ = FakeFleet()
         director = music_director.MusicDirector(fleet_, poll_s=60, ai_settings=self.SETTINGS)
+        with patch("ai_chat.run_chat", return_value={
+            "text": "Created a looping theatrical show",
+            "log": ["music_show({}) -> error"],
+            "events": [{"name": "music_show", "ok": False, "result": "error: RuntimeError"}],
+            "rounds": 2,
+        }):
+            director._compose_ai_show("Panic", "House of Memories", director._generation)
+        self.assertEqual(director.last_error, "Created a looping theatrical show")
+        self.assertFalse(fleet_.posts)
+
+    def test_busy_composer_keeps_latest_track_instead_of_losing_it(self):
+        fleet_ = FakeFleet()
+        director = music_director.MusicDirector(fleet_, poll_s=60, ai_settings=self.SETTINGS)
+        first_started = threading.Event()
 
         def slow_chat(*args, **kwargs):
+            first_started.set()
             time.sleep(0.3)
             return {"text": "x", "log": [], "rounds": 1}
 
         with patch("ai_chat.run_chat", side_effect=slow_chat) as mock_chat:
             director._handle_track({"artist": "A", "title": "One"})
-            director._handle_track({"artist": "B", "title": "Two"})  # composer busy -> skipped
+            assert first_started.wait(2)
+            director._handle_track({"artist": "B", "title": "Two"})
             if director._composer_thread:
                 director._composer_thread.join(timeout=5)
-            assert mock_chat.call_count == 1
+            assert mock_chat.call_count == 2
+            assert "'Two'" in mock_chat.call_args.args[1]
 
     def test_stale_generation_discards_result(self):
         fleet_ = FakeFleet()
@@ -501,3 +546,34 @@ class AiShowComposerTests(unittest.TestCase):
         with patch.object(music_director.shows, "stop_show", return_value="stopped") as mock_stop:
             director._handle_track({"artist": "A", "title": "One"})
             assert mock_stop.call_count == 1
+
+
+def test_stopping_director_invalidates_inflight_composer():
+    director = music_director.MusicDirector(FakeFleet(), ai_settings={'base_url':'https://example.test/v1','model':'m'})
+    generation = director._generation
+    director.stop()
+    assert director._generation != generation
+    with patch('ai_chat.run_chat') as chat:
+        director._compose_ai_show('Artist', 'Song', generation)
+    chat.assert_not_called()
+
+
+def test_idle_invalidates_inflight_composer_without_changing_lights():
+    fleet_ = FakeFleet()
+    director = music_director.MusicDirector(fleet_)
+    director._handle_track({'artist':'Darude','title':'Sandstorm','genre':'edm'})
+    generation = director._generation
+    posts = len(fleet_.posts)
+    director._handle_idle()
+    assert director._generation != generation
+    assert len(fleet_.posts) == posts
+
+
+def test_composer_supplies_live_cancellation_check():
+    director = music_director.MusicDirector(FakeFleet(), ai_settings={'base_url':'https://example.test/v1','model':'m'})
+    with patch('ai_chat.run_chat', return_value={'text':'x','log':[]}) as chat:
+        director._compose_ai_show('Artist', 'Song', director._generation)
+    cancelled = chat.call_args.kwargs['is_cancelled']
+    assert cancelled() is False
+    director.stop()
+    assert cancelled() is True

@@ -28,32 +28,15 @@ if TYPE_CHECKING:
 # Effect classification
 # ---------------------------------------------------------------------------
 
-# Only effects that are explicitly rapid-flash / strobe style are forbidden.
-#
-# IMPORTANT:
-# - Blink is intentionally allowed.
-# - Blink Rainbow is intentionally allowed.
-# - Sparkle / PS Sparkler are intentionally allowed.
-# - Fireworks / PS Fireworks are intentionally allowed.
-#
-# The director can therefore use these effects intentionally instead of
-# discarding whole families based on broad substring matches.
-UNSAFE_FX_SUBSTRINGS = (
-    "strobe",
-    "chase flash",
-    "lightning",
-)
+# Name-based blocklist for live catalogs. Empty by operator decision
+# (2026-10-05): no effect family is excluded, so blink, strobe, lightning,
+# fireworks and sparkle effects are all selectable. Repopulate these to
+# re-enable family-level filtering; WLED's reserved/placeholder entries stay
+# unavailable regardless, because those ids are not real effects.
+UNSAFE_FX_SUBSTRINGS: tuple[str, ...] = ()
 
-# Exact names can catch effects we specifically don't want while avoiding
-# overly broad substring matching.
-UNSAFE_FX_NAMES = {
-    "Strobe",
-    "Strobe Rainbow",
-    "Strobe Mega",
-    "Chase Flash",
-    "Chase Flash Rnd",
-    "Lightning",
-}
+# Exact-name blocklist, same policy as above.
+UNSAFE_FX_NAMES: set[str] = set()
 
 
 # Mood groups: label -> name substrings (matched case-insensitively).

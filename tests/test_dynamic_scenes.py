@@ -61,12 +61,12 @@ def test_uses_calibrated_wall_order_segment_ids_and_pixels():
     assert sorted(composed) == ["brightness", "frames", "segments"]
     left, right = composed["segments"]["left"], composed["segments"]["right"]
     assert [seg["id"] for seg in left] == [0, 1]
-    assert [seg["id"] for seg in right] == [1, 0]
-    # right controller payload follows wall order: seg1 middle-right, seg0 far-right.
-    assert [len(seg["pixels"]) for seg in left + right] == [34, 48, 47, 40]
-    assert [(seg["start"], seg["stop"]) for seg in left + right] == [(0, 34), (34, 82), (0, 47), (47, 87)]
+    assert [seg["id"] for seg in right] == [0, 1]
+    # right controller payload follows wall order: seg0 middle-right, seg1 far-right.
+    assert [len(seg["pixels"]) for seg in left + right] == [34, 47, 47, 40]
+    assert [(seg["start"], seg["stop"]) for seg in left + right] == [(0, 34), (34, 81), (0, 47), (47, 87)]
     # Whole-controller DDP buffers: full bus, no gaps, bounded bytes.
-    assert len(composed["frames"]["left"]) == 82 * 3
+    assert len(composed["frames"]["left"]) == 81 * 3
     assert len(composed["frames"]["right"]) == 87 * 3
     assert all(0 <= byte <= 255 for frame in composed["frames"].values() for byte in frame)
 
@@ -95,7 +95,11 @@ def test_auto_strategy_from_mood_energy_motion():
     assert quiet["left"]["seg"][0]["fx"] == dynamic_scenes.SAFE_EFFECTS["gradient"]
     assert chase["left"]["seg"][0]["fx"] == dynamic_scenes.SAFE_EFFECTS["chase"]
     assert rise["left"]["seg"][0]["fx"] == dynamic_scenes.SAFE_EFFECTS["sine"]
-    assert rise["left"]["seg"][0]["rev"] is False
+    for composed in (quiet, chase, rise):
+        for payload in composed.values():
+            for seg in payload["seg"]:
+                for key in ("start", "stop", "of", "mi", "rev"):
+                    assert key not in seg
 
 
 def test_apply_primes_power_then_streams_frames(monkeypatch):
@@ -117,7 +121,7 @@ def test_apply_primes_power_then_streams_frames(monkeypatch):
     frames, fps, duration_s = started[0]
     assert fps == 6 and duration_s == 300  # bounded defaults
     assert set(frames) == {"left", "right"}
-    assert len(frames["left"]) == 82 * 3
+    assert len(frames["left"]) == 81 * 3
     assert len(frames["right"]) == 87 * 3
     assert set(result) == {"left", "right"}
     assert look_memory.last_look()["parameters"]["mood"] == "ocean calm"
@@ -142,7 +146,10 @@ def test_custom_installation_wall_order_is_honored():
     f = RecordingFleet()
     f.installation = fleet.InstallationConfig(wall_order=["middle-right", "middle-left"])
     composed = dynamic_scenes.compose_dynamic_scene(f, strategy="left_to_right")
-    assert [seg["id"] for seg in composed["segments"]["right"]] == [1]
+    # The requested wall order drives which channels are painted, and each one
+    # keeps its own controller segment id: middle-right is bus 0 on the right
+    # controller, middle-left is bus 1 on the left.
+    assert [seg["id"] for seg in composed["segments"]["right"]] == [0]
     assert [seg["id"] for seg in composed["segments"]["left"]] == [1]
 
 

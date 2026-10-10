@@ -7,7 +7,7 @@ import light_gui
 
 
 def test_calibration_and_local_library_render():
-    html = light_gui.render_html()
+    html = light_gui.render_html(player_enabled=True)
     for ident in ('calibrationDialog', 'calibrationApply', 'localPlaylistSelect', 'localQueue', 'calibrationCamera'):
         assert f'id="{ident}"' in html
     assert 'onclick="openCalibration()"' in html
@@ -58,7 +58,7 @@ def test_queue_advances_only_after_matching_track_ends():
 
 
 def run_apple(extra):
-    html = light_gui.render_html()
+    html = light_gui.render_html(player_enabled=True)
     body = html[html.index('async function handleAppleClientCommand'):html.index('async function syncAppleNowPlaying')]
     script = "let queues=[],plays=0; const configureMusicKit=async()=>({setQueue:async q=>queues.push(q),play:async()=>plays++}); const ensurePlayerAnalyser=async()=>{}; let musicModeRunning=true; const startMusicMode=()=>{};const syncAppleNowPlaying=async()=>{};const setText=()=>{};" + body + "(async()=>{" + extra + "})().catch(e=>{console.error(e);process.exit(1)});"
     result=subprocess.run(['node','-e',script],capture_output=True,text=True,timeout=10)
@@ -82,7 +82,7 @@ def test_playlist_play_replaces_queue_in_one_transaction():
 
 
 def test_desktop_transport_renders_seek_and_volume():
-    html=light_gui.render_html()
+    html=light_gui.render_html(player_enabled=True)
     assert 'id="playerSeek"' in html
     assert 'id="playerVolume"' in html
 
@@ -93,7 +93,7 @@ def test_queue_uses_retained_completion_when_poll_misses_ended_frame():
 
 
 def test_transport_next_follows_local_queue_when_active():
-    html=light_gui.render_html()
+    html=light_gui.render_html(player_enabled=True)
     command=html[html.index('async function playerCommand'):html.index('async function onPlayerSourceChange')]
     data=run_js(command + "let moved=null;localQueueRun={index:2};playLocalQueue=async i=>{moved=i;};await playerCommand('next');console.log(JSON.stringify(moved));")
     assert data==3

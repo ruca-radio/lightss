@@ -126,7 +126,7 @@ class SettingsApiHttpTest(unittest.TestCase):
         self.assertNotIn("api_key", settings["ai"])
         self.assertEqual(settings["ai"]["provider"], "openai")
         self.assertEqual(settings["ai"]["base_url"], light_gui.DEFAULT_AI_BASE_URL)
-        self.assertEqual(set(settings["ai"]["agents"].keys()), {"colorist", "motion", "critic"})
+        self.assertEqual(set(settings["ai"]["agents"].keys()), {"colorist", "motion", "critic", "librarian"})
         self.assertFalse(settings["ai"]["agents"]["colorist"]["enabled"])
         self.assertEqual(settings["ai"]["agents"]["colorist"]["model"], "")
         self.assertEqual(settings["ai"]["agents"]["colorist"]["provider"], settings["ai"]["provider"])
@@ -316,7 +316,16 @@ class SettingsApiHttpTest(unittest.TestCase):
         self.assertEqual(set(results.keys()), {"right", "left"})
         self.assertEqual(
             results["right"],
-            {"ok": True, "version": "0.15.1", "effects": 187, "error": None},
+            {
+                "ok": True,
+                "version": "0.15.1",
+                "effects": 187,
+                "error": None,
+                # The mock answers every URL with the same info object, so no
+                # usable segment data: the topology check must stay silent
+                # rather than claim the wall is mis-wired.
+                "topology": [],
+            },
         )
         self.assertFalse(results["left"]["ok"])
         self.assertIsNone(results["left"]["version"])
@@ -324,6 +333,12 @@ class SettingsApiHttpTest(unittest.TestCase):
         self.assertIn("connection refused", results["left"]["error"])
 
     def test_ai_test_reports_failure_without_raising(self) -> None:
+        # Use a keyless provider so the request is really attempted; with no API
+        # key configured the endpoint now short-circuits with a clearer message
+        # instead of reporting a misleading network error.
+        self._write_config(
+            {"ai": {"provider": "ollama", "base_url": "http://localhost:11434/v1", "model": "llama3"}}
+        )
         real_urlopen = urllib.request.urlopen
 
         def fake_urlopen(url, timeout: float | None = None):
@@ -337,6 +352,15 @@ class SettingsApiHttpTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertFalse(payload["ok"])
         self.assertIn("no route to host", payload["message"])
+
+    def test_ai_test_without_an_api_key_explains_instead_of_failing(self) -> None:
+        self._write_config({"ai": {"provider": "openai", "model": "gpt-5.4-nano"}})
+        with patch.object(light_gui, "_ai_api_key", return_value=None):
+            status, payload = self._post("/api/ai/test")
+
+        self.assertEqual(status, 200)
+        self.assertFalse(payload["ok"])
+        self.assertIn("is not set in the GUI server environment", payload["message"])
 
     def test_ai_test_success_and_keyless_provider_sends_no_auth_header(self) -> None:
         self._write_config({"ai": {"provider": "ollama", "base_url": "http://localhost:11434/v1", "model": "llama3"}})
@@ -446,7 +470,7 @@ class AiSettingsPrecedenceTest(unittest.TestCase):
         with patch.dict(light_gui.os.environ, {"LIGHT_AI_MODEL": "", "OPENAI_MODEL": "", "OPENAI_BASE_URL": ""}):
             settings = light_gui.ai_settings({})
 
-        self.assertEqual(set(settings["agents"].keys()), {"colorist", "motion", "critic"})
+        self.assertEqual(set(settings["agents"].keys()), {"colorist", "motion", "critic", "librarian"})
         colorist = settings["agents"]["colorist"]
         self.assertFalse(colorist["enabled"])
         self.assertEqual(colorist["model"], "")
@@ -458,7 +482,7 @@ class AiSettingsPrecedenceTest(unittest.TestCase):
             set(colorist.keys()),
             {"enabled", "provider", "base_url", "model", "api_key_env", "api_key_set"},
         )
-        for role in ("motion", "critic"):
+        for role in ("motion", "critic", "librarian"):
             self.assertFalse(settings["agents"][role]["enabled"])
             self.assertEqual(settings["agents"][role]["model"], "")
             self.assertEqual(settings["agents"][role]["provider"], settings["provider"])

@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Callable
 
 import lightctl
+from fleet import SACRED_SEGMENT_KEYS
 
 if TYPE_CHECKING:
     from fleet import LightFleet
@@ -25,7 +26,7 @@ _WALL_ORDER = ["far-left", "middle-left", "middle-right", "far-right"]
 
 # Segment fields that are 0-255 byte values (clamped via lightctl.clamp_byte).
 _BYTE_SEG_KEYS = frozenset({
-    "sx", "ix", "c1", "c2", "c3", "o1", "o2", "o3", "bri", "grp", "spc", "cct",
+    "sx", "ix", "c1", "c2", "c3", "o1", "o2", "o3", "bri", "cct",
 })
 
 
@@ -57,7 +58,7 @@ def _seg_entry(fx: int | None, pal: int | None, seg_opts: dict) -> dict:
     if pal is not None:
         seg["pal"] = int(pal)
     for key, value in seg_opts.items():
-        if value is None:
+        if value is None or key in SACRED_SEGMENT_KEYS:
             continue
         if key in _BYTE_SEG_KEYS:
             seg[key] = lightctl.clamp_byte(value)
@@ -65,7 +66,7 @@ def _seg_entry(fx: int | None, pal: int | None, seg_opts: dict) -> dict:
             # Accept a hex string ("FF8800") or a flat RGB list ([255, 0, 0])
             # as a single color, like mcp_light's set_zone does.
             if isinstance(value, str):
-                value = [lightctl._hex_to_rgb(value)]
+                value = [lightctl.hex_to_rgbw(value)[:3]]
             elif value and isinstance(value[0], (int, float)):
                 value = [value]
             seg["col"] = [
@@ -116,36 +117,18 @@ def wall_span(fleet: LightFleet, fx: int, pal: int | None = None, **seg_opts) ->
 
 
 def mirror(fleet: LightFleet, fx: int, pal: int | None = None, **seg_opts) -> dict:
-    """Left pair mirrors the right pair (mi=True on the left controller)."""
-    wall = _wall_channels(fleet)
-    left_controllers = {controller for _c, controller, _s in wall[: len(wall) // 2]}
-
-    def entry_for_index(index: int) -> dict:
-        entry = _seg_entry(fx, pal, seg_opts)
-        entry["mi"] = wall[index][1] in left_controllers
-        return entry
-
-    payloads = _grouped_entries(fleet, entry_for_index)
+    """Same fx/pal on every strip. Does not change the controller mirror bit."""
+    payloads = _grouped_entries(fleet, lambda _i: _seg_entry(fx, pal, seg_opts))
     return _post_per_controller(fleet, payloads)
 
 
 def chase(fleet: LightFleet, fx: int, pal: int | None = None, **seg_opts) -> dict:
-    """Same fx on all channels, effect offsets staggered along the wall.
+    """Same fx/pal on every strip. Does not change the controller offset.
 
-    seg_opts may include offset_step (default LEDS_PER_COLUMN // 4 = 10); it is
-    consumed here and not sent to WLED. Channel i gets of = i * offset_step.
-    Note: WLED wraps `of` modulo the segment length (json.cpp: of %= len), so a
-    step >= the segment length is a no-op — the default 10 spreads one 40-pixel
-    effect period across the 4 columns (0/10/20/30).
+    offset_step is accepted and discarded so older callers do not send it.
     """
-    offset_step = int(seg_opts.pop("offset_step", lightctl.LEDS_PER_COLUMN // 4))
-
-    def entry_for_index(index: int) -> dict:
-        entry = _seg_entry(fx, pal, seg_opts)
-        entry["of"] = index * offset_step
-        return entry
-
-    payloads = _grouped_entries(fleet, entry_for_index)
+    seg_opts.pop("offset_step", None)
+    payloads = _grouped_entries(fleet, lambda _i: _seg_entry(fx, pal, seg_opts))
     return _post_per_controller(fleet, payloads)
 
 

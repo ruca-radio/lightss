@@ -23,6 +23,7 @@ import look_memory
 import realtime
 import music_recognizer
 import shows
+import wled_files
 logger = logging.getLogger("mcp_light")
 
 SERVER_INFO = {"name": "bedroom-light-controller", "version": "1.1.0"}
@@ -66,7 +67,7 @@ def int_schema(description: str, minimum: int = 0, maximum: int = 255) -> dict:
 def safe_effect_schema() -> dict:
     return {
         "type": "integer",
-        "description": "Effect id from the device's live catalog (0-255); 🚫 marks blocked or unavailable effects. Blink, sparkle, and fireworks remain selectable when the live catalog permits them.",
+        "description": "Effect id from the device's live catalog (0-255). Every installed effect is selectable, including blink, strobe, flash, lightning, fireworks and sparkle; 🚫 marks reserved/placeholder entries that are not real effects.",
         "minimum": 0,
         "maximum": 255,
     }
@@ -85,9 +86,11 @@ def _target_schema() -> dict:
     return {
         "type": "string",
         "description": (
-            "Target: 'all' (all four strips), a group (outer/inner/center), a controller "
-            "(left/right = both strips on that side), one strip (far-left, middle-left, "
-            "middle-right, far-right), or a combo like 'far-left,middle-right'."
+            "What to aim at. 'all' = the whole wall. Otherwise name columns by their "
+            "channel: far-left, middle-left, middle-right, far-right (use the COLUMN MAP "
+            "from the snapshot; a controller name such as 'left' or 'right' means BOTH "
+            "columns on that side, not a single column). Comma-combine columns, e.g. "
+            "'far-left,middle-right'. Groups: outer, inner, center."
         ),
         "default": "all",
     }
@@ -170,7 +173,7 @@ def build_tools() -> list[dict]:
         },
         {
             "name": "set_effect",
-            "description": "Set a safe non-strobe WLED effect and speed.",
+            "description": "Set a WLED effect (from the device's live catalog) and speed.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -347,10 +350,10 @@ def build_tools() -> list[dict]:
         {
             "name": "strips",
             "description": (
-                "Address any combination of the four wall strips. "
+                "Address any combination of the four wall columns (channels). "
                 "Same look: pass channels (e.g. [\"far-left\",\"far-right\"]) plus fx. "
                 "Different looks: pass assignments [{channel, fx, pal}]. "
-                "Unused strips are left unchanged."
+                "Unused columns are left unchanged. Use the COLUMN MAP from the snapshot for the exact channel names."
             ),
             "inputSchema": {
                 "type": "object",
@@ -481,6 +484,39 @@ def build_tools() -> list[dict]:
                 "additionalProperties": False,
             },
         },
+        {
+            "name": "design_palette",
+            "description": (
+                "Author your own WLED palette (firmware 16+) and put it on the controllers, "
+                "so the device's own effects render your colours instead of a stock palette. "
+                "Pass colors (positions spread evenly) or explicit [pos,r,g,b] stops. "
+                "action=list reports the palettes already on the wall; action=delete removes a slot."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "colors": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "2-16 palette stops as #RRGGBB hex; positions spread evenly",
+                    },
+                    "stops": {
+                        "type": "array",
+                        "description": "Explicit [[pos,r,g,b], ...] stops with pos 0-255, sorted or unsorted",
+                        "items": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                            "minItems": 4,
+                            "maxItems": 4,
+                        },
+                    },
+                    "action": {"type": "string", "enum": ["create", "list", "delete"], "default": "create"},
+                    "slot": {"type": "integer", "minimum": 0, "maximum": 200},
+                    "apply": {"type": "boolean", "description": "Apply the written palette to the target segment"},
+                },
+                "additionalProperties": False,
+            },
+        },
     ]
     # Fleet args: every tool accepts an optional target; seg-emitting tools also accept a segment id.
     for tool in tools:
@@ -494,10 +530,9 @@ def build_tools() -> list[dict]:
             {
                 "name": "set_zone",
                 "description": (
-                    "Light one named zone of a single column (channel), e.g. the top half of far-left. "
-                    "The zone is carved as a NEW segment with absolute bus bounds, so the rest of the "
-                    "column keeps its current look; the reply names the new segment id (remove it with "
-                    "delete_segment). Zones on the same column stack side by side along its height."
+                    "Apply an effect, palette, or color to one existing strip (far-left, middle-left, "
+                    "middle-right, or far-right). The zone name is accepted and ignored: the look covers "
+                    "that whole strip. Segment bounds, mirror, offset, and reverse are not changed."
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -515,8 +550,6 @@ def build_tools() -> list[dict]:
                         "col": {"type": "string", "description": "Hex color 'RRGGBB'"},
                         "sx": int_schema("Effect speed", 0, 255),
                         "ix": int_schema("Effect intensity", 0, 255),
-                        "rev": {"type": "boolean", "description": "Reverse effect direction"},
-                        "mi": {"type": "boolean", "description": "Mirror the effect"},
                     },
                     "required": ["channel", "zone"],
                     "additionalProperties": False,
@@ -525,8 +558,8 @@ def build_tools() -> list[dict]:
             {
                 "name": "set_segment_bounds",
                 "description": (
-                    "Set explicit LED bounds and grouping for a segment: carve a column into arbitrary "
-                    "sub-segments. start/stop are LED indices within the column; the runtime installation topology gives per-column pixel counts."
+                    "Refused. Segment bounds, grouping, spacing, offset, reverse, and mirror stay as "
+                    "programmed on the controller."
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -547,7 +580,7 @@ def build_tools() -> list[dict]:
             },
             {
                 "name": "delete_segment",
-                "description": "Delete a segment on the target (sets its stop to 0, which makes WLED remove the segment).",
+                "description": "Refused. Segments are not deleted, and their bounds stay as programmed on the controller.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -577,7 +610,7 @@ def build_tools() -> list[dict]:
                             "description": (
                                 "Per-LED colors: either ['RRGGBB', ...] starting from LED 0, or "
                                 "[[start, stop, 'RRGGBB'], ...] ranges (stop exclusive), bounded by the "
-                                "segment's real pixel count (34/48/40/47 on this wall)."
+                                "segment's real pixel count (34/47/47/40 on this wall)."
                             ),
                             "items": {"type": ["string", "array"]},
                         },
@@ -957,7 +990,7 @@ def _is_fleet(client: Any) -> bool:
 # device catalog has been seen. Once a live catalog is seeded here (the GUI
 # seeds it from every AI snapshot; the MCP server seeds it at startup), the
 # AI-facing tools accept every id in the live catalog EXCEPT the 🚫-marked
-# ones (explicit strobe/rapid-flash names + RSVD placeholders), exactly as
+# ones (currently only RSVD placeholders), exactly as
 # the system prompt promises. Everything is
 # cache-only: seeding never happens on the tool-call hot path, so tests and
 # offline runs keep the legacy SAFE_EFFECTS behavior.
@@ -982,8 +1015,11 @@ def seed_effect_catalog(key: str, effects: Any, fxdata: Any = None) -> None:
 def allowed_effects_for(client: Any, target: str) -> set[int] | None:
     """Live effect ids valid for target (unsafe ones excluded); None when unknown.
 
-    Multiple controllers intersect, so an id is only offered when every
-    resolved controller can actually run it.
+    Multiple controllers intersect, so an id is only offered when every resolved
+    controller can actually run it. Only controllers whose catalog has actually
+    been seeded take part: substituting the offline SAFE_EFFECTS list for an
+    unseeded controller used to collapse the intersection to ~30 ids, so one
+    missing catalog made every legitimate live effect look forbidden.
     """
     if _is_fleet(client):
         try:
@@ -993,21 +1029,28 @@ def allowed_effects_for(client: Any, target: str) -> set[int] | None:
     else:
         keys = [str(getattr(client, "host", ""))]
     with _fx_policy_lock:
-        if not any(key in _fx_allowed for key in keys):
-            return None
-        sets = [_fx_allowed.get(key, set(lightctl.SAFE_EFFECTS) | {0}) for key in keys]
-    if not sets:
+        known = [_fx_allowed[key] for key in keys if key in _fx_allowed]
+    if not known:
         return None
-    allowed = set(sets[0])
-    for extra in sets[1:]:
+    allowed = set(known[0])
+    for extra in known[1:]:
         allowed = allowed & extra
     return allowed
 
 
-def _check_fx_allowed(client: Any, target: str, *fx_ids: Any) -> None:
-    """Validate live catalogs; missing catalogs use the conservative offline set."""
+def _check_fx_allowed(
+    client: Any, target: str, *fx_ids: Any, offline_fallback: bool = True
+) -> None:
+    """Validate live catalogs; missing catalogs use the conservative offline set.
+
+    ``offline_fallback=False`` skips the check when no catalog is known, for
+    callers whose effect ids come from the live catalog rather than from a
+    snapshot the AI just read (see the start_show guard).
+    """
     allowed = allowed_effects_for(client, target)
     if allowed is None:
+        if not offline_fallback:
+            return
         allowed = set(lightctl.SAFE_EFFECTS) | {0}
     for fx in fx_ids:
         if fx is None:
@@ -1015,9 +1058,184 @@ def _check_fx_allowed(client: Any, target: str, *fx_ids: Any) -> None:
         if int(fx) not in allowed:
             raise ValueError(
                 f"Effect {fx} is not usable on the target: it is absent from the "
-                "device's live catalog or 🚫 forbidden (strobe-type). Pick another "
-                "id from the catalog in the device snapshot."
+                "device's live catalog (it may be unreserved on this firmware). "
+                "Pick another id from the catalog in the device snapshot."
             )
+
+
+# ---------------------------------------------------------------------------
+# Custom palettes (WLED 16)
+# ---------------------------------------------------------------------------
+
+def _palette_controllers(client: Any, target: str) -> list[tuple[str, str, Any]]:
+    """[(controller name, base host url, client)] for a target."""
+    if not _is_fleet(client):
+        host = str(getattr(client, "host", "") or "")
+        return [("", host, client)] if host else []
+    found: list[tuple[str, str, Any]] = []
+    seen: set[str] = set()
+    for name, _segment in client.resolve(target):
+        if name in seen:
+            continue
+        seen.add(name)
+        ctrl = client.clients.get(name)
+        host = str(getattr(ctrl, "host", "") or "")
+        if host:
+            found.append((name, host, ctrl))
+    return found
+
+
+def _palette_info(ctrl: Any) -> dict[str, Any]:
+    """Device info (ver, cpalcount, cpalmax) used for slot and id allocation."""
+    try:
+        info = ctrl.get_info()
+    except Exception:
+        return {}
+    return info if isinstance(info, dict) else {}
+
+
+def author_palette(client: Any, args: dict[str, Any], target: str) -> dict[str, Any]:
+    """Create/list/delete custom WLED palettes on the controllers of a target.
+
+    WLED 16 keeps custom palettes in ``paletteN.json`` on the device filesystem
+    and reloads them the moment such a file is uploaded, so the palette is
+    usable by every palette-driven effect without a reboot.
+    """
+    action = str(args.get("action") or "create").strip().lower()
+    hosts = _palette_controllers(client, target)
+    if not hosts:
+        raise ValueError(
+            "design_palette needs at least one controller; check the target."
+        )
+
+    if action == "list":
+        controllers: dict[str, Any] = {}
+        for name, host, ctrl in hosts:
+            try:
+                info = _palette_info(ctrl)
+            except Exception as exc:
+                controllers[name] = {"ok": False, "error": str(exc)}
+                continue
+            version = info.get("ver")
+            slots: list[dict[str, Any]] = []
+            used = int(info.get("cpalcount") or 0)
+            for slot in range(max(0, used)):
+                filename = wled_files.palette_slot_filename(slot)
+                try:
+                    body = wled_files.read_file(host, filename)
+                    if not body.strip():
+                        continue
+                    stops = wled_files.parse_palette_file(body)
+                except Exception as exc:
+                    slots.append(
+                        {
+                            "slot": slot,
+                            "file": filename,
+                            "palette_id": wled_files.palette_id_for_slot(slot, version),
+                            "error": str(exc),
+                        }
+                    )
+                    continue
+                slots.append(
+                    {
+                        "slot": slot,
+                        "file": filename,
+                        "palette_id": wled_files.palette_id_for_slot(slot, version),
+                        "stops": [list(stop) for stop in stops],
+                    }
+                )
+            controllers[name] = {
+                "ok": True,
+                "version": version,
+                "custom_palettes_used": used,
+                "custom_palettes_max": info.get("cpalmax"),
+                "palettes": slots,
+            }
+        return {"ok": True, "action": "list", "controllers": controllers}
+
+    if action == "delete":
+        if args.get("slot") is None:
+            raise ValueError("design_palette delete requires a slot.")
+        slot = int(args["slot"])
+        filename = wled_files.palette_slot_filename(slot)
+        results: dict[str, Any] = {}
+        for name, host, ctrl in hosts:
+            entry: dict[str, Any] = {"ok": False, "file": filename}
+            try:
+                # The docs call rmcpal a boolean; the firmware treats it as the
+                # palette slot and does the only correct thing — removes
+                # /palette<slot>.json *and* reloads the palette list
+                # (json.cpp). Deleting the file through /edit alone leaves the
+                # device serving a palette that no longer exists on disk.
+                _post_state(ctrl, {"rmcpal": slot}, name)
+                entry["ok"] = True
+            except Exception as exc:
+                entry["error"] = str(exc)
+            results[name] = entry
+        return {"ok": True, "action": "delete", "slot": slot, "controllers": results}
+
+    if action != "create":
+        raise ValueError("design_palette action must be create, list, or delete.")
+
+    stops = wled_files.normalize_stops(
+        args.get("stops") if args.get("stops") else args.get("colors") or []
+    )
+    payload_bytes = wled_files.palette_file(stops)
+    controllers = {}
+    palette_ids: list[int] = []
+    for name, host, ctrl in hosts:
+        entry: dict[str, Any] = {"ok": False}
+        try:
+            info = _palette_info(ctrl)
+            version = info.get("ver")
+            if args.get("slot") is not None:
+                slot = int(args["slot"])
+            else:
+                slot = wled_files.next_free_slot(
+                    host,
+                    reported_count=int(info.get("cpalcount") or 0) or None,
+                    limit=int(info.get("cpalmax") or wled_files.WLED_PALETTE_SLOT_LIMIT),
+                )
+            written = wled_files.write_palette(host, stops, slot=slot)
+            palette_id = wled_files.palette_id_for_slot(slot, version)
+            palette_ids.append(palette_id)
+            entry.update(
+                {
+                    "ok": True,
+                    "slot": slot,
+                    "file": written["file"],
+                    "palette_id": palette_id,
+                    "version": version,
+                }
+            )
+        except Exception as exc:
+            entry["error"] = str(exc)
+        controllers[name] = entry
+
+    applied: dict[str, Any] | None = None
+    if args.get("apply") and any(entry.get("ok") for entry in controllers.values()):
+        # Every controller that accepted the palette uses its own id, so apply
+        # one segment update per controller instead of a wall-wide id.
+        applied = {}
+        for name, entry in controllers.items():
+            if not entry.get("ok"):
+                continue
+            try:
+                applied[name] = _post_state(
+                    client, {"seg": [{"pal": int(entry["palette_id"])}]}, name
+                )
+            except Exception as exc:
+                applied[name] = {"ok": False, "error": str(exc)}
+
+    return {
+        "ok": any(entry.get("ok") for entry in controllers.values()),
+        "action": "create",
+        "stops": [list(stop) for stop in stops],
+        "bytes": len(payload_bytes),
+        "palette_ids": sorted(set(palette_ids)),
+        "controllers": controllers,
+        "applied": applied,
+    }
 
 
 def _post_state(client: Any, payload: lightctl.WledPayload, target: str) -> dict[str, dict] | None:
@@ -1191,136 +1409,41 @@ def _tv_action(action: Any, success: str) -> dict:
     return text_result(success)
 
 
-def _led_orientation() -> str:
-    """Configured LED orientation ('up' = LED 0 at the bottom); drives zone math."""
-    return str(lightctl.load_config().get("led_orientation", "up"))
-
-
-def _segment_config_for(client: Any, controller: str, seg_id: int | None) -> Any:
-    """The configured SegmentConfig for (controller, seg_id), if available."""
-    for ctrl in getattr(client, "controllers", []):
-        if getattr(ctrl, "name", None) == controller:
-            return getattr(ctrl, "segments", {}).get(seg_id)
-    return None
-
-
-def _used_segment_ids(client: Any, controller: str) -> set[int]:
-    """Segment ids already taken on a controller: configured plus live state."""
-    used = {
-        seg_id
-        for _channel, (ctrl, seg_id) in client.channels().items()
-        if ctrl == controller
-    }
-    try:
-        states = client.get_state(target=controller)
-        state = states.get(controller) if isinstance(states, dict) else None
-    except Exception:
-        state = None  # unreadable state must never block a zone
-    if isinstance(state, dict):
-        for seg in state.get("seg") or []:
-            if isinstance(seg, dict) and isinstance(seg.get("id"), int):
-                used.add(seg["id"])
-    return used
-
-
-def _allocate_segment_id(client: Any, controller: str) -> int:
-    """Lowest segment id free on the controller (honoring the device maxseg)."""
-    used = _used_segment_ids(client, controller)
-    maxseg = 16  # ESP32 default; conservative when the device can't be asked
-    try:
-        ctrl_client = getattr(client, "clients", {}).get(controller)
-        info = ctrl_client.get_info() if ctrl_client is not None else {}
-        reported = int(info.get("leds", {}).get("maxseg") or 0)
-        if reported > 0:
-            maxseg = reported
-    except Exception:
-        pass
-    for candidate in range(maxseg):
-        if candidate not in used:
-            return candidate
-    raise ValueError(
-        f"No free segment on {controller} (maxseg {maxseg}). "
-        "Remove a zone with delete_segment first."
-    )
-
-
 def _set_zone(client: Any, args: dict[str, Any]) -> str:
     if not _is_fleet(client):
         raise ValueError("set_zone requires fleet mode (run without --host).")
     channel = str(args["channel"])
-    controller, main_seg = client.resolve(channel)[0]  # raises on unknown channels
+    controller, seg_id = client.resolve(channel)[0]
+    if seg_id is None:
+        raise ValueError(f"Channel {channel!r} has no configured segment.")
     if args.get("fx") is not None:
         _check_fx_allowed(client, channel, int(args["fx"]))
-    zone_name = str(args["zone"])
-    zone: dict[str, Any] = {}
+    zone: dict[str, Any] = {"id": int(seg_id)}
     if args.get("fx") is not None:
         zone["fx"] = int(args["fx"])
     if args.get("pal") is not None:
         zone["pal"] = int(args["pal"])
     if args.get("col") is not None:
-        zone["col"] = str(args["col"])  # zone_payload parses the RRGGBB hex string
+        zone["col"] = [list(lightctl.hex_to_rgbw(str(args["col"])))]
     if args.get("sx") is not None:
         zone["sx"] = lightctl.clamp_byte(int(args["sx"]))
     if args.get("ix") is not None:
         zone["ix"] = lightctl.clamp_byte(int(args["ix"]))
-    if args.get("rev") is not None:
-        zone["rev"] = bool(args["rev"])
-    if args.get("mi") is not None:
-        zone["mi"] = bool(args["mi"])
-
-    # Two fixes relative to the legacy behavior:
-    # 1. The zone becomes a NEW segment on the controller instead of resizing
-    #    the channel's main segment, so the rest of the column keeps its look.
-    # 2. Bounds are computed against the channel's real pixel count and offset
-    #    to its absolute bus range (WLED start/stop are bus-absolute). Without
-    #    configured segment geometry we fall back to the legacy raw bounds.
-    seg_config = _segment_config_for(client, controller, main_seg)
-    pixels = getattr(seg_config, "pixels", None)
-    bus_start = getattr(seg_config, "start", None)
-    bus_stop = getattr(seg_config, "stop", None)
-    orientation = _led_orientation()
-    if pixels and bus_start is not None and bus_stop is not None:
-        local_start, local_stop = lightctl.zone_bounds(zone_name, length=pixels, orientation=orientation)
-        zone["start"] = bus_start + local_start
-        zone["stop"] = bus_start + local_stop
-        payload_length = bus_stop
-    else:
-        zone["zone"] = zone_name
-        payload_length = lightctl.LEDS_PER_COLUMN
-    zone["id"] = _allocate_segment_id(client, controller)
-    payload = lightctl.zone_payload([zone], length=payload_length, orientation=orientation)
+    payload = lightctl.segment_payload([zone])
     result = _post_state(client, payload, controller)
     if "fx" in zone:
         lightctl.record_fx_use(zone["fx"], source="set_zone")
     return _with_fleet_status(
-        f"Set {zone_name} of {channel} as new segment {zone['id']} on {controller} "
-        f"(delete_segment target={controller} id={zone['id']} removes it).",
+        f"Set {channel} on its existing segment {seg_id} ({controller}). "
+        "Segment bounds, mirror, and offset were left unchanged.",
         result,
     )
 
 
 def _set_segment_bounds(client: Any, args: dict[str, Any]) -> str:
-    start = int(args["start"])
-    stop = int(args["stop"])
-    if start >= stop:
-        raise ValueError(
-            f"start ({start}) must be less than stop ({stop}); "
-            "WLED deletes segments whose stop <= start."
-        )
-    segment: dict[str, Any] = {
-        "id": int(args["id"]),
-        "start": start,
-        "stop": stop,
-    }
-    for key in ("grp", "spc", "of"):
-        if args.get(key) is not None:
-            segment[key] = int(args[key])
-    for key in ("rev", "mi"):
-        if args.get(key) is not None:
-            segment[key] = bool(args[key])
-    result = _post_state(client, lightctl.segment_payload([segment]), target=str(args["target"]))
-    return _with_fleet_status(
-        f"Segment {segment['id']} bounds set to {segment['start']}-{segment['stop']}.", result
+    raise ValueError(
+        "Segment bounds, grouping, spacing, offset, reverse, and mirror stay as "
+        "programmed on the controller."
     )
 
 
@@ -1696,7 +1819,8 @@ def call_tool(
         channels = args.get("channels") or []
         if not channels:
             raise ValueError("strips requires channels or assignments.")
-        fx = int(args.get("fx") or 9)
+        # 0 is a valid effect id (Solid); `or` would silently turn it into 9.
+        fx = int(args["fx"]) if args.get("fx") is not None else 9
         _check_fx_allowed(client, ",".join(str(ch) for ch in channels), fx)
         opts = {}
         if args.get("speed") is not None:
@@ -1742,6 +1866,10 @@ def call_tool(
         return text_result(realtime.realtime_stop())
     if name == "realtime_status":
         return text_result(json.dumps(realtime.realtime_status(), indent=2))
+    if name == "design_palette":
+        target = str(args.get("target") or fleet.DEFAULT_TARGET)
+        result = author_palette(client, args, target)
+        return text_result(json.dumps(result, separators=(",", ":")))
     if name == "design_look":
         if not _is_fleet(client):
             raise ValueError("design_look requires fleet mode (run without --host).")
@@ -1790,15 +1918,26 @@ def call_tool(
     if name == "set_segment_bounds":
         return text_result(_set_segment_bounds(client, args))
     if name == "delete_segment":
-        seg_id = int(args["id"])
-        payload = lightctl.segment_payload([{"id": seg_id, "stop": 0}])
-        result = _post_state(client, payload, str(args["target"]))
-        return text_result(_with_fleet_status(f"Deleted segment {seg_id} (stop=0).", result))
+        raise ValueError(
+            "Segments are not deleted from here. Their bounds stay as programmed on the controller."
+        )
     if name == "set_leds":
         return text_result(_set_leds_stream(client, args, target, segment))
     if name == "start_show":
         if not _is_fleet(client):
             raise ValueError("start_show requires fleet mode (run without --host).")
+        # Raw-payload and wall_mode looks must obey the same live effect-safety
+        # policy as set_effect/strips/dynamic_scene. Unlike those tools, a show's
+        # ids are designed by the Music Director from the live catalog, so an
+        # unseeded cache means "cannot verify" rather than "forbidden" — falling
+        # back to the offline list rejected valid effects (e.g. 159 DJ Light).
+        for step in shows.validate_show(args["show"]):
+            _check_fx_allowed(
+                client,
+                str(step["look"].get("target") or fleet.DEFAULT_TARGET),
+                *shows.look_fx_ids(step["look"]),
+                offline_fallback=False,
+            )
         return text_result(shows.start_show(client, args["show"]))
     if name == "stop_show":
         return text_result(shows.stop_show())

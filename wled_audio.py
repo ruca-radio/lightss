@@ -98,6 +98,7 @@ class WledAudioListener:
         clock: Callable[[], float] = time.monotonic,
         interface_ip: str = "0.0.0.0",
         allowed_source: str | None = None,
+        on_packet: Callable[[dict[str, Any]], None] | None = None,
     ):
         self.port = port
         self.host = host
@@ -105,6 +106,7 @@ class WledAudioListener:
         self._clock = clock
         self.interface_ip = interface_ip
         self.allowed_source = allowed_source
+        self._on_packet = on_packet
         self._lock = threading.Lock()
         self._last: dict[str, Any] | None = None
         self._last_at = 0.0
@@ -119,15 +121,23 @@ class WledAudioListener:
             return
         self._reset_state()
         if self._sock is None:
-            self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self._sock.bind((self.host, self.port))
-            membership = socket.inet_aton(AUDIO_SYNC_GROUP) + socket.inet_aton(
-                self.interface_ip
-            )
-            self._sock.setsockopt(
-                socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership
-            )
+            # Build the socket locally: if bind or the multicast join fails, the
+            # half-configured socket must not survive, or the next start() would
+            # skip setup and run a listener that can never receive audio.
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind((self.host, self.port))
+                membership = socket.inet_aton(AUDIO_SYNC_GROUP) + socket.inet_aton(
+                    self.interface_ip
+                )
+                sock.setsockopt(
+                    socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership
+                )
+            except OSError:
+                sock.close()
+                raise
+            self._sock = sock
         self._sock.settimeout(0.25)
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="wled-audio", daemon=True)
@@ -183,6 +193,11 @@ class WledAudioListener:
             parsed["source_ip"] = source_ip
             self._last = parsed
             self._last_at = now
+        if self._on_packet is not None:
+            try:
+                self._on_packet(parsed)
+            except Exception:
+                logger.exception("WLED audio observer callback failed")
         return parsed
 
     def get_snapshot(self) -> dict[str, Any]:

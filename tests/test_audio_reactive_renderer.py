@@ -17,10 +17,13 @@ class FakeTransport:
         self.sent: list[tuple[bytes, tuple[str, int]]] = []
         self.closed = False
         self.fail_forever = fail_forever
+        self.bad_host = None
+        self.failed_sends = 0
         self.lock = threading.Lock()
 
     def sendto(self, data, address):
-        if self.fail_forever:
+        if self.fail_forever or address[0] == self.bad_host:
+            self.failed_sends += 1
             raise OSError("simulated send failure")
         with self.lock:
             self.sent.append((bytes(data), address))
@@ -129,7 +132,7 @@ def test_bass_and_treble_create_distinct_audio_driven_frames_with_normalized_geo
     assert adjacent_detail(treble_left) > adjacent_detail(silent_left)
 
     # Existing calibrated controller spans are preserved despite unequal strips.
-    assert len(silent_left) == 82 * 3
+    assert len(silent_left) == 81 * 3
     assert len(payloads_for_host(silent_tx, "10.27.27.112")[-1]) == 87 * 3
 
 
@@ -245,6 +248,31 @@ def test_sustained_send_errors_end_finitely_and_close_transport(monkeypatch):
     assert not runner.is_alive()
     assert transport.closed is True
     assert "simulated send failure" in (runner.status()["last_error"] or "")
+
+
+def test_runner_keeps_painting_when_one_controller_fails(monkeypatch, caplog):
+    monkeypatch.setattr(realtime.AudioReactiveRunner, "MAX_CONSECUTIVE_ERRORS", 3)
+    transport = FakeTransport()
+    runner = realtime.AudioReactiveRunner(
+        FakeFleet(), SnapshotSource(snapshot(level=0.5, fft=[0.5] * 16)), fps=40, transport=transport
+    )
+    transport.bad_host = runner.hosts["left"]
+    runner.start()
+    try:
+        wait_for_frames(runner, 8)
+        assert runner.is_alive()
+        assert transport.failed_sends == 3
+        with transport.lock:
+            assert {address[0] for _, address in transport.sent} == {runner.hosts["right"]}
+            assert [packet[1] for packet, _ in transport.sent[:8]] == list(range(8))
+        with runner._lock:
+            assert set(runner._last_frames) == {"right"}
+        assert any("dropping" in record.message and "left" in record.message for record in caplog.records)
+    finally:
+        runner.stop()
+        runner.join(timeout=2)
+    assert not runner.is_alive()
+    assert transport.closed is True
 
 
 def test_stop_is_responsive_and_closes_transport():

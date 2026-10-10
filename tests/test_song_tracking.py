@@ -232,6 +232,7 @@ def test_mic_capture_routes_automatic_audio_through_gate(monkeypatch):
     import music_recognizer as mr
     gate = song_tracking.ChangeAwareRecognizer(Mock(return_value=SONG))
     monkeypatch.setattr(mr, '_load_sounddevice', lambda: object())
+    monkeypatch.setattr(mr, '_prepare_capture', lambda device, rate: (device, rate))
     monkeypatch.setattr(mr, '_record_audio', lambda *a: (np.sin(np.arange(8000)*.3)*10000).astype(np.int16))
     monkeypatch.setattr(mr, 'Shazam', lambda: pytest.fail('must not bypass automatic gate'))
     assert asyncio.run(mr.recognize_microphone(1, 8000, 'fake', change_tracker=gate)) == SONG

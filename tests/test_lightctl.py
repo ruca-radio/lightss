@@ -15,6 +15,21 @@ class FakeClient:
 
 
 class LightCtlTests(unittest.TestCase):
+    def test_fxdata_retries_truncated_json_without_repairing_it(self):
+        client = lightctl.LightClient('10.27.27.110')
+        with patch.object(client, '_get_json_url', side_effect=[RuntimeError('Invalid JSON: truncated'), ['speed']]) as read:
+            self.assertEqual(client.get_fxdata(), ['speed'])
+        self.assertEqual(read.call_count, 2)
+
+    def test_fxdata_uses_last_valid_snapshot_when_controller_truncates_again(self):
+        client = lightctl.LightClient('10.27.27.110')
+        with patch.object(client, '_get_json_url', return_value=['speed']):
+            client.get_fxdata()
+        client._fxdata_cached_at -= 61
+        with patch.object(client, '_get_json_url', side_effect=RuntimeError('Invalid JSON: truncated')) as read:
+            self.assertEqual(client.get_fxdata(), ['speed'])
+        self.assertEqual(read.call_count, 3)
+
     def test_normalizes_controller_host(self):
         client = lightctl.LightClient("10.27.27.110")
         self.assertEqual(client.state_url, "http://10.27.27.110/json/state")
@@ -162,7 +177,7 @@ class LightCtlTests(unittest.TestCase):
                         "o3": True,
                     }
                 ],
-                "transition": 5,
+                "tt": 5,
             },
         )
 
@@ -275,8 +290,21 @@ class ValidateEffectTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 lightctl.validate_effect(9)
 
-    def test_blocked_effects_defaults_to_empty_set(self):
+    def test_no_effects_are_blocked_by_policy(self):
+        """Effect-family prohibitions were removed by operator decision.
+
+        The mechanism is still honoured, so repopulating BLOCKED_EFFECTS
+        restores it; the offline SAFE_EFFECTS allowlist stays disjoint from it
+        either way.
+        """
         self.assertEqual(lightctl.BLOCKED_EFFECTS, set())
+        self.assertEqual(lightctl.FORBIDDEN_EFFECT_TERMS, ())
+        self.assertTrue(set(lightctl.SAFE_EFFECTS).isdisjoint(lightctl.BLOCKED_EFFECTS))
+        self.assertTrue(lightctl.effect_name_is_safe("Strobe"))
+        # The mechanism itself still works when populated.
+        with patch.object(lightctl, "BLOCKED_EFFECTS", {1}):
+            with self.assertRaises(ValueError):
+                lightctl.validate_effect(1, allowed={0, 1})
 
 
 class PlaylistPayloadTests(unittest.TestCase):
@@ -325,10 +353,7 @@ class RequestRetryTests(unittest.TestCase):
             "lightctl.urllib.request.urlopen",
             side_effect=[ConnectionResetError("reset by peer"), good_response],
         ):
-            with self.client._request_with_retry(
-                lightctl.urllib.request.Request(self.client.state_url)
-            ) as response:
-                self.assertEqual(response.read(), b'{"on": true}')
+            self.assertEqual(self.client.get_state(), {"on": True})
 
 
 class ScenePayloadMutationTests(unittest.TestCase):
@@ -349,7 +374,7 @@ class ScenePayloadMutationTests(unittest.TestCase):
 
         payload = lightctl.scene_payload("night", transition_ms=500)
 
-        self.assertEqual(payload["transition"], 5)
+        self.assertEqual(payload["tt"], 5)
         self.assertEqual(lightctl._builtin_scenes, before)
 
 
@@ -358,8 +383,10 @@ class CctPayloadTests(unittest.TestCase):
         self.assertEqual(lightctl.cct_payload(127), {"seg": [{"cct": 127}]})
 
     def test_cct_payload_clamps_to_byte_range(self):
-        self.assertEqual(lightctl.cct_payload(300), {"seg": [{"cct": 255}]})
-        self.assertEqual(lightctl.cct_payload(-5), {"seg": [{"cct": 0}]})
+        for invalid in (300, -5):
+            with self.assertRaises(ValueError):
+                lightctl.cct_payload(invalid)
+        self.assertEqual(lightctl.cct_payload(5000), {"seg": [{"cct": 5000}]})
 
     def test_cct_payload_with_seg_id(self):
         self.assertEqual(
@@ -370,7 +397,7 @@ class CctPayloadTests(unittest.TestCase):
     def test_cct_payload_with_transition(self):
         self.assertEqual(
             lightctl.cct_payload(200, transition_ms=500),
-            {"seg": [{"cct": 200}], "transition": 5},
+            {"seg": [{"cct": 200}], "tt": 5},
         )
 
 
@@ -415,16 +442,13 @@ class HttpErrorCloseTests(unittest.TestCase):
             "lightctl.urllib.request.urlopen",
             side_effect=[error, io.BytesIO(b'{"on": true}')],
         ):
-            with self.client._request_with_retry(
-                lightctl.urllib.request.Request(self.client.state_url)
-            ):
-                pass
+            self.assertEqual(self.client.get_state(), {"on": True})
         self.assertTrue(error.fp.closed)
 
     def test_reraised_http_error_response_is_closed(self):
         error = self._http_error(404)
         with patch("lightctl.urllib.request.urlopen", side_effect=error):
-            with self.assertRaises(lightctl.urllib.error.HTTPError):
+            with self.assertRaisesRegex(RuntimeError, "WLED HTTP 404"):
                 self.client.get_state()
         self.assertTrue(error.fp.closed)
 
@@ -440,21 +464,21 @@ class FadeTimerSleepTests(unittest.TestCase):
     def test_no_sleep_after_final_step(self):
         client = FakeClient()
         timer = lightctl.FadeTimer(client, 1, start_brightness=120)
-        with patch("lightctl.time.sleep") as sleep_mock:
+        with patch.object(timer._stop, "wait", return_value=False) as sleep_mock:
             timer._run()
-        # 6 steps -> 7 brightness updates (i=0..6); sleep only between steps.
-        self.assertEqual(sleep_mock.call_count, 6)
-        self.assertEqual(len(client.payloads), 8)  # 7 brightness + final off
+        # 12 steps -> 13 brightness updates; wait only between steps.
+        self.assertEqual(sleep_mock.call_count, 12)
+        self.assertEqual(len(client.payloads), 14)  # 13 brightness + final off
 
 
 class SunriseSimulatorSleepTests(unittest.TestCase):
     def test_no_sleep_after_final_step(self):
         client = FakeClient()
         sim = lightctl.SunriseSimulator(client, duration_minutes=1)
-        with patch("lightctl.time.sleep") as sleep_mock:
+        with patch.object(sim._stop, "wait", return_value=False) as sleep_mock:
             sim._run()
-        self.assertEqual(sleep_mock.call_count, 6)
-        self.assertEqual(len(client.payloads), 7)
+        self.assertEqual(sleep_mock.call_count, 12)
+        self.assertEqual(len(client.payloads), 13)
 
 
 class CycleThreadIntervalTests(unittest.TestCase):
@@ -493,7 +517,7 @@ class ScheduleTests(unittest.TestCase):
 class ZoneBoundsTests(unittest.TestCase):
     def test_zone_name_path_ignores_stray_start_stop_keys(self):
         # start/stop must not silently override the computed zone bounds.
-        payload = lightctl.zone_payload([{"zone": "top half", "start": 0, "stop": 5}])
+        payload = lightctl.zone_payload([{"zone": "top half", "start": 0, "stop": 5}], length=40)
         self.assertEqual(payload["seg"][0]["start"], 20)
         self.assertEqual(payload["seg"][0]["stop"], 40)
 

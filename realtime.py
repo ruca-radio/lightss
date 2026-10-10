@@ -70,6 +70,31 @@ def build_ddp_packets(data: bytes, offset: int = 0, seq: int = 0, max_data: int 
     return packets
 
 
+def send_frames(
+    transport: Any,
+    hosts: dict[str, str],
+    frames: dict[str, bytes],
+    sequence: int,
+) -> list[tuple[str, BaseException]]:
+    """Send one DDP frame set, isolating per-controller failures.
+
+    A single unreachable controller must not starve the others. Previously one
+    ``gaierror``/``EHOSTUNREACH`` on the first controller aborted the whole loop,
+    so every remaining controller received nothing on that frame.
+    """
+    failures: list[tuple[str, BaseException]] = []
+    for controller, data in frames.items():
+        host = hosts.get(controller)
+        if host is None:
+            continue
+        try:
+            for packet in build_ddp_packets(data, 0, sequence):
+                transport.sendto(packet, (host, DDP_PORT))
+        except (OSError, RuntimeError) as exc:
+            failures.append((controller, exc))
+    return failures
+
+
 def _host_ip(host: str) -> str:
     parsed = urlparse(host)
     return parsed.hostname or host.replace("http://", "").replace("https://", "").split("/", 1)[0]
@@ -238,32 +263,51 @@ class RealtimeRunner(threading.Thread):
         self.hosts = {c.name: _host_ip(c.host) for c in fleet.controllers}
 
     def run(self):
-        start = time.monotonic(); next_tick = start; seq = 0; prev: dict[str, bytes] | None = None
-        send_errors = 0
+        # A bounded renderer exits on its own (duration reached), so the socket
+        # must be released here rather than only from an explicit stop. An
+        # unexpected error is logged instead of dying silently in the thread.
+        try:
+            self._stream()
+        except Exception:
+            logger.exception("realtime renderer stopped unexpectedly")
+        finally:
+            try:
+                self.transport.close()
+            except Exception:
+                pass
+
+    def _stream(self):
+        start = time.monotonic(); next_tick = start; seq = 0; prev: dict[str, bytes] = {}
+        send_errors = {entry.controller: 0 for entry in self.entries}
         while not self.stop_event.is_set() and time.monotonic() - start < self.duration_s:
             now = time.monotonic()
             if now < next_tick:
                 time.sleep(min(0.01, next_tick - now)); continue
             frames = render_frames(self.entries, self.shader, self.mood, self.composition_mode, self.intensity, self.seed, now - start, self.colors)
+            frames = {controller: data for controller, data in frames.items() if controller in send_errors}
             if prev:
                 frames = {k: _smooth(prev.get(k), v) for k, v in frames.items()}
-            try:
-                for ctrl, data in frames.items():
-                    for pkt in build_ddp_packets(data, 0, seq):
-                        self.transport.sendto(pkt, (self.hosts[ctrl], DDP_PORT))
-            except OSError as exc:
-                # Transient network failures must not silently kill a show;
-                # only a sustained outage stops the renderer.
-                send_errors += 1
-                if send_errors <= 3 or send_errors % 50 == 0:
-                    logger.warning("realtime DDP send error (#%d): %s", send_errors, exc)
-                if send_errors >= 100:
-                    logger.error("realtime DDP aborting after %d consecutive send errors", send_errors)
-                    break
-                next_tick += 1 / self.fps
-                continue
-            send_errors = 0
-            prev = frames; self.sent_frames += 1; seq = (seq + 1) % 256
+            failures = send_frames(self.transport, self.hosts, frames, seq)
+            failed_controllers = {controller for controller, _ in failures}
+            for controller, exc in failures:
+                send_errors[controller] += 1
+                error_count = send_errors[controller]
+                if error_count <= 3 or error_count % 50 == 0:
+                    logger.warning(
+                        "realtime DDP send error on %s (#%d): %s", controller, error_count, exc
+                    )
+                if error_count >= 100:
+                    logger.error("realtime DDP dropping controller %s after %d consecutive send errors", controller, error_count)
+                    del send_errors[controller]
+            successful_frames = {controller: data for controller, data in frames.items() if controller not in failed_controllers}
+            for controller in successful_frames:
+                send_errors[controller] = 0
+            if successful_frames:
+                prev.update(successful_frames)
+                self.sent_frames += 1; seq = (seq + 1) % 256
+            if not send_errors:
+                logger.error("realtime DDP aborting: all targeted controllers dropped")
+                break
             next_tick += 1 / self.fps
             if time.monotonic() - next_tick > 1 / self.fps:
                 next_tick = time.monotonic()
@@ -705,10 +749,10 @@ class AudioReactiveRunner(threading.Thread):
     def run(self):
         interval = 1.0 / self.fps
         next_tick = time.monotonic()
-        previous: dict[str, bytes] | None = None
+        previous: dict[str, bytes] = {}
         sequence = 0
         source_errors = 0
-        send_errors = 0
+        send_errors = {entry.controller: 0 for entry in self.entries}
         try:
             while not self.stop_event.is_set():
                 delay = next_tick - time.monotonic()
@@ -731,30 +775,36 @@ class AudioReactiveRunner(threading.Thread):
 
                 self._consume_snapshot(raw_snapshot, interval, now)
                 frames = self._render_frames()
+                frames = {controller: data for controller, data in frames.items() if controller in send_errors}
                 if previous:
                     frames = {
                         controller: _smooth(previous.get(controller), data, self.RGB_SLEW)
                         for controller, data in frames.items()
                     }
-                try:
-                    for controller, data in frames.items():
-                        for packet in build_ddp_packets(data, 0, sequence):
-                            self.transport.sendto(packet, (self.hosts[controller], DDP_PORT))
-                except (OSError, RuntimeError) as exc:
-                    send_errors += 1
+                failures = send_frames(self.transport, self.hosts, frames, sequence)
+                failed_controllers = {controller for controller, _ in failures}
+                for controller, exc in failures:
+                    send_errors[controller] += 1
+                    error_count = send_errors[controller]
                     with self._lock:
-                        self.last_error = f"DDP send: {exc}"
-                    if send_errors <= 3 or send_errors % 25 == 0:
-                        logger.warning("audio reactive DDP send error (#%d): %s", send_errors, exc)
-                    if send_errors >= self.MAX_CONSECUTIVE_ERRORS:
-                        break
-                else:
-                    send_errors = 0
-                    previous = frames
+                        self.last_error = f"DDP send on {controller}: {exc}"
+                    if error_count <= 3 or error_count % 25 == 0:
+                        logger.warning("audio reactive DDP send error on %s (#%d): %s", controller, error_count, exc)
+                    if error_count >= self.MAX_CONSECUTIVE_ERRORS:
+                        logger.error("audio reactive DDP dropping controller %s after %d consecutive send errors", controller, error_count)
+                        del send_errors[controller]
+                successful_frames = {controller: data for controller, data in frames.items() if controller not in failed_controllers}
+                for controller in successful_frames:
+                    send_errors[controller] = 0
+                if successful_frames:
+                    previous.update(successful_frames)
                     with self._lock:
-                        self._last_frames = dict(frames)
+                        self._last_frames.update(successful_frames)
                         self.sent_frames += 1
                     sequence = (sequence + 1) % 256
+                if not send_errors:
+                    logger.error("audio reactive DDP aborting: all targeted controllers dropped")
+                    break
 
                 next_tick += interval
                 if time.monotonic() - next_tick > interval:
@@ -820,26 +870,32 @@ class StaticFrameRunner(threading.Thread):
 
     def run(self):
         start = time.monotonic(); next_tick = start; seq = 0
-        send_errors = 0
+        send_errors = {controller: 0 for controller in self.frames}
         while not self.stop_event.is_set() and time.monotonic() - start < self.duration_s:
             now = time.monotonic()
             if now < next_tick:
                 time.sleep(min(0.01, next_tick - now)); continue
-            try:
-                for controller, data in self.frames.items():
-                    for packet in build_ddp_packets(data, 0, seq):
-                        self.transport.sendto(packet, (self.hosts[controller], DDP_PORT))
-            except OSError as exc:
-                send_errors += 1
-                if send_errors <= 3 or send_errors % 50 == 0:
-                    logger.warning("static frame DDP send error (#%d): %s", send_errors, exc)
-                if send_errors >= self.MAX_CONSECUTIVE_ERRORS:
-                    logger.error("static frame DDP aborting after %d consecutive send errors", send_errors)
-                    break
-                next_tick += 1 / self.fps
-                continue
-            send_errors = 0
-            self.sent_frames += 1; seq = (seq + 1) % 256
+            frames = {controller: data for controller, data in self.frames.items() if controller in send_errors}
+            failures = send_frames(self.transport, self.hosts, frames, seq)
+            failed_controllers = {controller for controller, _ in failures}
+            for controller, exc in failures:
+                send_errors[controller] += 1
+                error_count = send_errors[controller]
+                if error_count <= 3 or error_count % 50 == 0:
+                    logger.warning(
+                        "static frame DDP send error on %s (#%d): %s", controller, error_count, exc
+                    )
+                if error_count >= self.MAX_CONSECUTIVE_ERRORS:
+                    logger.error("static frame DDP dropping controller %s after %d consecutive send errors", controller, error_count)
+                    del send_errors[controller]
+            successful_controllers = set(frames) - failed_controllers
+            for controller in successful_controllers:
+                send_errors[controller] = 0
+            if successful_controllers:
+                self.sent_frames += 1; seq = (seq + 1) % 256
+            if not send_errors:
+                logger.error("static frame DDP aborting: all targeted controllers dropped")
+                break
             next_tick += 1 / self.fps
             if time.monotonic() - next_tick > 1 / self.fps:
                 next_tick = time.monotonic()
@@ -857,10 +913,23 @@ def realtime_start(fleet, **kwargs) -> str:
     except Exception:
         pass
     with _lock:
-        realtime_stop()
+        _stop_all_writers()
         _runner = RealtimeRunner(fleet, **kwargs)
         _runner.start()
     return f"Realtime started: {_runner.shader} at {_runner.fps} fps for {_runner.duration_s:g}s with {len(_runner.colors)} colors."
+
+
+def _stop_all_writers() -> None:
+    """Stop every DDP writer. Caller must hold ``_lock``.
+
+    Only one writer may own the controllers: two live renderers interleave
+    frames with independent DDP sequence numbers and tear the output.
+    """
+    global _runner, _frame_runner
+    _stop_runner(_runner)
+    _runner = None
+    _stop_runner(_frame_runner)
+    _frame_runner = None
 
 
 def _stop_runner(runner: threading.Thread | None) -> None:
@@ -876,12 +945,12 @@ def _stop_runner(runner: threading.Thread | None) -> None:
 
 def realtime_stop() -> str:
     global _runner, _frame_runner
-    if _runner or _frame_runner:
-        _stop_runner(_runner); _runner = None
-        _stop_runner(_frame_runner); _frame_runner = None
-        look_memory.record_look(source="realtime", action="realtime_stop", summary="realtime stopped")
-        return "Realtime stopped."
-    return "Realtime not running."
+    with _lock:
+        if _runner or _frame_runner:
+            _stop_all_writers()
+            look_memory.record_look(source="realtime", action="realtime_stop", summary="realtime stopped")
+            return "Realtime stopped."
+        return "Realtime not running."
 
 
 def frame_start(fleet, frames, fps=6, duration_s=300) -> str:
@@ -894,7 +963,9 @@ def frame_start(fleet, frames, fps=6, duration_s=300) -> str:
     except Exception:
         pass
     with _lock:
-        frame_stop()
+        # A realtime look may still be streaming; hand it over instead of
+        # running a second writer against the same controllers.
+        _stop_all_writers()
         _frame_runner = StaticFrameRunner(fleet, frames, fps=fps, duration_s=duration_s)
         _frame_runner.start()
     return (
@@ -905,11 +976,12 @@ def frame_start(fleet, frames, fps=6, duration_s=300) -> str:
 
 def frame_stop() -> str:
     global _frame_runner
-    if _frame_runner:
-        _stop_runner(_frame_runner)
-        _frame_runner = None
-        return "Static frame stopped."
-    return "Static frame not running."
+    with _lock:
+        if _frame_runner:
+            _stop_runner(_frame_runner)
+            _frame_runner = None
+            return "Static frame stopped."
+        return "Static frame not running."
 
 
 def frame_status() -> dict:

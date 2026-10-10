@@ -12,7 +12,10 @@ def wall():
     return fleet.LightFleet({c.name:lightctl.LightClient(c.host,dry_run=True) for c in controllers},controllers,installation=installation)
 
 @pytest.mark.parametrize('name,args,target',[
-    ('realtime_start',{},'realtime'),('start_show',{'show':{}},'show'),
+    ('realtime_start',{},'realtime'),
+    # A minimal *valid* show: the tool now runs the live effect-safety check
+    # before starting, so an empty show is rejected as malformed.
+    ('start_show',{'show':{'steps':[{'look':{'payload':{'seg':[{'fx':9}]}},'duration_s':1}]}},'show'),
 ])
 def test_stream_start_hands_off_before_output(monkeypatch,wall,name,args,target):
     calls=[]

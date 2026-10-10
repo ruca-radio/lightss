@@ -2,11 +2,17 @@
 """Backup-first live WLED 16.x topology migration utility.
 
 Migrates the two verified controllers to the calibrated far-wall topology:
-.110 has far-left 34 px on GPIO 16 then middle-left 48 px on GPIO 2;
-.112 has far-right as WLED segment 0 on GPIO 2 (bus start 47, len 40)
-and middle-right as WLED segment 1 on GPIO 16 (bus start 0, len 47).
+.110 has far-left 34 px on GPIO 16 then middle-left 47 px on GPIO 2;
+.112 has middle-right as WLED segment 0 on GPIO 16 (bus start 0, len 47)
+and far-right as WLED segment 1 on GPIO 2 (bus start 47, len 40).
 Segments are repaired to the confirmed live WLED segment IDs; bus starts remain
 calibrated separately from physical wall order.
+
+Segment ids follow the controller's own bus order. On .112 bus 0 is the 47-pixel
+GPIO 16 strip (middle-right) and bus 1 the 40-pixel GPIO 2 strip (far-right), so
+segment 0 covers LEDs 0-46 and segment 1 covers 47-86. An earlier revision of
+this script wrote the opposite order, which made every per-channel command land
+on the wrong column; do not reintroduce it.
 
 Safety invariants:
 - never POST without a complete validated backup of /json/cfg, /json/state,
@@ -35,11 +41,11 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-# WLED 16 authoritative color-order enum (wled00/const.h): COL_ORDER_BRG = 2.
-WLED_BRG_ORDER = 2
+# WLED 16 authoritative color-order enum (wled00/const.h): COL_ORDER_RGB = 1.
+WLED_RGB_ORDER = 1
 
 HOST_BUSES = {
-    "http://10.27.27.110": [(16, 0, 34), (2, 34, 48)],
+    "http://10.27.27.110": [(16, 0, 34), (2, 34, 47)],
     "http://10.27.27.112": [(16, 0, 47), (2, 47, 40)],
 }
 HOST_PINS = {host: [pin for pin, _start, _length in buses] for host, buses in HOST_BUSES.items()}
@@ -48,7 +54,7 @@ HOST_TOTALS = {host: sum(length for _pin, _start, length in buses) for host, bus
 SEGMENT_PAYLOAD = {
     "seg": [
         {"id": 0, "start": 0, "stop": 34, "on": True, "fx": 0},
-        {"id": 1, "start": 34, "stop": 82, "on": True, "fx": 0},
+        {"id": 1, "start": 34, "stop": 81, "on": True, "fx": 0},
     ],
     "udpn": {"nn": True},
 }
@@ -59,8 +65,8 @@ HOST_SEGMENT_PAYLOADS = {
     "http://10.27.27.110": SEGMENT_PAYLOAD,
     "http://10.27.27.112": {
         "seg": [
-            {"id": 0, "start": 47, "stop": 87, "on": True, "fx": 0},
-            {"id": 1, "start": 0, "stop": 47, "on": True, "fx": 0},
+            {"id": 0, "start": 0, "stop": 47, "on": True, "fx": 0},
+            {"id": 1, "start": 47, "stop": 87, "on": True, "fx": 0},
         ],
         "udpn": {"nn": True},
     },
@@ -143,7 +149,7 @@ def build_config_payload(cfg: dict, pin_starts: list[tuple]) -> dict:
             bus = {"pin": [gpio]}
         bus["start"] = start
         bus["len"] = length
-        bus["order"] = WLED_BRG_ORDER
+        bus["order"] = WLED_RGB_ORDER
         new_ins.append(bus)
 
     new_led = copy.deepcopy(led)
@@ -152,7 +158,7 @@ def build_config_payload(cfg: dict, pin_starts: list[tuple]) -> dict:
 
 
 def verify_config(cfg: dict, expected_pins, expected_buses=None) -> None:
-    """Require calibrated bus starts/lengths, BRG order, expected pins."""
+    """Require calibrated bus starts/lengths, RGB order, expected pins."""
     try:
         buses = cfg["hw"]["led"]["ins"]
     except (KeyError, TypeError) as exc:
@@ -171,9 +177,9 @@ def verify_config(cfg: dict, expected_pins, expected_buses=None) -> None:
                 continue
             if bus.get("len") != length:
                 problems.append(f"bus@{start} len={bus.get('len')} (want {length})")
-            if bus.get("order") != WLED_BRG_ORDER:
+            if bus.get("order") != WLED_RGB_ORDER:
                 problems.append(
-                    f"bus@{start} order={bus.get('order')} (want {WLED_BRG_ORDER})"
+                    f"bus@{start} order={bus.get('order')} (want {WLED_RGB_ORDER})"
                 )
             if bus.get("pin", [None])[0] != pin:
                 problems.append(f"bus@{start} pin={bus.get('pin')} (want [{pin}])")

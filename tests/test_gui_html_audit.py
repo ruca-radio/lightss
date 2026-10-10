@@ -14,7 +14,7 @@ class GuiHtmlAuditTests(unittest.TestCase):
     def test_update_light_preview_guards_null_strip_state(self):
         # currentStripState is null on the first update; reading .ledInfo off
         # it used to throw into the SSE catch and falsely show Disconnected.
-        html = light_gui.render_html()
+        html = light_gui.render_html(player_enabled=True)
 
         self.assertIn(
             "ledInfo: ledInfo || (currentStripState && currentStripState.ledInfo) || null,",
@@ -24,7 +24,7 @@ class GuiHtmlAuditTests(unittest.TestCase):
     def test_creative_visualizer_controls_do_not_stop_music_mode(self):
         # send() stops the music-mode beat loop; the creative controls must
         # post through sendBeatUpdate like the beat loop itself does.
-        html = light_gui.render_html()
+        html = light_gui.render_html(player_enabled=True)
         boost = _section(html, "function creativeBoostBin", "function creativeSpectrumMap")
         spectrum = _section(html, "function creativeSpectrumMap", "function creativeEnergyPulse")
         pulse = _section(html, "function creativeEnergyPulse", "function creativeEvolve")
@@ -37,14 +37,14 @@ class GuiHtmlAuditTests(unittest.TestCase):
         self.assertNotIn("send(", pulse)
 
     def test_stop_audio_reactive_stops_mood_pipeline(self):
-        html = light_gui.render_html()
+        html = light_gui.render_html(player_enabled=True)
         body = _section(html, "function stopAudioReactive", "function closeMicSession")
 
         self.assertIn("setMoodSessionRunning(false);", body)
         self.assertIn("stopMoodRecorder();", body)
 
     def test_start_music_mode_catch_releases_mic(self):
-        html = light_gui.render_html()
+        html = light_gui.render_html(player_enabled=True)
         body = _section(html, "async function startMusicMode", "function stopMusicMode")
         catch_body = body[body.index("catch (err)"):]  # includes finally; fine
 
@@ -53,7 +53,7 @@ class GuiHtmlAuditTests(unittest.TestCase):
     def test_fleet_shrink_resets_target_selector(self):
         # After a fleet shrink the selector must not keep offering dead
         # controllers — it resets to just the "all" option.
-        html = light_gui.render_html()
+        html = light_gui.render_html(player_enabled=True)
         body = _section(html, "function applyFleetInfo", "// Resolve the state blob")
 
         shrink_idx = body.index("fleetInfo.targets.length <= 1")
@@ -62,12 +62,12 @@ class GuiHtmlAuditTests(unittest.TestCase):
         self.assertIn("opt.value = 'all';", body)
 
     def test_autonomous_status_applies_computed_color(self):
-        html = light_gui.render_html()
+        html = light_gui.render_html(player_enabled=True)
 
         self.assertIn("autoSt.style.color = color;", html)
 
     def test_channel_target_segment_is_passed_to_preview(self):
-        html = light_gui.render_html()
+        html = light_gui.render_html(player_enabled=True)
 
         self.assertIn("segId = Number(mapping[currentTarget][1]) || 0;", html)
         self.assertIn("function updateLightPreview(st, ledInfo, segId = 0)", html)
@@ -75,7 +75,7 @@ class GuiHtmlAuditTests(unittest.TestCase):
         self.assertEqual(html.count("updateLightPreview(st, ledCapabilities, picked.segId)"), 2)
 
     def test_main_page_requests_have_timeouts(self):
-        html = light_gui.render_html()
+        html = light_gui.render_html(player_enabled=True)
 
         self.assertIn("fetchJsonWithTimeout('/api/ai'", html)
         self.assertIn("fetchJsonWithTimeout(`/api/ai/jobs/", html)
@@ -84,7 +84,7 @@ class GuiHtmlAuditTests(unittest.TestCase):
         self.assertIn("fetchJsonWithTimeout('/api/suggestions'", html)
 
     def test_audio_player_controls_are_visible(self):
-        html = light_gui.render_html()
+        html = light_gui.render_html(player_enabled=True)
         for marker in (
             "Audio Player",
             "playerSource",
@@ -96,7 +96,7 @@ class GuiHtmlAuditTests(unittest.TestCase):
             self.assertIn(marker, html)
 
     def test_player_stage_sits_above_tabs_with_library_and_apple_qr(self):
-        html = light_gui.render_html()
+        html = light_gui.render_html(player_enabled=True)
         stage = html.index('id="playerStage"')
         library = html.index('id="playerLibrary"')
         tabs = html.index('id="tab-live"')
@@ -124,7 +124,7 @@ class GuiHtmlAuditTests(unittest.TestCase):
         self.assertIn("/api/player/apple/complete", html)
 
     def test_player_disable_toggle_wires_settings_card_and_polling(self):
-        html = light_gui.render_html()
+        html = light_gui.render_html(player_enabled=True)
         card = _section(html, "<h2>Player connections</h2>", 'id="playerSettingsMsg"')
         self.assertIn('id="setPlayerEnabled"', card)
 
@@ -144,7 +144,7 @@ class GuiHtmlAuditTests(unittest.TestCase):
         self.assertIn("if (!playerEnabled) return;", html)
 
     def test_dynamic_scene_controls_are_visible(self):
-        html = light_gui.render_html()
+        html = light_gui.render_html(player_enabled=True)
 
         for marker in (
             "Dynamic AI Scenes",
@@ -157,7 +157,7 @@ class GuiHtmlAuditTests(unittest.TestCase):
             self.assertIn(marker, html)
 
     def test_realtime_and_feedback_controls_are_visible(self):
-        html = light_gui.render_html()
+        html = light_gui.render_html(player_enabled=True)
 
         for marker in (
             "Realtime Direct Mode",
@@ -177,13 +177,14 @@ class GuiHtmlAuditTests(unittest.TestCase):
             self.assertIn(marker, html)
 
     def test_look_agent_controls_are_visible(self):
-        html = light_gui.render_html()
+        html = light_gui.render_html(player_enabled=True)
 
         for marker in (
             "Look Agents",
             "agentColoristModel",
             "agentMotionModel",
             "agentCriticModel",
+            "agentLibrarianModel",
             "design_look",
             "Design unique look",
         ):
@@ -198,7 +199,7 @@ class GuiHtmlAuditTests(unittest.TestCase):
         self.assertIn("fetchJsonWithTimeout('/api/tv-trivia')", tv)
 
     def test_firetv_media_controls_are_wired_to_safe_action_names(self):
-        html = light_gui.render_html()
+        html = light_gui.render_html(player_enabled=True)
 
         for marker in (
             'role="group" aria-label="TV media controls"',
@@ -274,7 +275,7 @@ class PlayerDisabledRenderTests(unittest.TestCase):
         self.assertNotIn('id="setAppleDevToken"', html)
 
     def test_enabled_render_keeps_player_markup(self):
-        html = light_gui.render_html()
+        html = light_gui.render_html(player_enabled=True)
         for marker in (
             'id="playerStage"',
             'id="playerLibrary"',

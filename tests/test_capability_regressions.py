@@ -15,11 +15,13 @@ def clean_policy():
     mcp_light._fx_allowed.clear()
 
 
-def test_all_forbidden_refresh_revokes_previous_allowlist():
+def test_catalog_refresh_replaces_the_previous_allowlist():
     client = lightctl.LightClient('http://example.test', dry_run=True)
     mcp_light.seed_effect_catalog(client.host, ['Solid', 'Breathe'])
     mcp_light.seed_effect_catalog(client.host, ['Strobe', 'Lightning'])
-    assert mcp_light.allowed_effects_for(client, 'all') == set()
+    # The refreshed catalog replaces the old one; no family filtering remains,
+    # so both of its ids are offered.
+    assert mcp_light.allowed_effects_for(client, 'all') == {0, 1}
 
 
 def test_failed_refresh_cannot_reuse_old_catalog():

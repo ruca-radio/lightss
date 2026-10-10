@@ -39,7 +39,8 @@ class SparsePayloadTest(unittest.TestCase):
     """udp_sync/nightlight must not clobber unspecified fields with False/defaults."""
 
     def test_ai_udp_sync_omits_absent_fields(self) -> None:
-        self.assertEqual(light_gui.payload_for_ai_action({"action": "udp_sync"}), {"udpn": {}})
+        with self.assertRaises(ValueError):
+            light_gui.payload_for_ai_action({"action": "udp_sync"})
         self.assertEqual(
             light_gui.payload_for_ai_action({"action": "udp_sync", "send": True}),
             {"udpn": {"send": True}},
@@ -50,7 +51,8 @@ class SparsePayloadTest(unittest.TestCase):
         )
 
     def test_ai_nightlight_omits_absent_fields(self) -> None:
-        self.assertEqual(light_gui.payload_for_ai_action({"action": "nightlight"}), {"nl": {}})
+        with self.assertRaises(ValueError):
+            light_gui.payload_for_ai_action({"action": "nightlight"})
         self.assertEqual(
             light_gui.payload_for_ai_action({"action": "nightlight", "enabled": True, "minutes": 30}),
             {"nl": {"on": True, "dur": 30}},
@@ -345,3 +347,273 @@ class ShazamFallbackTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# Live effect catalog for the manual pickers
+# ---------------------------------------------------------------------------
+
+class _EffectsClient:
+    def __init__(self, effects):
+        self._effects = effects
+
+    def get_effects(self):
+        return list(self._effects)
+
+
+class _EffectsFleet:
+    def __init__(self, per_controller):
+        self.clients = {
+            name: _EffectsClient(effects) for name, effects in per_controller.items()
+        }
+
+
+class LiveEffectCatalogTest(unittest.TestCase):
+    def setUp(self):
+        light_gui.invalidate_effect_catalog()
+        self.addCleanup(light_gui.invalidate_effect_catalog)
+
+    def test_keeps_only_ids_every_controller_names_identically(self):
+        catalog = light_gui.live_effect_catalog(
+            _EffectsFleet(
+                {
+                    "left": ["Solid", "Blink", "DJ Light"],
+                    "right": ["Solid", "Blink", "Something else"],
+                }
+            )
+        )
+        # id 2 differs between controllers, so one dropdown index cannot mean
+        # the same effect everywhere and it is left out.
+        self.assertEqual(
+            catalog, [{"id": 0, "name": "Solid"}, {"id": 1, "name": "Blink"}]
+        )
+
+    def test_includes_effects_that_used_to_be_prohibited(self):
+        catalog = light_gui.live_effect_catalog(
+            _EffectsFleet({"left": ["Solid", "Blink", "Strobe", "Fireworks 1D"]})
+        )
+        self.assertEqual([e["name"] for e in catalog], ["Solid", "Blink", "Strobe", "Fireworks 1D"])
+
+    def test_falls_back_to_the_curated_list_when_no_controller_answers(self):
+        class Dead:
+            clients = {"left": object()}  # no get_effects -> unreadable
+
+        catalog = light_gui.live_effect_catalog(Dead())
+        self.assertEqual([e["id"] for e in catalog], sorted(lightctl.SAFE_EFFECTS))
+
+    def test_catalog_is_cached_and_invalidated(self):
+        fleet_ = _EffectsFleet({"left": ["Solid", "Blink"]})
+        first = light_gui.effect_catalog_for(fleet_)
+        self.assertEqual([e["id"] for e in first], [0, 1])
+        # A different fleet is ignored while the cache is warm...
+        second = light_gui.effect_catalog_for(_EffectsFleet({"left": ["Only"]}))
+        self.assertEqual(second, first)
+        # ...and picked up once it is dropped.
+        light_gui.invalidate_effect_catalog()
+        third = light_gui.effect_catalog_for(_EffectsFleet({"left": ["Only"]}))
+        self.assertEqual([e["name"] for e in third], ["Only"])
+
+
+class EffectsEndpointTest(unittest.TestCase):
+    """GET /api/effects feeds the manual pickers."""
+
+    def setUp(self):
+        light_gui.invalidate_effect_catalog()
+        self.addCleanup(light_gui.invalidate_effect_catalog)
+        self.state = MagicMock()
+        self.server = ThreadingHTTPServer(
+            ("127.0.0.1", 0), light_gui.make_handler(self.state)
+        )
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self._stop_server)
+        self.port = self.server.server_address[1]
+
+    def _stop_server(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+    def test_effects_endpoint_returns_picker_entries(self):
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{self.port}/api/effects", timeout=5
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(response.status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["effects"])
+        for entry in payload["effects"]:
+            self.assertIn("id", entry)
+            self.assertIn("name", entry)
+
+
+class ManualEffectValidationTest(unittest.TestCase):
+    """The manual picker and the manual action path must agree on the catalog."""
+
+    def setUp(self):
+        light_gui.invalidate_effect_catalog()
+        self.addCleanup(light_gui.invalidate_effect_catalog)
+
+    def test_live_catalog_unlocks_manual_effect_actions(self):
+        fleet_ = _EffectsFleet({"left": ["Solid", "Blink", "Strobe", "DJ Light"]})
+        allowed, names = light_gui.manual_effect_validation(fleet_)
+        self.assertEqual(allowed, {0, 1, 2, 3})
+        self.assertEqual(names[3], "DJ Light")
+        payload = light_gui.payload_for_action(
+            "fx", {"effect": 1, "speed": 200}, allowed_effects=allowed, effect_names=names
+        )
+        self.assertEqual(payload["seg"][0]["fx"], 1)
+
+    def test_manual_validation_names_are_indexed_by_effect_id(self):
+        # The offline fallback uses sparse ids; names must stay aligned with them.
+        class Dead:
+            clients = {"left": object()}
+
+        allowed, names = light_gui.manual_effect_validation(Dead())
+        self.assertEqual(allowed, set(lightctl.SAFE_EFFECTS))
+        for effect_id in allowed:
+            self.assertEqual(names[effect_id], lightctl.SAFE_EFFECTS[effect_id])
+
+    def test_ids_absent_from_the_live_catalog_are_still_rejected(self):
+        fleet_ = _EffectsFleet({"left": ["Solid", "Blink"]})
+        allowed, names = light_gui.manual_effect_validation(fleet_)
+        with self.assertRaises(ValueError):
+            light_gui.payload_for_action(
+                "fx", {"effect": 9}, allowed_effects=allowed, effect_names=names
+            )
+
+
+class ManualEffectActionHttpTest(unittest.TestCase):
+    """POST /api/action with action=fx uses the live catalog."""
+
+    class _State:
+        def __init__(self, client):
+            self.client = client
+            self.target = "all"
+
+        def invalidate_caches(self):
+            return None
+
+    def setUp(self):
+        light_gui.invalidate_effect_catalog()
+        self.addCleanup(light_gui.invalidate_effect_catalog)
+        state = self._State(_EffectsFleet({"left": ["Solid", "Blink", "Strobe"]}))
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), light_gui.make_handler(state))
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self._stop_server)
+        self.port = self.server.server_address[1]
+
+    def _stop_server(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+    def _post(self, body):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/action",
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+
+    def test_action_fx_accepts_a_live_effect(self):
+        with patch.object(light_gui, "_post_state") as post:
+            status, payload = self._post({"action": "fx", "effect": 1, "speed": 200})
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(post.call_args[0][1]["seg"][0]["fx"], 1)
+
+    def test_action_fx_rejects_an_unknown_effect(self):
+        with patch.object(light_gui, "_post_state"):
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                self._post({"action": "fx", "effect": 250, "speed": 200})
+        self.assertEqual(ctx.exception.code, 400)
+
+
+class _SelfConfigureClient:
+    """Minimal WLED client for the self-configure endpoints."""
+
+    def __init__(self, host, buses, segments):
+        self.host = host
+        self._buses = buses
+        self._segments = segments
+        self.posts = []
+
+    def get_info(self):
+        return {"name": "WLED-Gledopto", "ver": "16.0.1",
+                "leds": {"count": max((s["stop"] for s in self._segments), default=0), "maxseg": 32}}
+
+    def get_state(self):
+        return {"on": True, "bri": 128, "seg": list(self._segments)}
+
+    def get_config(self):
+        return {"hw": {"led": {"ins": list(self._buses)}}}
+
+    def post_state(self, payload):
+        self.posts.append(json.loads(json.dumps(payload)))
+        return {"success": True}
+
+
+class SelfConfigureEndpointsTest(unittest.TestCase):
+    """The webcam self-configure flow routes light -> finish and fails cleanly."""
+
+    def setUp(self):
+        self.state = MagicMock()
+        import fleet as fleet_mod
+
+        buses = [{"pin": [16], "start": 0, "len": 34, "order": 2},
+                 {"pin": [2], "start": 34, "len": 48, "order": 2}]
+        self.wall = fleet_mod.LightFleet(
+            {
+                "left": _SelfConfigureClient("http://10.27.27.110", buses,
+                                             [{"id": 0, "start": 0, "stop": 34, "on": True},
+                                              {"id": 1, "start": 34, "stop": 82, "on": True}]),
+                "right": _SelfConfigureClient("http://10.27.27.112", buses,
+                                              [{"id": 0, "start": 0, "stop": 34, "on": True},
+                                               {"id": 1, "start": 34, "stop": 82, "on": True}]),
+            },
+            [
+                fleet_mod.ControllerConfig("left", "http://10.27.27.110", {
+                    0: fleet_mod.SegmentConfig("far-left", gpio=16, pixels=34, start=0, stop=34),
+                    1: fleet_mod.SegmentConfig("middle-left", gpio=2, pixels=48, start=34, stop=82),
+                }),
+                fleet_mod.ControllerConfig("right", "http://10.27.27.112", {
+                    0: fleet_mod.SegmentConfig("middle-right", gpio=16, pixels=47, start=0, stop=47),
+                    1: fleet_mod.SegmentConfig("far-right", gpio=2, pixels=40, start=47, stop=87),
+                }),
+            ],
+            installation=fleet_mod.InstallationConfig(),
+        )
+        self.state.client = self.wall
+        self.server = ThreadingHTTPServer(
+            ("127.0.0.1", 0), light_gui.make_handler(self.state)
+        )
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.shutdown)
+        self.addCleanup(self.server.server_close)
+        self.port = self.server.server_address[1]
+
+    def _post(self, path, body):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}",
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+
+    def test_light_returns_a_token_and_colors(self):
+        status, payload = self._post("/api/calibration/self-configure/light", {})
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["token"])
+        self.assertEqual(payload["colors"], ["red", "green", "blue", "yellow"])
+
+    def test_finish_rejects_an_unknown_token(self):
+        status, payload = self._post(
+            "/api/calibration/self-configure/finish", {"token": "nope", "image": "aW1n"}
+        )
+        self.assertEqual(status, 200)
+        self.assertFalse(payload["ok"])
+        self.assertIn("No active self-configure probe", payload["error"])

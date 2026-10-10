@@ -113,13 +113,13 @@ class WledWriteTests(unittest.TestCase):
             mcp_light.call_tool(fleet_, "wled_write", {"payload": big}, FakeModes())
         self.assertEqual(posted(fleet_), [])
 
-    def test_forbidden_effect_rejected_when_seeded(self):
+    def test_absent_effect_rejected_when_seeded(self):
         mcp_light.seed_effect_catalog("left", CATALOG)
         mcp_light.seed_effect_catalog("right", CATALOG)
         fleet_ = make_fleet()
         with self.assertRaises(ValueError):
             mcp_light.call_tool(
-                fleet_, "wled_write", {"payload": {"seg": [{"fx": 1}]}}, FakeModes()  # Strobe
+                fleet_, "wled_write", {"payload": {"seg": [{"fx": 199}]}}, FakeModes()
             )
         self.assertEqual(posted(fleet_), [])
 
@@ -217,8 +217,8 @@ class SnapshotHintTests(unittest.TestCase):
         self.assertIn(3, hints)          # GEQ — not in SAFE_EFFECTS, but live-allowed
         self.assertIn("colors 1+2+3", hints[3])
         self.assertIn("c1=Gain", hints[3])
-        self.assertNotIn(1, hints)       # Strobe is 🚫 — no hint
-        self.assertNotIn(4, hints)       # RSVD is 🚫 — no hint
+        self.assertIn(1, hints)          # Strobe is an ordinary effect now
+        self.assertNotIn(4, hints)       # RSVD is a placeholder — no hint
 
     def test_legacy_fallback_without_effects_list(self):
         hints = light_gui._parse_fxdata_hints(self.FXDATA)

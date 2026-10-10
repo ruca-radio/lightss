@@ -161,11 +161,8 @@ def classify_track_ai(artist: str, title: str, settings: dict, timeout: float = 
     try:
         import ai_chat  # local import keeps the module importable without it
 
-        url = f"{str(settings['base_url']).rstrip('/')}/chat/completions"
-        headers = {"Content-Type": "application/json"}
-        api_key = os.environ.get(str(settings.get("api_key_env") or "").lstrip("$"), "").strip()
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
+        url = ai_chat._chat_completions_url(str(settings['base_url']))
+        headers = ai_chat._provider_headers(settings)
         body = {
             "model": settings.get("model"),
             "messages": [
@@ -184,9 +181,10 @@ def classify_track_ai(artist: str, title: str, settings: dict, timeout: float = 
                 )},
                 {"role": "user", "content": f"Track data: {artist} — {title}"},
             ],
-            "max_tokens": 500,  # thinking models (kimi-k3) burn tokens on reasoning first
-            # note: no temperature — some models (e.g. kimi-k3) only allow their default
+            # No legacy max_tokens or temperature: modern reasoning models
+            # reject these. Provider-specific limits belong in overrides.
         }
+        body.update(ai_chat._request_overrides(settings))
         request = urllib.request.Request(
             url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST"
         )
@@ -256,6 +254,9 @@ class MusicDirector(threading.Thread):
         self.ai_settings = ai_settings
         self.ambient_poll_s = max(0.0, float(ambient_poll_s))
         self.current_track: str | None = None
+        self.current_song: dict | None = None
+        self.last_response: str | None = None
+        self.last_error: str | None = None
         self.current_mood: str | None = None
         self._stop_event = threading.Event()
         self._last_key: tuple[str, str] | None = None
@@ -263,6 +264,9 @@ class MusicDirector(threading.Thread):
         self._idle_applied = False
         self._ai_cache: dict[tuple[str, str], str | None] = {}
         self._composer_thread: threading.Thread | None = None
+        self._composer_lock = threading.Lock()
+        self._composer_running = False
+        self._pending_composition: tuple[str, str, int] | None = None
         self._generation = 0
         self._current_look: dict | None = None
         self._last_ambient_at = 0.0
@@ -312,6 +316,9 @@ class MusicDirector(threading.Thread):
 
     def _handle_track(self, track: dict) -> None:
         """A track is playing: apply its mood look if the identity changed."""
+        if self._stop_event.is_set():
+            return
+        self.current_song = dict(track)
         self._idle_strikes = 0
         self._idle_applied = False
         artist = str(track.get("artist") or "").strip()
@@ -333,6 +340,8 @@ class MusicDirector(threading.Thread):
                 mood = label
                 rule_index = _AI_LABEL_TO_RULE[label]
         look = self._look_for_rule(rule_index)
+        if self._stop_event.is_set():
+            return
         try:
             import realtime  # lazy: keeps the module importable without it
             # A running DDP session repaints every frame — the director owns
@@ -357,20 +366,32 @@ class MusicDirector(threading.Thread):
         """Upgrade the heuristic look into an AI-composed show (background)."""
         if not self.ai_settings:
             return
-        composer = self._composer_thread
-        if composer is not None and composer.is_alive():
-            return  # one at a time; heuristic look stays until it lands
-        generation = self._generation
-        self._composer_thread = threading.Thread(
-            target=self._compose_ai_show,
-            args=(artist, title, generation),
-            daemon=True,
-            name="lightss-mood-composer",
-        )
-        self._composer_thread.start()
+        with self._composer_lock:
+            self._pending_composition = (artist, title, self._generation)
+            if self._composer_running:
+                return  # replace pending work; never lose the newest song
+            self._composer_running = True
+            self._composer_thread = threading.Thread(
+                target=self._compose_pending_shows, daemon=True,
+                name="lightss-mood-composer",
+            )
+            self._composer_thread.start()
+
+    def _compose_pending_shows(self) -> None:
+        while True:
+            with self._composer_lock:
+                pending = self._pending_composition
+                self._pending_composition = None
+                if pending is None or self._stop_event.is_set():
+                    self._composer_running = False
+                    return
+            try:
+                self._compose_ai_show(*pending)
+            except Exception:
+                logger.exception("Music director: composer worker failed")
 
     def _compose_ai_show(self, artist: str, title: str, generation: int) -> None:
-        if generation != self._generation:
+        if self._stop_event.is_set() or generation != self._generation:
             return  # track already skipped before we even asked
         import ai_chat  # lazy: heavy import chain
 
@@ -378,9 +399,13 @@ class MusicDirector(threading.Thread):
             f"The song '{title}' by '{artist}' is currently playing. Design an impressive "
             "looping light show that matches its mood and energy: use start_show with 2-4 "
             "steps (prefer audio-reactive effects — the controllers beat-match via hardware), "
-            "or an atmosphere if one fits perfectly. Make it theatrical: this is the main "
-            "event, not background lighting. Then reply with one short sentence about the "
-            "vibe you created."
+            "or an atmosphere if one fits perfectly. Make it theatrical, not background lighting. "
+            "Use the measured controller level, FFT and beats in runtime context to choose "
+            "the show's energy and motion. Use validated audio-reactive effects for beat-matched "
+            "steps; the controllers handle realtime beat timing. Never invent a BPM. "
+            "Then reply with one short sentence about the "
+            "vibe you created. Call start_show for the sequence. "
+            "Do not call music_show: Smart Director is not the owner of this show."
         )
         try:
             import light_gui  # lazy: shared AI context builder lives with the GUI
@@ -399,30 +424,54 @@ class MusicDirector(threading.Thread):
                 context_text=context_text,
                 max_rounds=4,
                 timeout=15.0,
+                is_cancelled=lambda: self._stop_event.is_set() or generation != self._generation,
+                # music_show only tunes a running Smart Director. This composer
+                # owns the wall through start_show while that director is off.
+                exclude_tools=("music_show",),
             )
         except Exception as exc:
             logger.info("Music director: AI show compose failed for %r: %s", title, exc)
+            if generation == self._generation and not self._stop_event.is_set():
+                self.last_error = str(exc)
             return
         if generation != self._generation:
             logger.info("Music director: discarded stale AI show for %r (track moved on)", title)
             # run_chat's tool calls already fired live side effects (start_show
             # etc.) — undo them so the stale show can't stomp the current look.
             try:
+                if self._stop_event.is_set():
+                    return  # a stopped director no longer owns the wall
                 shows.stop_show()
                 if self._current_look is not None:
                     shows.apply_look(self.fleet, self._current_look, transition_s=0.4)
             except Exception as exc:  # one bad post must never kill the composer
                 logger.warning("Music director: stale-show cleanup failed: %s", exc)
             return
+        if self._stop_event.is_set():
+            return
+        events = result.get("events") or []
+        applied = any(bool(event.get("ok")) for event in events if isinstance(event, dict))
+        self.last_response = result["text"]
+        if events and not applied:
+            self.last_error = result["text"]
+            logger.info(
+                "Music director: AI show for %r was not applied (%d tool calls): %s",
+                title, len(result["log"]), result["text"][:120],
+            )
+            return
+        self.last_error = None
         logger.info("Music director: AI show for %r live (%d tool calls): %s",
                     title, len(result["log"]), result["text"][:120])
 
     def _handle_idle(self) -> None:
         """No track playing: leave current look alone unless idle is opt-in."""
+        if self._last_key is not None:
+            self._generation += 1
         if not self.idle_atmosphere:
             self._idle_strikes += 1
             self._last_key = None
             self.current_track = None
+            self.current_song = None
             self.current_mood = None
             return
         self._idle_strikes += 1
@@ -438,6 +487,7 @@ class MusicDirector(threading.Thread):
         self._last_key = None
         self._current_look = None
         self.current_track = None
+        self.current_song = None
         self.current_mood = None
         logger.info("Music director: music stopped, applied %r", self.idle_atmosphere)
 
@@ -458,6 +508,7 @@ class MusicDirector(threading.Thread):
 
     def stop(self) -> None:
         """Ask the director to stop; returns immediately (cooperative)."""
+        self._generation += 1
         self._stop_event.set()
 
     def is_running(self) -> bool:
@@ -482,6 +533,20 @@ def _stop_locked() -> MusicDirector | None:
     return director
 
 
+def _join_stopped(director: MusicDirector | None) -> None:
+    """Join a director that has actually been started.
+
+    A failed start leaves a MusicDirector registered before Thread.start().
+    Thread.join() on that object raises RuntimeError, and every later Start
+    Music Director hit the same error.
+    """
+    if director is None:
+        return
+    if not director.is_alive() and director.ident is None:
+        return
+    director.join(timeout=5.0)
+
+
 def start_director(fleet: LightFleet, **kwargs) -> str:
     """Start the music director, replacing any director already running.
 
@@ -492,9 +557,14 @@ def start_director(fleet: LightFleet, **kwargs) -> str:
     with _registry_lock:
         old = _stop_locked()
         _current_director = director
-    if old is not None:
-        old.join(timeout=5.0)
-    director.start()
+    try:
+        _join_stopped(old)
+        director.start()
+    except Exception:
+        with _registry_lock:
+            if _current_director is director:
+                _current_director = None
+        raise
     idle = repr(director.idle_atmosphere) if director.idle_atmosphere else "disabled"
     return f"Music director started (poll every {director.poll_s:g}s, idle {idle})."
 
@@ -505,7 +575,7 @@ def stop_director() -> str:
         old = _stop_locked()
     if old is None:
         return "No music director is running."
-    old.join(timeout=5.0)
+    _join_stopped(old)
     return "Music director stopped."
 
 
@@ -518,5 +588,8 @@ def director_status() -> dict:
     return {
         "running": True,
         "track": director.current_track,
+        "now_playing": getattr(director, "current_song", None),
+        "last_response": getattr(director, "last_response", None),
+        "last_error": getattr(director, "last_error", None),
         "mood": director.current_mood,
     }

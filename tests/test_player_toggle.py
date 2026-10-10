@@ -33,9 +33,9 @@ class SettingsFromConfigEnabledTest(unittest.TestCase):
 
 
 class AudioPlayerEnabledHelperTest(unittest.TestCase):
-    def test_defaults_true_when_unset(self) -> None:
-        self.assertTrue(light_gui._audio_player_enabled({}))
-        self.assertTrue(light_gui._audio_player_enabled({"audio_player": {}}))
+    def test_defaults_false_when_unset(self) -> None:
+        self.assertFalse(light_gui._audio_player_enabled({}))
+        self.assertFalse(light_gui._audio_player_enabled({"audio_player": {}}))
         self.assertTrue(light_gui._audio_player_enabled({"audio_player": {"enabled": True}}))
 
     def test_false_values_disable(self) -> None:
@@ -43,7 +43,7 @@ class AudioPlayerEnabledHelperTest(unittest.TestCase):
             self.assertFalse(light_gui._audio_player_enabled({"audio_player": {"enabled": value}}))
 
     def test_public_settings_include_enabled(self) -> None:
-        self.assertTrue(light_gui.audio_player_public_settings({})["enabled"])
+        self.assertFalse(light_gui.audio_player_public_settings({})["enabled"])
         self.assertFalse(
             light_gui.audio_player_public_settings({"audio_player": {"enabled": False}})["enabled"]
         )
@@ -121,8 +121,8 @@ class PlayerToggleHttpTest(unittest.TestCase):
             self.assertEqual(status, 200, path)
             self.assertEqual(payload, self.DISABLED, path)
 
-    def test_get_player_enabled_by_default(self) -> None:
-        self._write_config({})
+    def test_get_player_when_explicitly_enabled(self) -> None:
+        self._write_config({"audio_player": {"enabled": True}})
         # apple_music with no token fails fast without any network access.
         status, payload = self._get("/api/player?source=apple_music")
         self.assertEqual(status, 200)
@@ -140,7 +140,7 @@ class PlayerToggleHttpTest(unittest.TestCase):
         self.assertNotIn("playerLibrary", body)
         self.assertIn("visualizerHero", body)
 
-        self._write_config({})
+        self._write_config({"audio_player": {"enabled": True}})
         status, body = self._get_text("/")
         self.assertEqual(status, 200)
         self.assertIn("playerLibrary", body)
@@ -162,6 +162,32 @@ class PlayerToggleHttpTest(unittest.TestCase):
         status, _ = self._post("/api/settings", {"audio_player": {"enabled": True}})
         self.assertEqual(status, 200)
         self.assertIs(self._read_config()["audio_player"]["enabled"], True)
+
+    def test_summary_endpoint_works_with_player_off_without_lighting(self) -> None:
+        self._write_config({"audio_player": {"enabled": False}})
+        with patch.object(light_gui.ai_chat, "summarize_response", return_value="One concise line.") as model:
+            status, payload = self._post("/api/model-response/summary", {"text": "Long output. " * 60})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, {"ok": True, "summary": "One concise line."})
+        self.assertEqual(model.call_count, 1)
+
+    def test_summary_endpoint_rejects_oversized_text(self) -> None:
+        with patch.object(light_gui.ai_chat, "summarize_response") as model:
+            status, _ = self._post("/api/model-response/summary", {"text": "x" * 20001})
+        self.assertEqual(status, 400)
+        model.assert_not_called()
+
+    def test_controller_audio_endpoint_remains_available_with_player_off(self) -> None:
+        from unittest.mock import Mock
+        self._write_config({"audio_player": {"enabled": False}})
+        audio = {"active": True, "level": .6, "fft": [.2] * 16}
+        monitor = Mock()
+        monitor.get_snapshot.return_value = audio
+        with patch.object(MagicStubState, "controller_audio", monitor, create=True):
+            status, payload = self._get("/api/audio")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, {"ok": True, "audio": audio})
+        monitor.get_snapshot.assert_called_once()
 
 
 class MagicStubState:

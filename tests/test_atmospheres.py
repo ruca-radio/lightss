@@ -47,19 +47,24 @@ class ClassifyTests(unittest.TestCase):
         self.assertTrue(classified[4]["audio"])
         self.assertTrue(classified[5]["2d"])
 
-    def test_unsafe_marks_strobe_family_and_placeholders(self):
+    def test_unsafe_marks_placeholders(self):
         classified = atmospheres.classify_effects(EFFECTS, FXDATA)
         self.assertFalse(classified[1]["unsafe"])  # Blink remains available
-        self.assertTrue(classified[6]["unsafe"])   # RSVD
+        self.assertTrue(classified[6]["unsafe"])   # RSVD (placeholder, unavailable)
         self.assertFalse(classified[2]["unsafe"])  # Breathe
         self.assertFalse(classified[3]["unsafe"])  # Fire 2012
 
-    def test_effect_policy_blocks_strobes_but_preserves_blink_and_particles(self):
+    def test_only_placeholders_are_unavailable(self):
+        """Effect-family prohibitions were removed; RSVD is still not an effect."""
         names = ["Strobe", "Strobe Mega", "Blink Rainbow", "Chase Flash",
                  "Lightning", "Fireworks 1D", "Sparkle+", "PS Sparkler"]
         classified = atmospheres.classify_effects(names)
-        self.assertTrue(all(classified[i]["unsafe"] for i in (0,1,3,4)))
-        self.assertTrue(all(not classified[i]["unsafe"] for i in (2,5,6,7)))
+        self.assertTrue(all(not classified[i]["unsafe"] for i in range(len(names))))
+        placeholders = atmospheres.classify_effects(["RSVD", "-", "", "Solid"])
+        self.assertTrue(placeholders[0]["unsafe"])
+        self.assertTrue(placeholders[1]["unsafe"])
+        self.assertTrue(placeholders[2]["unsafe"])
+        self.assertFalse(placeholders[3]["unsafe"])
 
     def test_1d_compatible_effect_with_both_flags_is_not_matrix_only(self):
         classified = atmospheres.classify_effects(

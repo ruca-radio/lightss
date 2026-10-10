@@ -13,6 +13,8 @@ def run_bridge(extra):
     let now=1000;const performance={now:()=>now};
     let controllerVizStatus=null,controllerVizAt=0,controllerLevelHistory=[],controllerLastSequence=null,controllerLastBeatCount=0;
     let audioReactiveRunning=false,musicModeRunning=false,currentTarget='all';const liveShowPending={};
+    let controllerAudioStatus=null,controllerAudioAt=0,controllerAudioBusy=false;
+    let controllerAudioStream=null,controllerAudioFrame=null,controllerAudioPending=null;
     let bandGainWriting=false,bandGainWritePending=0,bandGainDirty=false;
     const musicAnalysis={};const nodes={};
     const document={getElementById:id=>nodes[id]||(nodes[id]={textContent:'',disabled:false,classList:{toggle(){}}})};
@@ -65,3 +67,45 @@ def test_controller_vu_uses_normalized_level_not_legacy_byte_scale():
     r=subprocess.run(['node','-e',script],capture_output=True,text=True,timeout=5)
     assert r.returncode==0,r.stderr
     assert json.loads(r.stdout)=='60%'
+
+
+def test_read_only_audio_draws_spectrum_and_level_trace_without_changing_music_mode():
+    result = run_bridge('renderControllerAudioTelemetry('+json.dumps(STATUS['audio'])+');console.log(JSON.stringify({nodes,rendered,browser:audioReactiveRunning,smart:controllerVizStatus,music:musicModeRunning}));')
+    assert result['rendered']['energy'] == .6
+    assert len(result['rendered']['spectrum']) == 16
+    assert result['rendered']['levelHistory'] == [.6]
+    assert result['browser'] is False
+    assert result['smart'] is None and result['music'] is False
+    assert result['nodes']['waveformLabel']['textContent'] == 'CONTROLLER LEVEL HISTORY + BEAT'
+
+
+def test_read_only_audio_clears_stale_bands_and_preserves_browser_priority():
+    stale = {'active': False, 'level': 1, 'fft': [1] * 16}
+    result = run_bridge('renderControllerAudioTelemetry('+json.dumps(stale)+');console.log(JSON.stringify(rendered));')
+    assert result['energy'] == 0 and all(x == 0 for x in result['spectrum'])
+    result = run_bridge('audioReactiveRunning=true;renderControllerAudioTelemetry('+json.dumps(STATUS['audio'])+');console.log(JSON.stringify(rendered));')
+    assert result is None
+
+
+def test_non_player_ui_streams_audio_instead_of_five_fps_polling():
+    html = light_gui.render_html(player_enabled=False)
+    assert "new EventSource('/api/audio/events')" in html
+    assert 'requestAnimationFrame(' in html
+    assert 'setInterval(pollControllerAudio, 200)' not in html
+    assert 'setInterval(pollSmartDirector' not in html
+    assert 'id="smartDirectorCard"' not in html
+
+
+def test_audio_stream_coalesces_messages_to_latest_animation_frame():
+    extra = '''
+      let scheduled=null,scheduledCount=0;
+      const requestAnimationFrame=fn=>{scheduled=fn;scheduledCount++;return 1;};
+      class EventSource {constructor(url){this.url=url;this.listeners={};} addEventListener(name,fn){this.listeners[name]=fn;}}
+      startControllerAudioStream();
+      const emit=audio=>controllerAudioStream.listeners.audio({data:JSON.stringify({audio})});
+      emit({active:true,level:.2,fft:[.1],receive_sequence:1});
+      emit({active:true,level:.8,fft:[.7],receive_sequence:2});
+      scheduled();
+      console.log(JSON.stringify({energy:rendered.energy,scheduledCount,url:controllerAudioStream.url}));
+    '''
+    assert run_bridge(extra) == {'energy': .8, 'scheduledCount': 1, 'url': '/api/audio/events'}

@@ -13,6 +13,7 @@ import io
 import json
 import secrets
 import socket
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -30,6 +31,11 @@ SESSION_TTL_S = 600
 _apple_sessions: dict[str, dict[str, Any]] = {}
 _apple_user_token: str | None = None
 _apple_now_playing: dict[str, Any] = {}
+
+# The GUI serves these endpoints from a thread pool, so session create/status/
+# complete can run concurrently. Without this lock the prune loop raises
+# "dictionary changed size during iteration" and token/now-playing updates race.
+_apple_state_lock = threading.RLock()
 
 
 def _desktop_registry() -> Any | None:
@@ -177,60 +183,65 @@ def qr_png_data_uri(payload: str) -> str:
     return "data:image/png;base64," + base64.b64encode(buff.getvalue()).decode("ascii")
 
 
-def qr_svg(payload: str) -> str:
-    return qr_png_data_uri(payload)
-
-
 def reset_apple_auth() -> None:
     global _apple_user_token, _apple_now_playing
-    _apple_sessions.clear()
-    _apple_user_token = None
-    _apple_now_playing = {}
+    with _apple_state_lock:
+        _apple_sessions.clear()
+        _apple_user_token = None
+        _apple_now_playing = {}
 
 
 def store_apple_user_token(token: str | None) -> None:
     global _apple_user_token
-    _apple_user_token = str(token or "").strip() or None
+    with _apple_state_lock:
+        _apple_user_token = str(token or "").strip() or None
 
 
 def apple_user_token() -> str | None:
-    return _apple_user_token
+    with _apple_state_lock:
+        return _apple_user_token
 
 
 def store_apple_now_playing(payload: dict | None) -> dict[str, Any]:
     global _apple_now_playing
     data = payload if isinstance(payload, dict) else {}
-    _apple_now_playing = {
-        "title": str(data.get("title") or ""),
-        "artist": str(data.get("artist") or ""),
-        "album": str(data.get("album") or ""),
-        "artwork": _artwork_url(data.get("artwork") or data.get("artworkUrl")),
-        "playing": bool(data.get("playing")),
-    }
-    return dict(_apple_now_playing)
+    with _apple_state_lock:
+        _apple_now_playing = {
+            "title": str(data.get("title") or ""),
+            "artist": str(data.get("artist") or ""),
+            "album": str(data.get("album") or ""),
+            "artwork": _artwork_url(data.get("artwork") or data.get("artworkUrl")),
+            "playing": bool(data.get("playing")),
+        }
+        return dict(_apple_now_playing)
 
 
 def _prune_sessions(now: float | None = None) -> None:
     now = time.time() if now is None else now
-    expired = [key for key, rec in _apple_sessions.items() if now - float(rec.get("created") or 0) > SESSION_TTL_S]
-    for key in expired:
-        _apple_sessions.pop(key, None)
+    with _apple_state_lock:
+        expired = [
+            key
+            for key, rec in _apple_sessions.items()
+            if now - float(rec.get("created") or 0) > SESSION_TTL_S
+        ]
+        for key in expired:
+            _apple_sessions.pop(key, None)
 
 
 def create_apple_login_session(base_url: str) -> dict[str, Any]:
-    _prune_sessions()
     session_id = secrets.token_urlsafe(16)
     code = secrets.token_hex(3).upper()
     login_url = f"{str(base_url or '').rstrip('/')}/apple-login?session={session_id}"
-    rec = {
-        "session": session_id,
-        "code": code,
-        "login_url": login_url,
-        "authorized": False,
-        "created": time.time(),
-        "music_user_token": None,
-    }
-    _apple_sessions[session_id] = rec
+    with _apple_state_lock:
+        _prune_sessions()
+        _apple_sessions[session_id] = {
+            "session": session_id,
+            "code": code,
+            "login_url": login_url,
+            "authorized": False,
+            "created": time.time(),
+            "music_user_token": None,
+        }
     return {
         "ok": True,
         "session": session_id,
@@ -243,35 +254,37 @@ def create_apple_login_session(base_url: str) -> dict[str, Any]:
 
 
 def apple_login_status(session_id: str) -> dict[str, Any]:
-    _prune_sessions()
-    rec = _apple_sessions.get(str(session_id or ""))
-    if not rec:
-        return {"ok": False, "authorized": False, "message": "Unknown or expired Apple login session."}
-    payload = {
-        "ok": True,
-        "session": rec["session"],
-        "code": rec["code"],
-        "login_url": rec["login_url"],
-        "authorized": bool(rec.get("authorized")),
-        "qr_png": qr_png_data_uri(rec["login_url"]),
-    }
-    if rec.get("authorized") and rec.get("music_user_token"):
-        payload["music_user_token"] = rec["music_user_token"]
-    return payload
+    with _apple_state_lock:
+        _prune_sessions()
+        rec = _apple_sessions.get(str(session_id or ""))
+        if not rec:
+            return {"ok": False, "authorized": False, "message": "Unknown or expired Apple login session."}
+        payload = {
+            "ok": True,
+            "session": rec["session"],
+            "code": rec["code"],
+            "login_url": rec["login_url"],
+            "authorized": bool(rec.get("authorized")),
+            "qr_png": qr_png_data_uri(rec["login_url"]),
+        }
+        if rec.get("authorized") and rec.get("music_user_token"):
+            payload["music_user_token"] = rec["music_user_token"]
+        return payload
 
 
 def complete_apple_login(session_id: str, music_user_token: str) -> dict[str, Any]:
-    _prune_sessions()
-    rec = _apple_sessions.get(str(session_id or ""))
     token = str(music_user_token or "").strip()
-    if not rec:
-        return {"ok": False, "authorized": False, "message": "Unknown or expired Apple login session."}
-    if not token:
-        return {"ok": False, "authorized": False, "message": "Music user token is required."}
-    rec["authorized"] = True
-    rec["music_user_token"] = token
+    with _apple_state_lock:
+        _prune_sessions()
+        rec = _apple_sessions.get(str(session_id or ""))
+        if not rec:
+            return {"ok": False, "authorized": False, "message": "Unknown or expired Apple login session."}
+        if not token:
+            return {"ok": False, "authorized": False, "message": "Music user token is required."}
+        rec["authorized"] = True
+        rec["music_user_token"] = token
     store_apple_user_token(token)
-    return {"ok": True, "authorized": True, "session": rec["session"], "message": "Apple ID connected."}
+    return {"ok": True, "authorized": True, "session": session_id, "message": "Apple ID connected."}
 
 
 def _youtube_artwork(video: dict) -> str:
@@ -284,7 +297,7 @@ def _youtube_status(settings: dict | None, transport: Any) -> dict[str, Any]:
     token = str((settings or {}).get("youtube_token") or "").strip() or None
     try:
         data = transport.request("GET", f"{host}/api/v1/state", headers=_auth_headers(token))
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, TypeError):
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError, TypeError):
         return {
             "source": "youtube_music",
             "connected": False,
@@ -336,7 +349,7 @@ def _youtube_command(settings: dict | None, command: str, transport: Any, data: 
             body=body,
             headers=_auth_headers(token),
         )
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, TypeError) as exc:
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError, TypeError) as exc:
         return {"ok": False, "source": "youtube_music", "command": command, "message": str(exc)}
     return {"ok": True, "source": "youtube_music", "command": command, "message": f"Sent {command} to Youtopia"}
 
@@ -552,7 +565,7 @@ def search_library(
         )
         try:
             data = transport.request("GET", url, headers=_apple_headers(settings, _effective_user_token(settings)))
-        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, TypeError) as exc:
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError, TypeError) as exc:
             return {"ok": False, "source": source, "query": query, "items": [], "message": str(exc)}
         results = data.get("results") if isinstance(data, dict) else {}
         items = []
@@ -568,7 +581,7 @@ def search_library(
         token = str((settings or {}).get("youtube_token") or "").strip() or None
         try:
             data = transport.request("GET", f"{host}/api/v1/state", headers=_auth_headers(token))
-        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, TypeError):
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError, TypeError):
             return {
                 "ok": False,
                 "source": source,
@@ -608,7 +621,7 @@ def list_playlists(
         token = str((settings or {}).get("youtube_token") or "").strip() or None
         try:
             data = transport.request("GET", f"{host}/api/v1/playlists", headers=_auth_headers(token))
-        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, TypeError):
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError, TypeError):
             return {
                 "ok": False,
                 "source": source,
@@ -639,7 +652,7 @@ def list_playlists(
                 f"{_apple_base(settings)}/me/library/playlists?limit=25",
                 headers=_apple_headers(settings, user_token),
             )
-        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, TypeError) as exc:
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError, TypeError) as exc:
             return {"ok": False, "source": source, "playlists": [], "message": str(exc)}
         playlists = []
         for row in _as_list(data if not isinstance(data, dict) else data.get("data") or data):

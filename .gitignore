@@ -11,3 +11,6 @@ dist/
 # Generated release staging (not source)
 build/
 debian-build/
+
+# Runtime logs (never source)
+*.log

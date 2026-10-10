@@ -11,12 +11,15 @@ never fights the person at the controls.
 
 from __future__ import annotations
 
+import logging
 import random
 import threading
 import time
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
+
+logger = logging.getLogger("lightss.idle_curator")
 
 DEFAULTS = {
     "enabled": True,
@@ -103,7 +106,14 @@ class IdleCurator(threading.Thread):
 
     def run(self) -> None:
         while not self._stop_event.is_set():
-            cycle_s = self._tick()
+            # A single bad cycle (DDP error, topology change) must not kill the
+            # thread: nothing else restarts it, so the wall would go stale until
+            # the user re-enabled the feature.
+            try:
+                cycle_s = self._tick()
+            except Exception:
+                logger.exception("Idle Curator cycle failed; continuing")
+                cycle_s = None
             wait_s = max(self._poll_s, cycle_s) if cycle_s is not None else self._poll_s
             self._stop_event.wait(wait_s)
 

@@ -33,7 +33,7 @@ import lightctl
 
 logger = logging.getLogger("calibrate")
 
-# WLED color-order enum (wled00/const.h): 2 == BRG on this installation.
+# WLED color-order enum (wled00/const.h). This installation's buses are RGB (1).
 COLOR_ORDER_NAMES = {0: "GRB", 1: "RGB", 2: "BRG", 3: "RBG", 4: "BGR", 5: "GBR"}
 
 

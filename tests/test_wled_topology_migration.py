@@ -19,12 +19,12 @@ spec.loader.exec_module(migration)
 
 EXPECTED = {
     "http://10.27.27.110": [
-        {"start": 0, "len": 34, "pin": [16], "order": 2, "type": 22},
-        {"start": 34, "len": 48, "pin": [2], "order": 2, "type": 22},
+        {"start": 0, "len": 34, "pin": [16], "order": 1, "type": 22},
+        {"start": 34, "len": 47, "pin": [2], "order": 1, "type": 22},
     ],
     "http://10.27.27.112": [
-        {"start": 0, "len": 47, "pin": [16], "order": 2, "type": 22},
-        {"start": 47, "len": 40, "pin": [2], "order": 2, "type": 22},
+        {"start": 0, "len": 47, "pin": [16], "order": 1, "type": 22},
+        {"start": 47, "len": 40, "pin": [2], "order": 1, "type": 22},
     ],
 }
 
@@ -111,7 +111,7 @@ def test_build_bus_payload_preserves_unrelated_bus_fields():
     payload = migration.build_config_payload(cfg, [(16, 0, 34), (2, 34, 48)])
     first = payload["hw"]["led"]["ins"][0]
     assert first["len"] == 34
-    assert first["order"] == 2
+    assert first["order"] == 1
     assert first["ledma"] == 30
 
 
@@ -122,7 +122,7 @@ def test_apply_refuses_without_complete_backup(tmp_path):
     assert transport.posts == []
 
 
-def test_readback_requires_calibrated_pixels_and_brg():
+def test_readback_requires_calibrated_pixels_and_rgb():
     with pytest.raises(RuntimeError, match="readback mismatch"):
         migration.verify_config({"hw": {"led": {"ins": [
             {"start": 0, "len": 40, "pin": [16], "order": 1},
@@ -152,8 +152,8 @@ def test_build_bus_payload_rejects_unverified_gpio():
 
 def test_verify_config_accepts_expected_readback():
     cfg = {"hw": {"led": {"ins": [
-        {"start": 0, "len": 34, "pin": [16], "order": 2},
-        {"start": 34, "len": 48, "pin": [2], "order": 2},
+        {"start": 0, "len": 34, "pin": [16], "order": 1},
+        {"start": 34, "len": 47, "pin": [2], "order": 1},
     ]}}}
     migration.verify_config(cfg, expected_pins=[16, 2])
 

@@ -10,7 +10,7 @@ DIALOGS = '''
   <details><summary>Proposed platform configuration</summary><pre id="calibrationProposal" style="white-space:pre-wrap;"></pre></details>
   <hr><h3>Optional visual check</h3>
   <p>Use an Identify button to mark one segment briefly. Camera analysis is one opt-in model request; it cannot prove wiring, exact counts, or pixel-zero direction and never applies changes.</p>
-  <div class="row"><button id="calibrationCamera" onclick="toggleCalibrationCamera()">Enable camera</button><button id="calibrationVision" disabled onclick="analyzeCalibrationFrame()">Analyze one frame</button></div>
+  <div class="row"><button id="calibrationCamera" onclick="toggleCalibrationCamera()">Enable camera</button><button id="calibrationVision" disabled onclick="analyzeCalibrationFrame()">Analyze one frame</button><button id="calibrationSelf" onclick="selfConfigureFromCamera()">Self-configure</button></div>
   <video id="calibrationVideo" autoplay muted playsinline style="display:none;max-width:100%;width:480px;"></video>
   <p id="calibrationObservation" style="white-space:pre-wrap;" role="status"></p>
 </dialog>
@@ -145,6 +145,43 @@ async function analyzeCalibrationFrame() {
     setText('calibrationObservation', data.observation || data.error || data.message);
   } catch (err) { setText('calibrationObservation', err.message); }
   finally { button.disabled = !calibrationStream; }
+}
+
+async function selfConfigureFromCamera() {
+  if (calibrationBusy) return;
+  calibrationBusy = true;
+  try {
+    if (!calibrationStream) await toggleCalibrationCamera();
+    if (!calibrationStream) throw new Error('Camera is required for self-configuration.');
+    const video = document.getElementById('calibrationVideo');
+    if (!video.videoWidth) throw new Error('Wait for the camera preview before starting.');
+
+    setText('calibrationStatus', 'Lighting the columns for one frame…');
+    const probe = await postJson('/api/calibration/self-configure/light', {});
+    if (!probe.ok) throw new Error(probe.error || 'Could not start the probe.');
+
+    await new Promise(resolve => setTimeout(resolve, 1200));
+
+    const canvas = document.createElement('canvas'); canvas.width = 640; canvas.height = 480;
+    canvas.getContext('2d').drawImage(video, 0, 0, 640, 480);
+    setText('calibrationStatus', 'Identifying columns and orientation from the frame…');
+    const result = await fetchJsonWithTimeout('/api/calibration/self-configure/finish', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({token: probe.token, image: canvas.toDataURL('image/jpeg', 0.75).split(',')[1]})
+    }, 60000);
+
+    if (!result.ok) throw new Error(result.error || 'Self-configuration failed.');
+    setText('calibrationStatus',
+      'Wall order: ' + (result.wall_order || []).join(', ') + ' · pixel 0 at ' + result.pixel_zero +
+      (result.config_backup ? '\nBackup: ' + result.config_backup : ''));
+    setText('calibrationObservation', JSON.stringify(result.mapping || {}, null, 2));
+    await scanCalibration();
+  } catch (err) {
+    setText('calibrationStatus', 'Self-configure failed: ' + err.message);
+  } finally {
+    calibrationBusy = false;
+  }
 }
 
 async function loadLocalLibrary() {

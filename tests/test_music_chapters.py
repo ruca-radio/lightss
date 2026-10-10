@@ -73,8 +73,11 @@ def test_native_catalog_is_common_1d_audio_effects_only():
                 "fxdata": ["", "!;!;!;1", "!;!;!;1f", "!;!;!;2f", "!;!;!;1f", "!;!;!;1f", "!;!;!;1v"]}
     fleet=SimpleNamespace(get_fleet_snapshot=lambda: {"devices": {
         "left": device("Noisemeter"), "right": device("Different name")}})
+    # Strobe is audio-reactive by fxdata and is no longer family-filtered, so it
+    # is a valid native audio effect alongside Freqmap.
     assert music_chapters.available_native_effects(fleet)==[
-        {"id":2,"name":"Freqmap","audio":"f"}]
+        {"id":2,"name":"Freqmap","audio":"f"},
+        {"id":5,"name":"Strobe","audio":"f"}]
 
 
 def test_native_catalog_uses_only_effect_and_fxdata_endpoints():

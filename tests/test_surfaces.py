@@ -67,13 +67,13 @@ def make_topology_snapshot():
                 "spacing_inches": 32, "orientation": "vertical",
                 "pixel_zero": "bottom", "column_length_m": 2.0,
                 "pixels_per_meter": 20, "visible_leds_per_meter": 720,
-                "color_order": "BRG",
+                "color_order": "RGB",
             },
             "controllers": [{
                 "name": "left", "host": "http://10.27.27.110",
                 "segments": {
                     "0": {"channel": "far-left", "gpio": 16, "pixels": 34, "start": 0, "stop": 34},
-                    "1": {"channel": "middle-left", "gpio": 2, "pixels": 48, "start": 34, "stop": 82},
+                    "1": {"channel": "middle-left", "gpio": 2, "pixels": 47, "start": 34, "stop": 81},
                 },
             }],
         },
@@ -234,8 +234,22 @@ class SurfaceTests(unittest.TestCase):
         self.assertIn("mood.last_cache_hit", html)
         self.assertIn("mood.next_recognition_in", html)
 
+    def _build_request_with_default_prompt(self, *args, **kwargs):
+        """build_openai_request() with the shipped default prompt.
+
+        plan_system_prompt_in_use() honours an operator ``system_prompt_override``
+        from the real config, which would otherwise make these assertions depend
+        on the machine that runs the suite.
+        """
+        with patch.object(
+            light_gui,
+            "plan_system_prompt_in_use",
+            return_value=light_gui.system_knowledge_prompt(),
+        ):
+            return light_gui.build_openai_request(*args, **kwargs)
+
     def test_ai_request_uses_structured_actions(self):
-        request = light_gui.build_openai_request(
+        request = self._build_request_with_default_prompt(
             "make it rainbow",
             "gpt-test",
             {"title": "Midnight City", "artist": "M83", "status": "Playing"},
@@ -258,7 +272,9 @@ class SurfaceTests(unittest.TestCase):
         self.assertEqual(action_props["effect"]["minimum"], 0)
         self.assertEqual(action_props["effect"]["maximum"], 255)
         self.assertIn("catalog", action_props["effect"]["description"])
-        self.assertIn("RGBW color channels", request["input"][0]["content"])
+        # The system prompt documents that AI-facing colours are semantic RGBW;
+        # physical bus order stays a WLED-layer concern.
+        self.assertIn("RGBW", request["input"][0]["content"])
         self.assertIn("Background audio now playing: M83 - Midnight City (Playing)", request["input"][1]["content"])
         self.assertIn("Current WLED device snapshot:", request["input"][1]["content"])
         self.assertIn("WLED-Gledopto", request["input"][1]["content"])
@@ -332,6 +348,7 @@ class SurfaceTests(unittest.TestCase):
                 "atmosphere",
                 "dynamic_scene",
                 "design_look",
+                "design_palette",
                 "look_feedback",
                 "realtime_start",
                 "realtime_stop",
@@ -379,7 +396,7 @@ class SurfaceTests(unittest.TestCase):
             manager.shutdown()
 
     def test_ai_system_prompt_contains_one_shot_action_context(self):
-        request = light_gui.build_openai_request("make a wake up schedule")
+        request = self._build_request_with_default_prompt("make a wake up schedule")
         system = request["input"][0]["content"]
 
         self.assertIn("Available AI actions", system)
@@ -787,13 +804,13 @@ def test_device_snapshot_text_contains_physical_topology_and_all_segments():
                 "spacing_inches": 32, "orientation": "vertical",
                 "pixel_zero": "bottom", "column_length_m": 2.0,
                 "pixels_per_meter": 20, "visible_leds_per_meter": 720,
-                "color_order": "BRG",
+                "color_order": "RGB",
             },
             "controllers": [{
                 "name": "left", "host": "http://10.27.27.110",
                 "segments": {
                     "0": {"channel": "far-left", "gpio": 16, "pixels": 34, "start": 0, "stop": 34},
-                    "1": {"channel": "middle-left", "gpio": 2, "pixels": 48, "start": 34, "stop": 82},
+                    "1": {"channel": "middle-left", "gpio": 2, "pixels": 47, "start": 34, "stop": 81},
                 },
             }],
         },
@@ -807,7 +824,7 @@ def test_device_snapshot_text_contains_physical_topology_and_all_segments():
     text = light_gui.device_snapshot_text(snapshot)
     for expected in (
         "four vertical columns", "32 inches", "34 addressable pixels", "5-LED physical",
-        "LED 0 at the bottom", "BRG", "far-left", "middle-left",
+        "LED 0 at the bottom", "color order RGB", "far-left", "middle-left",
         "segment 0", "segment 1", "fx=9", "fx=67",
     ):
         assert expected in text

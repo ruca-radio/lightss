@@ -20,39 +20,46 @@ from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger("lightsctl")
 
-RIGHT_HOST = "http://10.27.27.110"
-LEFT_HOST = "http://10.27.27.112"
-DEFAULT_HOST = RIGHT_HOST
+RIGHT_HOST = "http://10.27.27.112"
+LEFT_HOST = "http://10.27.27.110"
+DEFAULT_HOST = LEFT_HOST
 
 WALL_ORDER = ("far-left", "middle-left", "middle-right", "far-right")
+
+# Verified bedroom-wall installation, mirrored from the config "controllers"
+# section / fleet._BUILTIN_CONTROLLERS and the README. The four columns have
+# non-uniform calibrated addressable-pixel counts, and LED 0 / data input is at
+# the bottom of each strip. Keep this in exact sync with fleet.py; the AI
+# device snapshot publishes it verbatim, so a stale length here silently makes
+# the model compute wrong per-LED and zone targets.
 CHANNEL_TOPOLOGY: dict[str, dict[str, Any]] = {
     "far-left": {
         "controller": "left",
         "host": LEFT_HOST,
         "segment": 0,
-        "length": 43,
-        "gpio": 2,
+        "length": 34,
+        "gpio": 16,
     },
     "middle-left": {
         "controller": "left",
         "host": LEFT_HOST,
         "segment": 1,
-        "length": 50,
-        "gpio": 16,
+        "length": 47,
+        "gpio": 2,
     },
     "middle-right": {
         "controller": "right",
         "host": RIGHT_HOST,
         "segment": 0,
-        "length": 50,
-        "gpio": 2,
+        "length": 47,
+        "gpio": 16,
     },
     "far-right": {
         "controller": "right",
         "host": RIGHT_HOST,
         "segment": 1,
-        "length": 36,
-        "gpio": 16,
+        "length": 40,
+        "gpio": 2,
     },
 }
 CHANNEL_LENGTHS = {name: int(spec["length"]) for name, spec in CHANNEL_TOPOLOGY.items()}
@@ -107,9 +114,13 @@ SAFE_EFFECTS = {
     183: "Wavesins",
 }
 
-# Stable built-in WLED IDs for blink/strobe/flash/lightning/fireworks/sparkle
-# families. Live catalogs receive an additional name-based safety filter.
-BLOCKED_EFFECTS: set[int] = {1, 20, 21, 22, 23, 24, 25, 26, 31, 32, 42, 57}
+# Seizure-safety blocklist. Empty by operator decision (2026-10-05): every
+# effect the controllers actually expose is selectable, including
+# blink/strobe/flash/fireworks/sparkle families. The mechanism is kept so the
+# policy can be restored by repopulating this set, and so the 🚫 marker and
+# validation paths stay exercised. WLED's reserved/placeholder entries ("RSVD",
+# "-", "") are still unavailable — that is a capability fact, not a policy.
+BLOCKED_EFFECTS: set[int] = set()
 FX_HISTORY_LIMIT = 12
 _fx_history: list[int] = []
 
@@ -159,14 +170,9 @@ def recent_fx_text(
             name = str(names[effect])
         parts.append(f"{effect}={name}" if name else str(effect))
     return ", ".join(parts)
-FORBIDDEN_EFFECT_TERMS = (
-    "blink",
-    "strobe",
-    "flash",
-    "lightning",
-    "fireworks",
-    "sparkle",
-)
+# Name-based blocklist for live catalogs. Empty by operator decision so no
+# effect name is filtered; restore terms here to re-enable name filtering.
+FORBIDDEN_EFFECT_TERMS: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -317,13 +323,11 @@ def effect_name_is_safe(name: str) -> bool:
 
 
 def _live_effect_name_is_safe(name: str) -> bool:
-    """Live catalogs can explicitly permit Blink; keep harsher strobe terms blocked."""
-
+    """Name filter for live-catalog effects; pass-through while the blocklist is empty."""
+    if not FORBIDDEN_EFFECT_TERMS:
+        return True
     normalized = " ".join(str(name).casefold().replace("_", " ").split())
-    return not any(
-        term in normalized
-        for term in ("strobe", "flash", "lightning", "fireworks", "sparkle")
-    )
+    return not any(term in normalized for term in FORBIDDEN_EFFECT_TERMS)
 
 
 def safe_effect_ids(effect_names: Sequence[str]) -> set[int]:
@@ -595,6 +599,8 @@ def validate_effect(
 ) -> int:
     """Validate an effect ID against a live safe set or the offline allowlist."""
     effect = require_int_range(fx, 0, 255, name="effect")
+    if effect in BLOCKED_EFFECTS:
+        raise ValueError(f"Effect {effect} is blocked.")
     if allowed is not None:
         if effect not in allowed:
             raise ValueError(
@@ -609,8 +615,6 @@ def validate_effect(
                 f"Effect {effect} ({effect_names[effect]}) is blocked by the safety policy."
             )
         return effect
-    if effect in BLOCKED_EFFECTS:
-        raise ValueError(f"Effect {effect} is blocked.")
     if effect not in SAFE_EFFECTS:
         allowed_str = ", ".join(
             f"{effect_id}={name}" for effect_id, name in SAFE_EFFECTS.items()
@@ -1047,6 +1051,63 @@ def leds_payload(
     return payload
 
 
+def _rgb_triplet(color: object) -> list[int]:
+    """Normalize a color to an [r, g, b] triple (white is dropped in RGB frames)."""
+    channels = _normalize_color(color)
+    return [channels[0], channels[1], channels[2]]
+
+
+def led_rgb_list(
+    led_ranges: list[Any],
+    *,
+    length: int | None = None,
+    channel: str | None = None,
+) -> list[list[int]]:
+    """Expand per-LED input to exactly ``length`` [r, g, b] triplets.
+
+    Accepts a flat list of colors applied from LED 0 upward (["RRGGBB", ...] or
+    [r, g, b] entries) or [start, stop, color] ranges (stop exclusive).
+    Unpainted pixels are black.
+
+    This is the RGB counterpart of :func:`leds_payload`: the DDP frame path
+    needs real bytes rather than WLED ``i`` hex tokens, but the same validated
+    expansion and the same bounds checks against the caller's *actual* segment
+    length (the four wall columns differ: 34/47/47/40).
+    """
+    if not led_ranges:
+        raise ValueError("led_rgb_list requires at least one LED color or range.")
+    resolved_length = _resolve_column_length(length, channel)
+    pixels: list[list[int]] = [[0, 0, 0] for _ in range(resolved_length)]
+    flat_index = 0
+    for item in led_ranges:
+        is_range = (
+            isinstance(item, (list, tuple))
+            and len(item) == 3
+            and isinstance(item[0], (int, float))
+            and isinstance(item[1], (int, float))
+            and isinstance(item[2], (str, list, tuple))
+        )
+        if is_range:
+            start, stop = int(item[0]), int(item[1])
+            if not (0 <= start < stop <= resolved_length):
+                raise ValueError(
+                    f"LED range must satisfy 0 <= start < stop <= {resolved_length}, "
+                    f"got start={start}, stop={stop}."
+                )
+            triplet = _rgb_triplet(item[2])
+            for index in range(start, stop):
+                pixels[index] = list(triplet)
+        else:
+            if flat_index >= resolved_length:
+                raise ValueError(
+                    f"Too many LED colors for a {resolved_length}-pixel segment "
+                    f"(extra color at index {flat_index})."
+                )
+            pixels[flat_index] = _rgb_triplet(item)
+            flat_index += 1
+    return pixels
+
+
 # ---------------------------------------------------------------------------
 # Built-in scenes
 # ---------------------------------------------------------------------------
@@ -1086,10 +1147,24 @@ _SCENE_PATH = _CONFIG_ROOT / "scenes.json"
 _SCHEDULE_PATH = _CONFIG_ROOT / "schedule.json"
 _PERSISTENCE_LOCK = threading.RLock()
 
+# Serializes whole read-modify-write transactions on config.json. Every writer
+# (GUI settings panels, smart director, TV permissions) rewrites the entire
+# file from its own snapshot, so without one shared lock two concurrent changes
+# each save their stale copy and one update is silently lost.
+CONFIG_LOCK = threading.RLock()
+
 
 def _migrate_legacy_file(path: Path | str) -> None:
     path = Path(path)
     if path.exists():
+        return
+    # Migration is a one-off move for the real persistence paths. Reading an
+    # arbitrary path must not resurrect a file from another directory as a side
+    # effect of a read (that silently reinjected a deleted config, and leaked
+    # the developer's real config/schedule into every test that used a temp dir).
+    try:
+        path.resolve().relative_to(_CONFIG_ROOT.resolve())
+    except ValueError:
         return
     legacy = _LEGACY_CONFIG_ROOT / path.name
     if not legacy.exists():
@@ -1666,7 +1741,25 @@ def load_config() -> dict[str, Any]:
 def save_config(config: dict[str, Any]) -> None:
     if not isinstance(config, dict):
         raise ValueError("Configuration must be a JSON object.")
-    _atomic_write_json(_CONFIG_PATH, config)
+    with CONFIG_LOCK:
+        _atomic_write_json(_CONFIG_PATH, config)
+
+
+def mutate_config(mutator: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
+    """Apply ``mutator`` to config.json as one atomic read-modify-write.
+
+    Prefer this over a bare ``load_config()``/``save_config()`` pair: two
+    concurrent settings changes that each load before the other saves would
+    otherwise overwrite each other's section. If the mutator raises, nothing is
+    written. Returns the config that was saved.
+    """
+    with CONFIG_LOCK:
+        config = load_config()
+        if not isinstance(config, dict):
+            config = {}
+        mutator(config)
+        save_config(config)
+        return config
 
 
 def load_dotenv(path: str | None = None) -> int:
@@ -1942,10 +2035,32 @@ class LightClient:
         return data
 
     def get_fxdata(self) -> list[str]:
-        data = self._get_json_url(self.fxdata_url)
-        if not isinstance(data, list):
-            raise RuntimeError(f"Expected an array from {self.fxdata_url}.")
-        return [str(item) for item in data]
+        # Some WLED builds intermittently end this large response mid-array.
+        # Retry read-only metadata, never invent/repair missing effect entries.
+        cached = getattr(self, "_fxdata_cache", None)
+        age = time.monotonic() - getattr(self, "_fxdata_cached_at", 0.0)
+        if cached is not None and age < 60:
+            return list(cached)
+        for attempt in range(3):
+            try:
+                data = self._get_json_url(self.fxdata_url)
+                if not isinstance(data, list):
+                    raise RuntimeError(f"Expected an array from {self.fxdata_url}.")
+                result = [str(item) for item in data]
+                self._fxdata_cache = result
+                self._fxdata_cached_at = time.monotonic()
+                return list(result)
+            except RuntimeError as exc:
+                if "Invalid JSON" not in str(exc) and "Empty response" not in str(exc):
+                    raise
+                if attempt < 2:
+                    time.sleep(0.1 * (attempt + 1))
+                elif cached is not None and age < 300:
+                    logger.debug("WLED fxdata truncated; retaining last validated metadata")
+                    return list(cached)
+                else:
+                    raise
+        raise RuntimeError("WLED fxdata unavailable")
 
     def get_networks(self) -> dict[str, Any] | list[Any]:
         return self._get_json_url(self.networks_url)

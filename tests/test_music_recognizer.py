@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import subprocess
 import sys
 import time
@@ -15,6 +16,156 @@ import numpy as np
 import pytest
 
 import music_recognizer
+
+
+def test_capture_resolves_unavailable_usb_identifier_before_native_rate(monkeypatch):
+    from unittest.mock import MagicMock
+    device = MagicMock()
+    def query(device=None, kind=None):
+        if device == '046d:082d':
+            raise ValueError('No matching device')
+        assert device == 4
+        return {'max_input_channels': 2, 'default_samplerate': 32000}
+    device.query_devices.side_effect = query
+    monkeypatch.setattr(music_recognizer, '_pulse_usb_input', lambda device: None)
+    monkeypatch.setattr(music_recognizer, '_load_sounddevice', lambda: device)
+    monkeypatch.setattr(music_recognizer.lightctl, 'get_mic_device', lambda: 4)
+    assert music_recognizer._prepare_capture('046d:082d', 0) == (4, 32000)
+    device.check_input_settings.assert_called_once_with(device=4, samplerate=32000, channels=1, dtype='float32')
+
+
+def test_capture_unsupported_requested_rate_uses_native_rate(monkeypatch):
+    from unittest.mock import MagicMock
+    device = MagicMock()
+    device.query_devices.return_value = {'max_input_channels': 2, 'default_samplerate': 32000}
+    def check(**kwargs):
+        if kwargs['samplerate'] != 32000:
+            raise ValueError('Invalid sample rate')
+    device.check_input_settings.side_effect = check
+    monkeypatch.setattr(music_recognizer, '_load_sounddevice', lambda: device)
+    assert music_recognizer._prepare_capture(4, 44100) == (4, 32000)
+
+
+def test_recording_uses_own_bounded_stream_not_unsupported_wait_timeout(monkeypatch):
+    from unittest.mock import MagicMock
+    device = MagicMock()
+    device.query_devices.return_value = {'max_input_channels': 2, 'default_samplerate': 32000}
+    class FinishedCapture(Exception):
+        pass
+    device.CallbackStop = FinishedCapture
+    def start():
+        callback = device.InputStream.call_args.kwargs['callback']
+        try:
+            callback(np.zeros((320, 1), dtype=np.float32), 320, None, None)
+        except FinishedCapture:
+            pass
+    device.InputStream.return_value.__enter__.side_effect = start
+    monkeypatch.setattr(music_recognizer, '_load_sounddevice', lambda: device)
+    result = music_recognizer._record_audio(.01, 32000, 4)
+    assert result.shape == (320, 1)
+    assert result.dtype == np.int16
+    device.wait.assert_not_called()
+
+
+def test_usb_id_prefers_analog_microphone_over_digital_input():
+    sources = [
+        {
+            "name": "alsa_input.usb-046d_HD_Pro_Webcam_C920.iec958-stereo",
+            "monitor_of_sink": None,
+            "sample_specification": "s16le 2ch 32000Hz",
+            "properties": {
+                "device.vendor.id": "0x046d",
+                "device.product.id": "0x082d",
+                "device.profile.name": "iec958-stereo",
+            },
+        },
+        {
+            "name": "alsa_input.usb-046d_HD_Pro_Webcam_C920.analog-stereo",
+            "monitor_of_sink": None,
+            "sample_specification": "s16le 2ch 32000Hz",
+            "properties": {
+                "device.vendor.id": "0x046d",
+                "device.product.id": "0x082d",
+                "device.profile.name": "analog-stereo",
+            },
+        },
+    ]
+    chosen = music_recognizer._select_usb_source(sources, 0x046D, 0x082D)
+    assert chosen["name"].endswith("analog-stereo")
+
+
+def test_digital_only_usb_mic_switches_card_to_analog_profile(monkeypatch):
+    from unittest.mock import MagicMock
+    digital = {
+        "name": "alsa_input.usb-cam.iec958-stereo",
+        "monitor_of_sink": None,
+        "sample_specification": "s16le 2ch 32000Hz",
+        "properties": {
+            "device.vendor.id": "0x046d",
+            "device.product.id": "0x082d",
+            "device.profile.name": "iec958-stereo",
+        },
+    }
+    analog = {
+        "name": "alsa_input.usb-cam.analog-stereo",
+        "monitor_of_sink": None,
+        "sample_specification": "s16le 2ch 32000Hz",
+        "properties": {
+            "device.vendor.id": "0x046d",
+            "device.product.id": "0x082d",
+            "device.profile.name": "analog-stereo",
+        },
+    }
+    cards = [{
+        "name": "alsa_card.usb-cam",
+        "active_profile": "input:iec958-stereo",
+        "profiles": {"input:analog-stereo": {}, "input:iec958-stereo": {}},
+        "properties": {"device.vendor.id": "0x046d", "device.product.id": "0x082d"},
+    }]
+    state = {"sources": [digital]}
+    calls = []
+
+    def ok(stdout):
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = stdout
+        return result
+
+    def run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[:5] == ["pactl", "-f", "json", "list", "sources"]:
+            return ok(json.dumps(state["sources"]))
+        if cmd[:5] == ["pactl", "-f", "json", "list", "cards"]:
+            return ok(json.dumps(cards))
+        if cmd[:2] == ["pactl", "set-card-profile"]:
+            state["sources"] = [analog]
+            return ok("")
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr(music_recognizer.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(music_recognizer.subprocess, "run", run)
+    name, rate = music_recognizer._pulse_usb_input("046d:082d")
+    assert name == "alsa_input.usb-cam.analog-stereo"
+    assert rate == 32000
+    assert ["pactl", "set-card-profile", "alsa_card.usb-cam", "input:analog-stereo"] in calls
+
+
+def test_stable_usb_id_uses_exact_pulse_source_and_native_rate(monkeypatch):
+    monkeypatch.setattr(music_recognizer, '_pulse_usb_input', lambda device: ('alsa_input.usb-camera', 32000))
+    with patch.object(music_recognizer, '_load_sounddevice') as portaudio:
+        assert music_recognizer._prepare_capture('046d:082d', 0) == ('alsa_input.usb-camera', 32000)
+    portaudio.assert_not_called()
+
+
+def test_pulse_capture_has_subprocess_deadline_and_correct_pcm_rate(monkeypatch):
+    from unittest.mock import MagicMock
+    result = MagicMock(stdout=np.zeros(320, dtype=np.int16).tobytes())
+    with patch.object(music_recognizer.subprocess, 'run', return_value=result) as run:
+        audio = music_recognizer._record_audio(.01, 32000, 'alsa_input.usb-camera')
+    assert audio.shape == (320, 1)
+    assert run.call_args.kwargs['timeout'] < 10
+    command = run.call_args.args[0]
+    assert command[command.index('-ar') + 1] == '32000'
 
 
 def test_import_does_not_load_sounddevice_at_module_import_time():

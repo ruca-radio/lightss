@@ -141,6 +141,46 @@ def test_run_chat_sends_compact_complete_music_status_to_model(monkeypatch):
     assert {"set_effect", "wled_write", "strips", "music_show"} <= _tool_names()
 
 
+def test_run_chat_can_hide_music_show_from_the_song_composer(monkeypatch):
+    captured = {}
+
+    def provider(_url, _headers, body, _timeout):
+        captured["tools"] = [tool["function"]["name"] for tool in body["tools"]]
+        return {"choices": [{"message": {"role": "assistant", "content": "Using start_show."}}]}
+
+    monkeypatch.setattr(ai_chat, "_chat_round", provider)
+    ai_chat.run_chat(
+        Mock(),
+        "Design a show for the song that is playing.",
+        settings={"base_url": "https://example.test/v1", "model": "test", "api_key_env": "UNSET"},
+        exclude_tools={"music_show"},
+    )
+    assert "start_show" in captured["tools"]
+    assert "music_show" not in captured["tools"]
+
+
+def test_failed_tool_cannot_be_summarized_as_success(monkeypatch):
+    def provider(_url, _headers, body, _timeout):
+        roles = [message.get("role") for message in body["messages"]]
+        if "tool" not in roles:
+            return {"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "show-1", "type": "function",
+                "function": {"name": "music_show", "arguments": '{"action":"native","effect":1}'},
+            }]}}]}
+        return {"choices": [{"message": {"role": "assistant", "content": "Created a looping theatrical show."}}]}
+
+    monkeypatch.setattr(ai_chat, "_chat_round", provider)
+    monkeypatch.setattr(
+        ai_chat.mcp_light, "call_tool",
+        Mock(side_effect=RuntimeError("Start Smart Director music mode before using live show controls.")),
+    )
+    result = ai_chat.run_chat(Mock(), "Design a show for this song.", settings={
+        "base_url": "https://example.test/v1", "model": "test", "api_key_env": "UNSET",
+    })
+    assert "couldn't complete" in result["text"].lower()
+    assert "theatrical" not in result["text"].lower()
+
+
 def test_run_chat_appends_live_protocol_to_legacy_custom_prompt(monkeypatch):
     legacy = """MY CUSTOM STYLE\nOUTPUT FORMAT: return {\"actions\": [], \"response\": \"...\"}\nUse brightness 100-250."""
     captured = {}

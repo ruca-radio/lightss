@@ -297,26 +297,23 @@ def _compose_effect(entries: list[WallEntry], mood: str, energy: str, motion: st
         strategy = "left_to_right"
     if strategy not in STRATEGIES:
         strategy = _auto_strategy(mood, energy, motion)
-    rng = random.Random(seed)
     bri, sx, ix, colors = _profile(mood, energy, intensity, seed, colors)
     transition = 18
     count = max(1, len(entries))
     payloads: dict[str, dict] = {}
     for entry in entries:
-        seg: dict[str, Any] = {"id": entry.seg_id, "start": entry.start, "stop": entry.stop, "on": True, "bri": bri, "sx": sx, "ix": ix, "col": colors, "pal": PALETTES["warm"]}
+        seg: dict[str, Any] = {"id": entry.seg_id, "bri": bri, "sx": sx, "ix": ix, "col": colors, "pal": PALETTES["warm"]}
         if strategy == "quiet_gradient":
-            seg.update({"fx": SAFE_EFFECTS["gradient"], "pal": PALETTES["sunset"], "of": entry.wall_index * 7})
+            seg.update({"fx": SAFE_EFFECTS["gradient"], "pal": PALETTES["sunset"]})
         elif strategy == "split_temperature":
             warm = entry.wall_index < count / 2
             seg.update({"fx": SAFE_EFFECTS["breathe"], "pal": PALETTES["warm" if warm else "ocean"], "col": COLORS["warm" if warm else "cool"]})
         elif strategy in {"mirror", "center_out"}:
-            distance = abs(entry.wall_index - (count - 1) / 2)
-            seg.update({"fx": SAFE_EFFECTS["colorwaves"], "pal": PALETTES["purple"], "mi": entry.wall_index < count / 2, "of": int(distance * 12)})
+            seg.update({"fx": SAFE_EFFECTS["colorwaves"], "pal": PALETTES["purple"]})
         elif strategy == "left_to_right":
-            step = max(1, min(entry.pixels, 48) // count)
-            seg.update({"fx": SAFE_EFFECTS["chase"], "pal": PALETTES["rainbow"], "of": entry.wall_index * step})
+            seg.update({"fx": SAFE_EFFECTS["chase"], "pal": PALETTES["rainbow"]})
         else:
-            seg.update({"fx": SAFE_EFFECTS["sine"], "pal": PALETTES["sunset"], "rev": entry.pixel_zero != "bottom", "of": rng.randrange(0, max(1, entry.pixels))})
+            seg.update({"fx": SAFE_EFFECTS["sine"], "pal": PALETTES["sunset"]})
         payloads.setdefault(entry.controller, {"on": True, "bri": bri, "transition": transition, "seg": [], "udpn": {"nn": True}})
         payloads[entry.controller]["seg"].append(seg)
     return payloads

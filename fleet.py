@@ -33,14 +33,16 @@ _BUILTIN_CONTROLLERS = [
         "name": "left", "host": "http://10.27.27.110",
         "segments": {
             "0": {"channel": "far-left", "gpio": 16, "pixels": 34, "start": 0, "stop": 34},
-            "1": {"channel": "middle-left", "gpio": 2, "pixels": 48, "start": 34, "stop": 82},
+            "1": {"channel": "middle-left", "gpio": 2, "pixels": 47, "start": 34, "stop": 81},
         },
     },
     {
+        # Segment ids are the controller's own (bus order): bus 0 is the GPIO 16
+        # strip (middle-right, 47 px), bus 1 the GPIO 2 strip (far-right, 40 px).
         "name": "right", "host": "http://10.27.27.112",
         "segments": {
-            "0": {"channel": "far-right", "gpio": 2, "pixels": 40, "start": 47, "stop": 87},
-            "1": {"channel": "middle-right", "gpio": 16, "pixels": 47, "start": 0, "stop": 47},
+            "0": {"channel": "middle-right", "gpio": 16, "pixels": 47, "start": 0, "stop": 47},
+            "1": {"channel": "far-right", "gpio": 2, "pixels": 40, "start": 47, "stop": 87},
         },
     },
 ]
@@ -60,7 +62,7 @@ class InstallationConfig:
     column_length_m: float = 2.0
     pixels_per_meter: int = 20
     visible_leds_per_meter: int = 720
-    color_order: str = "BRG"
+    color_order: str = "RGB"
     addressable_pixel_physical_leds: int = 5
 
 
@@ -114,7 +116,7 @@ def _parse_installation(config: dict) -> InstallationConfig:
         column_length_m=float(raw.get("column_length_m") or 2.0),
         pixels_per_meter=int(raw.get("pixels_per_meter") or 20),
         visible_leds_per_meter=int(raw.get("visible_leds_per_meter") or 720),
-        color_order=str(raw.get("color_order") or "BRG"),
+        color_order=str(raw.get("color_order") or "RGB"),
         addressable_pixel_physical_leds=int(raw.get("addressable_pixel_physical_leds") or 5),
     )
 
@@ -286,6 +288,28 @@ def _warn(message: str) -> None:
     print(f"lightss fleet: {message}", file=sys.stderr)
 
 
+# Segment geometry and hardware-facing flags. Looks may set effect, palette,
+# color, speed, and intensity on any subset of strips. They must not rewrite
+# the bounds, mirror, offset, direction, grouping, or name stored on the controller.
+SACRED_SEGMENT_KEYS = frozenset({
+    "start", "stop", "grp", "spc", "of", "rev", "mi", "n", "sel", "set",
+})
+
+
+def drop_sacred_segment_fields(payload: dict) -> dict:
+    """Copy a state payload with controller-owned segment fields removed."""
+    segments = payload.get("seg")
+    if not isinstance(segments, list):
+        return payload
+    outgoing = dict(payload)
+    outgoing["seg"] = [
+        {key: value for key, value in segment.items() if key not in SACRED_SEGMENT_KEYS}
+        if isinstance(segment, dict) else segment
+        for segment in segments
+    ]
+    return outgoing
+
+
 def _inject_segment_id(payload: dict, seg_id: int) -> dict:
     """Return a copy of payload with every seg entry pinned to seg_id."""
     segments = payload.get("seg")
@@ -439,11 +463,6 @@ class LightFleet:
         if seg_id is None:
             return entry
         entry["id"] = seg_id
-        config = self._segment_config(name, seg_id)
-        if config is not None and config.start is not None and config.stop is not None:
-            entry.setdefault("start", config.start)
-            entry.setdefault("stop", config.stop)
-            entry.setdefault("on", True)
         return entry
 
     def post_state(self, payload: dict, target: str = DEFAULT_TARGET) -> dict[str, dict]:
@@ -480,6 +499,7 @@ class LightFleet:
                         entries = [self._decorate_segment(name, seg_id, templates[0]) for seg_id in seg_ids]
                     outgoing = dict(payload)
                     outgoing["seg"] = entries
+                    outgoing = drop_sacred_segment_fields(outgoing)
                     udpn = dict(outgoing.get("udpn") or {})
                     udpn["nn"] = True
                     outgoing["udpn"] = udpn
@@ -493,6 +513,7 @@ class LightFleet:
         results = {}
         for name, seg_id in resolved:
             outgoing = _inject_segment_id(payload, seg_id) if seg_id is not None else dict(payload)
+            outgoing = drop_sacred_segment_fields(outgoing)
             udpn = dict(outgoing.get("udpn") or {})
             udpn["nn"] = True
             outgoing["udpn"] = udpn
@@ -546,3 +567,164 @@ class LightFleet:
                 return None
             self._effect_ids[controller] = set(range(len(effects)))
         return self._effect_ids[controller]
+
+
+# ---------------------------------------------------------------------------
+# Topology verification
+# ---------------------------------------------------------------------------
+
+def _device_segments(client: "lightctl.LightClient") -> dict[int, tuple[int, int]]:
+    """{segment id: (start, stop)} as the controller currently reports them."""
+    state = client.get_state()
+    segments: dict[int, tuple[int, int]] = {}
+    for index, segment in enumerate(state.get("seg") or []):
+        if not isinstance(segment, dict):
+            continue
+        segment_id = segment.get("id", index)
+        start, stop = segment.get("start"), segment.get("stop")
+        if isinstance(segment_id, int) and isinstance(start, int) and isinstance(stop, int):
+            segments[segment_id] = (start, stop)
+    return segments
+
+
+def _device_buses(client: "lightctl.LightClient") -> list[dict]:
+    """The controller's LED bus list in bus order (bus index == default segment id)."""
+    config = client.get_config()
+    buses = config.get("hw", {}).get("led", {}).get("ins")
+    return [bus for bus in buses if isinstance(bus, dict)] if isinstance(buses, list) else []
+
+
+def _bus_pins(bus: dict) -> list:
+    pins = bus.get("pin")
+    return pins if isinstance(pins, list) else []
+
+
+def compare_controller_topology(
+    controller: "ControllerConfig",
+    state: dict | None,
+    config: dict | None,
+) -> list[str]:
+    """Pure comparison of one configured controller against its reported state.
+
+    Used both by the live startup check and by the GUI's /api/controllers/verify
+    probe, so it takes plain dicts and never performs I/O.
+    """
+    problems: list[str] = []
+    segments: dict[int, tuple[int, int]] = {}
+    if isinstance(state, dict):
+        for index, segment in enumerate(state.get("seg") or []):
+            if not isinstance(segment, dict):
+                continue
+            segment_id = segment.get("id", index)
+            start, stop = segment.get("start"), segment.get("stop")
+            if isinstance(segment_id, int) and isinstance(start, int) and isinstance(stop, int):
+                segments[segment_id] = (start, stop)
+    buses: list[dict] = []
+    if isinstance(config, dict):
+        raw_buses = config.get("hw", {}).get("led", {}).get("ins")
+        if isinstance(raw_buses, list):
+            buses = [bus for bus in raw_buses if isinstance(bus, dict)]
+
+    # Without usable segment data we cannot say anything; reporting "missing
+    # segment" for an unreadable or unexpected response would make a transient
+    # hiccup look like a mis-wired wall.
+    if not segments:
+        return problems
+
+    for seg_id, segment in sorted(controller.segments.items()):
+        channel = _channel_of(segment)
+        live = segments.get(seg_id)
+        if live is None:
+            problems.append(
+                f"{controller.name}: segment {seg_id} ({channel}) is configured but the "
+                f"controller has no such segment"
+            )
+            continue
+        if segment.start is not None and segment.stop is not None:
+            if (segment.start, segment.stop) != live:
+                problems.append(
+                    f"{controller.name}: segment {seg_id} is configured as {channel} at LEDs "
+                    f"{segment.start}..{segment.stop} but the controller reports {live[0]}..{live[1]}"
+                )
+                continue
+        if seg_id < len(buses):
+            bus = buses[seg_id]
+            length = bus.get("len")
+            if isinstance(length, int) and segment.pixels is not None and length != segment.pixels:
+                problems.append(
+                    f"{controller.name}: segment {seg_id} ({channel}) is configured with "
+                    f"{segment.pixels} pixels but bus {seg_id} has {length}"
+                )
+            pins = _bus_pins(bus)
+            if (
+                segment.gpio is not None
+                and pins
+                and isinstance(pins[0], int)
+                and pins[0] != segment.gpio
+            ):
+                problems.append(
+                    f"{controller.name}: segment {seg_id} ({channel}) is configured on GPIO "
+                    f"{segment.gpio} but bus {seg_id} uses GPIO {pins[0]}"
+                )
+    return problems
+
+
+def topology_mismatches(fleet: "LightFleet") -> list[str]:
+    """Compare the configured channel layout with what the controllers report.
+
+    Configured segment ids are posted verbatim to WLED, so if a controller's
+    segment numbering does not match this table then every per-channel command
+    silently lands on the wrong physical column while wall-wide looks still look
+    fine. That is exactly the failure this catches.
+    """
+    problems: list[str] = []
+    for controller in fleet.controllers:
+        client = fleet.clients.get(controller.name)
+        if client is None:
+            continue
+        try:
+            segments = _device_segments(client)
+        except Exception as exc:
+            problems.append(f"{controller.name}: could not read segment state: {exc}")
+            continue
+        try:
+            buses = _device_buses(client)
+        except Exception:
+            buses = []
+        for seg_id, segment in sorted(controller.segments.items()):
+            channel = _channel_of(segment)
+            live = segments.get(seg_id)
+            if live is None:
+                problems.append(
+                    f"{controller.name}: segment {seg_id} ({channel}) is configured but the "
+                    f"controller has no such segment"
+                )
+                continue
+            if segment.start is not None and segment.stop is not None:
+                if (segment.start, segment.stop) != live:
+                    problems.append(
+                        f"{controller.name}: segment {seg_id} is configured as {channel} at LEDs "
+                        f"{segment.start}..{segment.stop} but the controller reports {live[0]}..{live[1]}"
+                    )
+                    continue
+            if seg_id < len(buses):
+                bus = buses[seg_id]
+                length = bus.get("len")
+                if isinstance(length, int) and segment.pixels is not None and length != segment.pixels:
+                    problems.append(
+                        f"{controller.name}: segment {seg_id} ({channel}) is configured with "
+                        f"{segment.pixels} pixels but bus {seg_id} has {length}"
+                    )
+                pins = bus.get("pin")
+                if (
+                    segment.gpio is not None
+                    and isinstance(pins, list)
+                    and pins
+                    and isinstance(pins[0], int)
+                    and pins[0] != segment.gpio
+                ):
+                    problems.append(
+                        f"{controller.name}: segment {seg_id} ({channel}) is configured on GPIO "
+                        f"{segment.gpio} but bus {seg_id} uses GPIO {pins[0]}"
+                    )
+    return problems

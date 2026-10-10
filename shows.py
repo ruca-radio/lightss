@@ -165,18 +165,30 @@ def _transition_units(transition_s: float) -> int | None:
     return lightctl.clamp_byte(round(transition_s * 10))
 
 
-def _record_look_fx(look: dict) -> None:
-    """Feed the look's effect ids into the recent-effect memory (AI variety)."""
+def look_fx_ids(look: dict) -> list[int]:
+    """Effect ids a look would put on the wall (raw payload or wall_mode).
+
+    Used both for recent-effect memory and for the live effect-safety check, so
+    a show cannot reach the wall with an id that every other write path rejects.
+    """
+    ids: list[int] = []
     for key in ("fx", "fx_left", "fx_right"):
         if look.get(key) is not None:
-            lightctl.record_fx_use(look[key], source="show")
+            ids.append(int(look[key]))
     payload = look.get("payload")
     if isinstance(payload, dict):
         seg = payload.get("seg")
         entries = seg if isinstance(seg, list) else [seg] if isinstance(seg, dict) else []
         for entry in entries:
             if isinstance(entry, dict) and entry.get("fx") is not None:
-                lightctl.record_fx_use(entry["fx"], source="show")
+                ids.append(int(entry["fx"]))
+    return ids
+
+
+def _record_look_fx(look: dict) -> None:
+    """Feed the look's effect ids into the recent-effect memory (AI variety)."""
+    for fx_id in look_fx_ids(look):
+        lightctl.record_fx_use(fx_id, source="show")
 
 
 def apply_look(fleet: LightFleet, look: dict, transition_s: float = 0.0) -> None:

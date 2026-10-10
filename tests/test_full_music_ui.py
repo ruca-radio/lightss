@@ -40,7 +40,7 @@ def test_full_model_responses_are_safe_persistent_history_with_clear_and_errors(
     assert "content.textContent = text" in page
     assert "appendModelResponse('error'" in page
     assert "localStorage.removeItem('light_model_responses')" in page
-    assert "marquee-content" not in js_slice("function clearModelResponses", "let currentTarget")
+    assert "content.className = 'marquee-content'" in js_slice("function clearModelResponses", "let currentTarget")
 
 
 def test_tv_identity_requires_active_playing_foreground_session_and_parses_null_tail():
@@ -87,25 +87,12 @@ def test_spectrum_click_uses_latest_render_and_repeated_controller_accents_are_n
     ]
 
 
-def test_full_range_controls_motions_and_editable_band_gains_are_shipped():
+def test_removed_smart_lighting_controls_are_not_shipped():
     page = html()
-    assert 'id="smartDirectorMusicBrightness" type="range" min="0" max="100"' in page
-    assert 'id="smartDirectorSpeed" type="range" min="25" max="400"' in page
-    for motion in ("auto", "flow", "punch", "chase", "spectrum", "comet", "ripple"):
-        assert f'<option value="{motion}">' in page
-    assert page.count('class="band-gain"') == 16
-    assert "action:'tune',band_gains:entry.gains" in page
-    assert 'id="resetBandGains"' in page
-    assert "populateEffectiveShowStatus(status)" in page
-    assert "renderer.motion" in page
-    assert "status.brightness_percent" in page
-    assert "status.show_overrides" in page
-    assert 'id="smartDirectorEffectiveShow"' in page
-    effective = js_slice("function populateEffectiveShowStatus", "function smartDecisionSummary")
-    assert "smartDirectorSpeed'" not in effective
-    assert "smartDirectorMusicBrightness'" not in effective
-    assert "smartDirectorIntensity'" not in effective
-    assert "smartDirectorColorfulness'" not in effective
+    for control in ('smartDirectorMusicBrightness', 'smartDirectorSpeed', 'smartDirectorBandGains', 'smartDirectorEffectiveShow'):
+        assert f'id="{control}"' not in page
+    assert page.count('class="band-gain"') == 0
+    assert 'id="musicDirectorEnabled"' in page
 
 
 def test_automated_decision_history_deduplicates_identical_polls_and_keeps_errors_distinct():
@@ -125,7 +112,7 @@ def test_automated_decision_history_deduplicates_identical_polls_and_keeps_error
     """, prelude)
     assert len(result) == 2
     assert "Auto → Music" in result[0]["text"]
-    assert result[1] == {"kind": "error", "text": "Smart lighting error: controller stopped"}
+    assert result[1] == {"kind": "error", "text": "Music Director error: controller stopped"}
 
 
 def test_explicit_music_mode_logs_stable_classifier_recipe_not_frame_noise():
@@ -181,7 +168,8 @@ def test_response_persistence_is_best_effort_and_dom_history_is_bounded():
     code = js_slice("function clearModelResponses", "let currentTarget")
     assert "try { localStorage.removeItem" in code
     assert "try { localStorage.setItem" in code
-    assert "while (pane.children.length > 50)" in code
+    assert "pane.textContent = ''" in code
+    assert "entries.slice(-50)" in code
     player_catch = page[page.index("async function refreshPlayerStatus"):page.index("async function playerCommand")]
     assert "lastPlayerStatus = null" in player_catch
 
@@ -243,7 +231,7 @@ def test_clear_keeps_current_recipe_suppressed_but_allows_changed_recipe():
     const saved=[{{kind:'recipe',text:{json.dumps(text)},at:'now'}}];
     const localStorage={{getItem:()=>JSON.stringify(saved),setItem(){{}},removeItem(){{}}}};
     const pane={{children:[],scrollHeight:1,appendChild(x){{this.children.push(x)}},removeChild(){{this.children.shift()}},get firstElementChild(){{return this.children[0]}},set textContent(v){{this.children=[]}}}};
-    const document={{getElementById:()=>pane,createElement:()=>({{className:'',textContent:'',appendChild(){{}}}})}};
+    const document={{getElementById:()=>pane,createElement:()=>({{className:'',textContent:'',style:{{}},appendChild(){{}}}})}};
     const liveShowPending={{}};const setText=()=>{{}};const renderControllerVisualization=()=>{{}};
     let bandGainWriting=false,bandGainWritePending=0,bandGainDirty=false;
     """
@@ -291,3 +279,45 @@ def test_google_chrome_executes_shipped_response_history_safely():
     assert actual["saved"] == 1
     assert "<img src=x" in actual["text"]
     assert "<img src=x" not in actual["html"]
+
+
+def test_model_response_history_uses_right_to_left_ticker_rows():
+    page = html()
+    code = js_slice('function clearModelResponses()', 'let currentTarget')
+    result = run_node(code, """
+      appendModelResponse('ai', '<img src=x> A full model response');
+      appendModelResponse('error', 'Provider unavailable');
+      const rows=pane.children;
+      console.log(JSON.stringify({count:rows.length,
+        viewport:rows[0].children[0].className,
+        ticker:rows[0].children[0].children[0].className,
+        text:rows[0].children[0].children[0].textContent,
+        stored:JSON.parse(store.light_model_responses).length}));
+    """, """
+      class Element {constructor(){this.children=[];this.className='';this.style={};}
+        appendChild(e){this.children.push(e);} set textContent(t){this.children=[];this.text=t;} get textContent(){return this.text;} }
+      const pane=new Element(); const store={};
+      const document={getElementById:()=>pane,createElement:()=>new Element()};
+      const localStorage={getItem:k=>store[k],setItem:(k,v)=>store[k]=v,removeItem:k=>delete store[k]};
+    """)
+    assert result == {'count': 1, 'viewport': 'marquee-wrapper',
+                      'ticker': 'marquee-content', 'text': 'Provider unavailable', 'stored': 2}
+    assert 'animation: marquee-scroll' in page
+    assert '100% { transform: translateX(-100%); }' in page
+
+
+def test_model_responses_display_only_latest_line_but_keep_saved_history():
+    code = js_slice('function clearModelResponses()', 'let currentTarget')
+    result = run_node(code, """
+      appendModelResponse('ai','First response');
+      appendModelResponse('ai','Second response');
+      console.log(JSON.stringify({count:pane.children.length,text:pane.children[0].children[0].children[0].textContent,
+        saved:JSON.parse(store.light_model_responses).length}));
+    """, """
+      class Element {constructor(){this.children=[];this.style={};} appendChild(e){this.children.push(e);}
+        set textContent(text){this.children=[];this.text=text;} get textContent(){return this.text;}}
+      const pane=new Element(),store={};
+      const document={getElementById:()=>pane,createElement:()=>new Element()};
+      const localStorage={getItem:k=>store[k],setItem:(k,v)=>store[k]=v,removeItem:k=>delete store[k]};
+    """)
+    assert result == {'count':1,'text':'Second response','saved':2}

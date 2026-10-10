@@ -52,6 +52,28 @@ class RecordingClient(lightctl.LightClient):
         return dict(self._info)
 
 
+# The shipped wall has four *different* column lengths (34/47/47/40), so the
+# geometry API requires an explicit length or channel instead of a single
+# default. These wrappers pin the tests to one 40-pixel column so the zone math
+# itself stays under test.
+LENGTH = 40
+
+
+def bounds(zone_name, **kwargs):
+    kwargs.setdefault("length", LENGTH)
+    return lightctl.zone_bounds(zone_name, **kwargs)
+
+
+def zpayload(zones, **kwargs):
+    kwargs.setdefault("length", LENGTH)
+    return lightctl.zone_payload(zones, **kwargs)
+
+
+def lpayload(leds, **kwargs):
+    kwargs.setdefault("length", LENGTH)
+    return lightctl.leds_payload(leds, **kwargs)
+
+
 def make_fleet() -> fleet.LightFleet:
     controllers = [
         fleet.ControllerConfig("right", "http://10.27.27.110", {0: "far-right", 1: "middle-right"}),
@@ -91,22 +113,22 @@ def posted_count(fleet_: fleet.LightFleet) -> int:
 
 class ZoneBoundsTests(unittest.TestCase):
     def test_all_spans_the_whole_column(self):
-        self.assertEqual(lightctl.zone_bounds("all"), (0, lightctl.LEDS_PER_COLUMN))
+        self.assertEqual(bounds("all"), (0, LENGTH))
 
     def test_halves_orientation_up(self):
         # LED 0 at the bottom: "top" maps to the high indices.
-        self.assertEqual(lightctl.zone_bounds("bottom half"), (0, 20))
-        self.assertEqual(lightctl.zone_bounds("top half"), (20, 40))
-        start, stop = lightctl.zone_bounds("middle half")
+        self.assertEqual(bounds("bottom half"), (0, 20))
+        self.assertEqual(bounds("top half"), (20, 40))
+        start, stop = bounds("middle half")
         self.assertLessEqual(abs((stop - start) - 20), 1)
         # centered: symmetric margins on both ends
         self.assertLessEqual(abs(start - (40 - stop)), 1)
 
     def test_thirds_and_quarters(self):
         for word, fraction in (("third", 3), ("quarter", 4)):
-            bottom = lightctl.zone_bounds(f"bottom {word}")
-            top = lightctl.zone_bounds(f"top {word}")
-            middle = lightctl.zone_bounds(f"middle {word}")
+            bottom = bounds(f"bottom {word}")
+            top = bounds(f"top {word}")
+            middle = bounds(f"middle {word}")
             # floor or rounded division of 40 LEDs are both acceptable sizes
             self.assertIn(bottom[1] - bottom[0], (40 // fraction, round(40 / fraction)))
             self.assertIn(top[1] - top[0], (40 // fraction, round(40 / fraction)))
@@ -121,37 +143,37 @@ class ZoneBoundsTests(unittest.TestCase):
     def test_every_named_zone_is_accepted(self):
         for position in ("top", "middle", "bottom"):
             for fraction in ("half", "third", "quarter"):
-                start, stop = lightctl.zone_bounds(f"{position} {fraction}")
+                start, stop = bounds(f"{position} {fraction}")
                 self.assertGreaterEqual(start, 0)
                 self.assertLess(start, stop)
-                self.assertLessEqual(stop, lightctl.LEDS_PER_COLUMN)
+                self.assertLessEqual(stop, LENGTH)
 
     def test_orientation_down_flips_top_and_bottom(self):
         for position in ("top", "middle", "bottom"):
             for fraction in ("half", "third", "quarter"):
                 zone = f"{position} {fraction}"
-                up_start, up_stop = lightctl.zone_bounds(zone, orientation="up")
-                down_start, down_stop = lightctl.zone_bounds(zone, orientation="down")
+                up_start, up_stop = bounds(zone, orientation="up")
+                down_start, down_stop = bounds(zone, orientation="down")
                 self.assertEqual((down_start, down_stop), (40 - up_stop, 40 - up_start))
 
     def test_orientation_down_top_equals_up_bottom(self):
         self.assertEqual(
-            lightctl.zone_bounds("top half", orientation="down"),
-            lightctl.zone_bounds("bottom half", orientation="up"),
+            bounds("top half", orientation="down"),
+            bounds("bottom half", orientation="up"),
         )
 
     def test_custom_length(self):
-        self.assertEqual(lightctl.zone_bounds("all", length=40), (0, 40))
-        self.assertEqual(lightctl.zone_bounds("top half", length=40), (20, 40))
-        self.assertEqual(lightctl.zone_bounds("bottom half", length=40), (0, 20))
+        self.assertEqual(bounds("all", length=40), (0, 40))
+        self.assertEqual(bounds("top half", length=40), (20, 40))
+        self.assertEqual(bounds("bottom half", length=40), (0, 20))
 
     def test_zone_names_are_case_insensitive(self):
-        self.assertEqual(lightctl.zone_bounds("Top Half"), lightctl.zone_bounds("top half"))
+        self.assertEqual(bounds("Top Half"), bounds("top half"))
 
     def test_unknown_zones_raise_value_error(self):
         for bad in ("", "nope", "top fifth", "left half", "top half extra"):
             with self.assertRaises(ValueError, msg=f"zone {bad!r} should be rejected"):
-                lightctl.zone_bounds(bad)
+                bounds(bad)
 
 
 # ---------------------------------------------------------------------------
@@ -160,23 +182,23 @@ class ZoneBoundsTests(unittest.TestCase):
 
 class ZonePayloadTests(unittest.TestCase):
     def test_named_zone_emits_explicit_start_stop(self):
-        payload = lightctl.zone_payload([{"zone": "top half", "fx": 9, "pal": 0}])
+        payload = zpayload([{"zone": "top half", "fx": 9, "pal": 0}])
         self.assertEqual(
             payload,
             {"seg": [{"start": 20, "stop": 40, "fx": 9, "pal": 0}]},
         )
 
     def test_zone_key_is_not_leaked_into_segment(self):
-        payload = lightctl.zone_payload([{"zone": "bottom third", "fx": 9}])
+        payload = zpayload([{"zone": "bottom third", "fx": 9}])
         for seg in payload["seg"]:
             self.assertNotIn("zone", seg)
 
     def test_explicit_start_stop_form(self):
-        payload = lightctl.zone_payload([{"start": 10, "stop": 20, "fx": 28}])
+        payload = zpayload([{"start": 10, "stop": 20, "fx": 28}])
         self.assertEqual(payload, {"seg": [{"start": 10, "stop": 20, "fx": 28}]})
 
     def test_id_marks_segment_update_id_less_appends(self):
-        payload = lightctl.zone_payload([
+        payload = zpayload([
             {"zone": "bottom half", "id": 3, "rev": True},
             {"zone": "top half", "fx": 9},
         ])
@@ -188,7 +210,7 @@ class ZonePayloadTests(unittest.TestCase):
         self.assertEqual((second["start"], second["stop"]), (20, 40))
 
     def test_seg_fields_pass_through(self):
-        payload = lightctl.zone_payload([{
+        payload = zpayload([{
             "zone": "middle half",
             "fx": 90,
             "pal": 11,
@@ -210,12 +232,12 @@ class ZonePayloadTests(unittest.TestCase):
         self.assertFalse(seg["on"])
 
     def test_orientation_down_flips_bounds(self):
-        payload = lightctl.zone_payload([{"zone": "top half"}], orientation="down")
+        payload = zpayload([{"zone": "top half"}], orientation="down")
         seg = payload["seg"][0]
         self.assertEqual((seg["start"], seg["stop"]), (0, 20))
 
     def test_multiple_zones_preserve_order(self):
-        payload = lightctl.zone_payload([
+        payload = zpayload([
             {"zone": "bottom half", "fx": 9},
             {"zone": "top half", "fx": 28},
         ])
@@ -230,40 +252,40 @@ class ZonePayloadTests(unittest.TestCase):
 
 class LedsPayloadTests(unittest.TestCase):
     def test_color_list_form_from_led_zero(self):
-        payload = lightctl.leds_payload(["FF0000", "00FF00", "0000FF"])
+        payload = lpayload(["FF0000", "00FF00", "0000FF"])
         self.assertEqual(payload, {"seg": [{"i": ["FF0000", "00FF00", "0000FF"]}]})
 
     def test_color_list_with_seg_id(self):
-        payload = lightctl.leds_payload(["FF0000"], seg_id=1)
+        payload = lpayload(["FF0000"], seg_id=1)
         self.assertEqual(payload, {"seg": [{"id": 1, "i": ["FF0000"]}]})
 
     def test_range_form(self):
-        payload = lightctl.leds_payload([[0, 10, "FF0000"], [10, 20, "00FF00"]])
+        payload = lpayload([[0, 10, "FF0000"], [10, 20, "00FF00"]])
         self.assertEqual(payload, {"seg": [{"i": [0, 10, "FF0000", 10, 20, "00FF00"]}]})
 
     def test_range_form_with_seg_id(self):
-        payload = lightctl.leds_payload([[5, 15, "FFFFFF"]], seg_id=3)
+        payload = lpayload([[5, 15, "FFFFFF"]], seg_id=3)
         self.assertEqual(payload, {"seg": [{"id": 3, "i": [5, 15, "FFFFFF"]}]})
 
     def test_invalid_hex_colors_raise(self):
         for bad in ("GG0000", "FFF", "red", ""):
             with self.assertRaises(ValueError, msg=f"color {bad!r} should be rejected"):
-                lightctl.leds_payload([bad])
+                lpayload([bad])
         with self.assertRaises(ValueError):
-            lightctl.leds_payload([[0, 10, "not-hex"]])
+            lpayload([[0, 10, "not-hex"]])
 
     def test_range_bounds_are_validated(self):
         with self.assertRaises(ValueError):
-            lightctl.leds_payload([[-1, 10, "FF0000"]])
+            lpayload([[-1, 10, "FF0000"]])
         with self.assertRaises(ValueError):
-            lightctl.leds_payload([[0, lightctl.LEDS_PER_COLUMN + 1, "FF0000"]])
+            lpayload([[0, LENGTH + 1, "FF0000"]])
         with self.assertRaises(ValueError):
-            lightctl.leds_payload([[10, 10, "FF0000"]])
+            lpayload([[10, 10, "FF0000"]])
         with self.assertRaises(ValueError):
-            lightctl.leds_payload([[20, 10, "FF0000"]])
+            lpayload([[20, 10, "FF0000"]])
 
     def test_full_column_color_list_is_accepted(self):
-        payload = lightctl.leds_payload(["FF0000"] * lightctl.LEDS_PER_COLUMN)
+        payload = lpayload(["FF0000"] * LENGTH)
         self.assertEqual(len(payload["seg"]), 1)
 
 
@@ -470,6 +492,75 @@ class McpZoneToolTests(unittest.TestCase):
         ):
             self.assertIn(name, tool_names)
 
+    def test_start_show_checks_effect_ids_against_the_live_catalog(self):
+        """A show must not be a bypass for the live-catalog check.
+
+        set_effect/strips/dynamic_scene all run _check_fx_allowed; a show's raw
+        payload (or wall_mode look) previously reached columns/shows unchecked.
+        The catalogs are seeded here because a *known* catalog is what makes the
+        check meaningful. Effect-family prohibitions are gone, so the remaining
+        check is catalog membership.
+        """
+        catalog = ["Solid", "Strobe"] + ["Fx"] * 218
+        mcp_light.seed_effect_catalog("left", catalog)
+        mcp_light.seed_effect_catalog("right", catalog)
+        self.addCleanup(mcp_light.seed_effect_catalog, "left", None)
+        self.addCleanup(mcp_light.seed_effect_catalog, "right", None)
+
+        fleet_ = make_fleet()
+        for look in (
+            {"payload": {"seg": [{"fx": 999}]}},   # absent from the live catalog
+            {"wall_mode": "span", "fx": 999},
+        ):
+            with self.assertRaises(ValueError, msg=f"look {look} must be rejected"):
+                mcp_light.call_tool(
+                    fleet_,
+                    "start_show",
+                    {"show": {"steps": [{"look": look, "duration_s": 1}]}},
+                    FakeModes(),
+                )
+        # Strobe (id 1) is in the catalog and is no longer family-filtered.
+        for look in (
+            {"payload": {"seg": [{"fx": 1}]}},
+            {"wall_mode": "span", "fx": 1},
+        ):
+            result = mcp_light.call_tool(
+                fleet_,
+                "start_show",
+                {"show": {"steps": [{"look": look, "duration_s": 1}]}},
+                FakeModes(),
+            )
+            self.assertIn("content", result)
+        shows.stop_show()
+
+    def test_start_show_does_not_reject_valid_ids_when_the_catalog_is_unknown(self):
+        """An unseeded cache means "cannot verify", not "forbidden".
+
+        Regression: the guard used to fall back to the offline SAFE_EFFECTS list,
+        so a live-only effect (159 = DJ Light on the real wall) was rejected and
+        the Music Director's show failed to start.
+        """
+        mcp_light.seed_effect_catalog("left", None)
+        mcp_light.seed_effect_catalog("right", None)
+        fleet_ = make_fleet()
+        message = mcp_light.call_tool(
+            fleet_,
+            "start_show",
+            {"show": {"steps": [{"look": {"payload": {"seg": [{"fx": 159}]}}, "duration_s": 1}]}},
+            FakeModes(),
+        )
+        self.assertIn("content", message)
+
+    def test_one_unseeded_controller_does_not_shrink_the_allowed_set(self):
+        """A partially known catalog must not collapse to the offline list."""
+        catalog = ["Solid"] + ["Fx"] * 219
+        mcp_light.seed_effect_catalog("right", catalog)   # only one controller
+        self.addCleanup(mcp_light.seed_effect_catalog, "right", None)
+        mcp_light.seed_effect_catalog("left", None)
+        allowed = mcp_light.allowed_effects_for(make_fleet(), fleet.DEFAULT_TARGET)
+        self.assertIsNotNone(allowed)
+        self.assertIn(159, allowed)
+
     def test_tool_schemas_require_their_mandatory_args(self):
         tools = {tool["name"]: tool for tool in mcp_light.build_tools()}
         self.assertIn("channel", tools["set_zone"]["inputSchema"].get("required", []))
@@ -481,7 +572,25 @@ class McpZoneToolTests(unittest.TestCase):
         self.assertIn("show", tools["start_show"]["inputSchema"].get("required", []))
 
     def test_set_zone_posts_zone_bounds_to_the_channel(self):
-        fleet_ = make_fleet()
+        # Real segment geometry (the fake above has none, which only exercises
+        # the LEDS_PER_COLUMN fallback): middle-right is 47 pixels at bus 0..47.
+        controllers = [
+            fleet.ControllerConfig("right", "http://10.27.27.110", {
+                0: fleet.SegmentConfig("far-right", gpio=2, pixels=40, start=47, stop=87),
+                1: fleet.SegmentConfig("middle-right", gpio=16, pixels=47, start=0, stop=47),
+            }),
+            fleet.ControllerConfig("left", "http://10.27.27.112", {
+                0: fleet.SegmentConfig("middle-left", gpio=16, pixels=48, start=34, stop=82),
+                1: fleet.SegmentConfig("far-left", gpio=2, pixels=34, start=0, stop=34),
+            }),
+        ]
+        fleet_ = fleet.LightFleet(
+            {
+                "right": RecordingClient("http://10.27.27.110"),
+                "left": RecordingClient("http://10.27.27.112"),
+            },
+            controllers,
+        )
         result = mcp_light.call_tool(
             fleet_,
             "set_zone",
@@ -493,11 +602,9 @@ class McpZoneToolTests(unittest.TestCase):
         right = fleet_.clients["right"].payloads
         self.assertEqual(len(right), 1)
         seg = right[0]["seg"][0]
-        # The zone is carved as a NEW segment on controller "right" (ids 0/1
-        # are taken), so the channel's main segment keeps the rest of the
-        # column lit instead of being resized to the zone.
-        self.assertEqual(seg["id"], 2)
-        self.assertEqual((seg["start"], seg["stop"]), lightctl.zone_bounds("top half"))
+        self.assertEqual(seg["id"], 1)
+        self.assertNotIn("start", seg)
+        self.assertNotIn("stop", seg)
         self.assertEqual(seg["fx"], 9)
         self.assertEqual(seg["pal"], 0)
 
@@ -512,8 +619,10 @@ class McpZoneToolTests(unittest.TestCase):
         left = fleet_.clients["left"].payloads
         self.assertEqual(len(left), 1)
         seg = left[0]["seg"][0]
-        self.assertEqual(seg["id"], 2)
+        self.assertEqual(seg["id"], 1)
         self.assertEqual(seg["col"][0][:3], [255, 136, 0])
+        self.assertNotIn("start", seg)
+        self.assertNotIn("stop", seg)
 
     def test_set_zone_uses_absolute_bus_bounds_from_segment_geometry(self):
         """With configured pixels/start/stop, zone bounds offset onto the bus."""
@@ -535,9 +644,10 @@ class McpZoneToolTests(unittest.TestCase):
             FakeModes(),
         )
         seg = fleet_.clients["left"].payloads[0]["seg"][0]
-        self.assertEqual(seg["id"], 2)  # 0 and 1 are configured
-        # "top half" of a 48-pixel column is local (24, 48) -> bus (58, 82).
-        self.assertEqual((seg["start"], seg["stop"]), (58, 82))
+        self.assertEqual(seg["id"], 1)
+        self.assertEqual(seg["fx"], 9)
+        self.assertNotIn("start", seg)
+        self.assertNotIn("stop", seg)
 
     def test_set_zone_allocation_skips_live_state_segment_ids(self):
         controllers = [
@@ -551,7 +661,8 @@ class McpZoneToolTests(unittest.TestCase):
             {"channel": "middle-right", "zone": "top half", "fx": 9},
             FakeModes(),
         )
-        self.assertEqual(client.payloads[0]["seg"][0]["id"], 3)
+        self.assertEqual(client.payloads[0]["seg"][0]["id"], 1)
+        self.assertNotIn("start", client.payloads[0]["seg"][0])
 
     def test_set_zone_raises_when_no_segment_is_free(self):
         controllers = [
@@ -563,14 +674,14 @@ class McpZoneToolTests(unittest.TestCase):
             info={"leds": {"maxseg": 2}},
         )
         fleet_ = fleet.LightFleet({"right": client}, controllers)
-        with self.assertRaises(ValueError):
-            mcp_light.call_tool(
-                fleet_,
-                "set_zone",
-                {"channel": "middle-right", "zone": "top half", "fx": 9},
-                FakeModes(),
-            )
-        self.assertEqual(client.payloads, [])
+        mcp_light.call_tool(
+            fleet_,
+            "set_zone",
+            {"channel": "middle-right", "zone": "top half", "fx": 9},
+            FakeModes(),
+        )
+        self.assertEqual(client.payloads[0]["seg"][0]["id"], 1)
+        self.assertNotIn("start", client.payloads[0]["seg"][0])
 
     def _geometry_fleet(self) -> fleet.LightFleet:
         """Fleet with full SegmentConfig geometry so DDP topology resolves.
@@ -680,29 +791,21 @@ class McpZoneToolTests(unittest.TestCase):
 
     def test_set_segment_bounds_posts_raw_bounds(self):
         fleet_ = make_fleet()
-        mcp_light.call_tool(
-            fleet_,
-            "set_segment_bounds",
-            {"target": "right", "id": 2, "start": 0, "stop": 20, "rev": True, "grp": 1, "spc": 1},
-            FakeModes(),
-        )
-        right = fleet_.clients["right"].payloads
-        self.assertEqual(len(right), 1)
-        seg = right[0]["seg"][0]
-        self.assertEqual(seg["id"], 2)
-        self.assertEqual((seg["start"], seg["stop"]), (0, 20))
-        self.assertTrue(seg["rev"])
-        self.assertEqual(seg["grp"], 1)
-        self.assertEqual(seg["spc"], 1)
+        with self.assertRaises(ValueError):
+            mcp_light.call_tool(
+                fleet_,
+                "set_segment_bounds",
+                {"target": "right", "id": 2, "start": 0, "stop": 20, "rev": True, "grp": 1, "spc": 1},
+                FakeModes(),
+            )
+        self.assertEqual(fleet_.clients["right"].payloads, [])
+        self.assertEqual(fleet_.clients["left"].payloads, [])
 
     def test_delete_segment_zeroes_the_stop(self):
         fleet_ = make_fleet()
-        mcp_light.call_tool(fleet_, "delete_segment", {"target": "right", "id": 2}, FakeModes())
-        right = fleet_.clients["right"].payloads
-        self.assertEqual(len(right), 1)
-        seg = right[0]["seg"][0]
-        self.assertEqual(seg["id"], 2)
-        self.assertEqual(seg["stop"], 0)
+        with self.assertRaises(ValueError):
+            mcp_light.call_tool(fleet_, "delete_segment", {"target": "right", "id": 2}, FakeModes())
+        self.assertEqual(fleet_.clients["right"].payloads, [])
 
     def test_show_tools_drive_the_registry(self):
         fleet_ = make_fleet()

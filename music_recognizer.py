@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import logging
 import os
 import random
@@ -91,6 +92,42 @@ _shazam_pace_lock = threading.Lock()
 _last_shazam_call = 0.0
 
 
+class AmbientSongObserver:
+    """Background room song identity only: no player, AI or lighting actions."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._song: dict | None = None
+        self._identified_at = 0.0
+        self._last_attempt: float | None = None
+        self._worker: threading.Thread | None = None
+        self._tracker = song_tracking.ChangeAwareRecognizer(recognize_audio_bytes_sync)
+
+    def remember(self, song: dict | None) -> None:
+        with self._lock:
+            self._song = dict(song) if song else None
+            self._identified_at = time.monotonic()
+
+    def _identify(self) -> None:
+        try:
+            song = recognize_ambient_sync(duration=5.0, windows=1, change_tracker=self._tracker)
+            self.remember(song)
+        except Exception as exc:
+            logger.info("Room song observation unavailable: %s", exc)
+
+    def snapshot(self, *, refresh: bool = True) -> dict | None:
+        with self._lock:
+            now = time.monotonic()
+            song = dict(self._song) if self._song and now - self._identified_at < 180 else None
+            if (refresh and (self._worker is None or not self._worker.is_alive())
+                    and (self._last_attempt is None or now - self._last_attempt >= 30)
+                    and is_available()):
+                self._last_attempt = now
+                self._worker = threading.Thread(target=self._identify, name="room-song-observer", daemon=True)
+                self._worker.start()
+            return song
+
+
 def _is_shazam_error_page(exc: BaseException) -> bool:
     """True for shazamio's misleading non-JSON-response error (429/block page)."""
     message = str(exc)
@@ -153,6 +190,141 @@ def _load_sounddevice() -> Any | None:
     return sd
 
 
+def _usb_ids_match(props: dict[str, Any], vendor: int, product: int) -> bool:
+    try:
+        return (
+            int(str(props.get("device.vendor.id", "0")), 16) == vendor
+            and int(str(props.get("device.product.id", "0")), 16) == product
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_monitor_source(source: dict[str, Any]) -> bool:
+    return (
+        source.get("monitor_of_sink") not in (None, "", 4294967295)
+        or str(source.get("name", "")).endswith(".monitor")
+    )
+
+
+def _is_digital_usb_source(source: dict[str, Any]) -> bool:
+    """True for the silent S/PDIF profile a webcam exposes beside its mic."""
+    name = str(source.get("name", "")).lower()
+    profile = str((source.get("properties") or {}).get("device.profile.name", "")).lower()
+    return "iec958" in name or "spdif" in name or "iec958" in profile or "spdif" in profile
+
+
+def _select_usb_source(
+    sources: list[dict[str, Any]], vendor: int, product: int
+) -> dict[str, Any] | None:
+    """Pick the analog mic when a USB id also exposes a digital input."""
+    matches = [
+        source for source in sources
+        if isinstance(source, dict)
+        and not _is_monitor_source(source)
+        and _usb_ids_match(source.get("properties") or {}, vendor, product)
+    ]
+    analog = [source for source in matches if not _is_digital_usb_source(source)]
+    if analog:
+        return analog[0]
+    return matches[0] if matches else None
+
+
+def _source_capture(source: dict[str, Any]) -> tuple[str, int]:
+    spec = str(source.get("sample_specification", ""))
+    rate = re.search(r"(\d+)Hz", spec)
+    return str(source["name"]), int(rate[1]) if rate else 32000
+
+
+def _pactl_json(kind: str) -> list[Any]:
+    result = subprocess.run(
+        ["pactl", "-f", "json", "list", kind],
+        capture_output=True, text=True, check=True, timeout=2,
+    )
+    parsed = json.loads(result.stdout or "[]")
+    return parsed if isinstance(parsed, list) else []
+
+
+def _switch_usb_card_to_analog(vendor: int, product: int) -> bool:
+    """Move a webcam card off its silent IEC958 input when an analog mic exists."""
+    try:
+        cards = _pactl_json("cards")
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        return False
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        if not _usb_ids_match(card.get("properties") or {}, vendor, product):
+            continue
+        profiles = card.get("profiles") or {}
+        if not isinstance(profiles, dict) or "input:analog-stereo" not in profiles:
+            continue
+        if card.get("active_profile") == "input:analog-stereo":
+            return False
+        name = str(card.get("name") or "")
+        if not name:
+            continue
+        try:
+            subprocess.run(
+                ["pactl", "set-card-profile", name, "input:analog-stereo"],
+                capture_output=True, text=True, check=True, timeout=2,
+            )
+        except (OSError, subprocess.SubprocessError):
+            logger.debug("Could not switch USB card %s to analog mic", name, exc_info=True)
+            return False
+        return True
+    return False
+
+
+def _pulse_usb_input(device: str | int | None) -> tuple[str, int] | None:
+    """Map a stable USB vendor:product ID to its shared physical audio input."""
+    match = re.fullmatch(r"([0-9a-fA-F]{4}):([0-9a-fA-F]{4})", str(device))
+    if not match or not shutil.which("pactl") or not shutil.which("ffmpeg"):
+        return None
+    vendor, product = int(match[1], 16), int(match[2], 16)
+    try:
+        chosen = _select_usb_source(_pactl_json("sources"), vendor, product)
+        if chosen is not None and _is_digital_usb_source(chosen):
+            if _switch_usb_card_to_analog(vendor, product):
+                chosen = _select_usb_source(_pactl_json("sources"), vendor, product)
+        if chosen is None:
+            return None
+        return _source_capture(chosen)
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError, KeyError):
+        logger.debug("Could not resolve configured USB input through audio server", exc_info=True)
+    return None
+
+
+def _prepare_capture(device: str | int | None, sample_rate: int) -> tuple[str | int | None, int]:
+    """Resolve the actual input before choosing its supported sample rate."""
+    pulse = _pulse_usb_input(device)
+    if pulse:
+        return pulse[0], int(sample_rate) or pulse[1]
+    sounddevice = _load_sounddevice()
+    if sounddevice is None:
+        raise RuntimeError("sounddevice is not available")
+    try:
+        info = sounddevice.query_devices(device=device, kind="input")
+        if info.get("max_input_channels", 0) <= 0:
+            raise ValueError("Device has no input channels")
+    except Exception:
+        preferred = lightctl.get_mic_device()
+        logger.warning("Selected mic device %r unavailable; using physical input %r", device, preferred)
+        device = preferred
+        info = sounddevice.query_devices(device=device, kind="input")
+    native_rate = int(info.get("default_samplerate") or 44100)
+    rate = int(sample_rate) or native_rate
+    try:
+        sounddevice.check_input_settings(device=device, samplerate=rate, channels=1, dtype="float32")
+    except Exception:
+        if rate == native_rate:
+            raise
+        logger.info("Input %r does not support %d Hz; using native %d Hz", device, rate, native_rate)
+        rate = native_rate
+        sounddevice.check_input_settings(device=device, samplerate=rate, channels=1, dtype="float32")
+    return device, rate
+
+
 def _record_audio(duration: float, sample_rate: int, device: str | int | None = None) -> Any:
     """Record audio from the preferred input device.
 
@@ -161,6 +333,21 @@ def _record_audio(duration: float, sample_rate: int, device: str | int | None = 
     """
     if np is None:
         raise RuntimeError("numpy is not available")
+    if isinstance(device, str) and device.startswith("alsa_input.") and shutil.which("ffmpeg"):
+        # Pulse/PipeWire shares the room microphone instead of opening the
+        # webcam's exclusive ALSA node. ffmpeg resamples to the declared rate.
+        rate = int(sample_rate) or 32000
+        if duration <= 0 or rate <= 0:
+            raise ValueError("Recording duration and sample rate must be positive")
+        result = subprocess.run([
+            "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+            "-f", "pulse", "-i", device, "-t", str(duration),
+            "-ar", str(rate), "-ac", "1", "-f", "s16le", "pipe:1",
+        ], capture_output=True, check=True, timeout=duration + 5)
+        audio = np.frombuffer(result.stdout, dtype="<i2").copy().reshape(-1, 1)
+        if len(audio) < int(duration * rate * .9):
+            raise RuntimeError("Microphone returned an incomplete audio window")
+        return audio
     sounddevice = _load_sounddevice()
     if sounddevice is None:
         raise RuntimeError("sounddevice is not available")
@@ -182,11 +369,28 @@ def _record_audio(duration: float, sample_rate: int, device: str | int | None = 
         sample_rate = _get_device_samplerate(device)
     logger.info("Recording %.1fs from microphone @ %d Hz (device=%r)...", duration, sample_rate, device)
     frames = int(duration * sample_rate)
+    if frames <= 0:
+        raise ValueError("Recording duration must be positive")
+    recording = np.empty((frames, 1), dtype=np.float32)
+    finished = threading.Event()
+    offset = 0
+
+    def capture(indata: Any, frame_count: int, timing: Any, status: Any) -> None:
+        nonlocal offset
+        count = min(frame_count, frames - offset)
+        recording[offset:offset + count] = indata[:count]
+        offset += count
+        if offset >= frames:
+            finished.set()
+            raise sounddevice.CallbackStop
+
     try:
-        # Record as float32, then convert to int16. The wait timeout keeps a
-        # wedged PortAudio stream from leaking the (daemon) worker thread.
-        recording = sounddevice.rec(frames, samplerate=sample_rate, channels=1, dtype=np.float32, device=device)
-        sounddevice.wait(timeout=duration + 2.0)
+        # Own this stream; convenience rec()/wait() is global and wait() has
+        # no timeout argument. This deadline closes a stalled input stream.
+        with sounddevice.InputStream(samplerate=sample_rate, channels=1,
+                dtype="float32", device=device, callback=capture):
+            if not finished.wait(timeout=duration + 2.0):
+                raise TimeoutError("Microphone did not deliver the requested audio window")
     except Exception as exc:
         # Let upper layers turn this into "no match" instead of crashing the process
         raise RuntimeError(f"Failed to open/record from audio device: {exc}") from exc
@@ -572,16 +776,13 @@ async def recognize_microphone(
         raise RuntimeError("shazamio is not available")
     if np is None:
         raise RuntimeError("numpy is not available")
-    if _load_sounddevice() is None:
-        raise RuntimeError("sounddevice is not available")
     if AudioSegment is None:
         raise RuntimeError("pydub is not available")
 
     try:
         if device is None:
             device = resolve_audio_source()
-        if sample_rate == 0:
-            sample_rate = _get_device_samplerate(device)
+        device, sample_rate = await asyncio.to_thread(_prepare_capture, device, sample_rate)
         audio_data = await asyncio.to_thread(_record_audio, duration, sample_rate, device)
         segment = _make_audio_segment(audio_data, sample_rate)
         if len(segment) < MIN_AUDIO_MS:

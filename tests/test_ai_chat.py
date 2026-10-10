@@ -324,9 +324,10 @@ class RunChatTests(unittest.TestCase):
 
         self.assertEqual(fleet_.clients["left"].payloads, [])
         self.assertEqual(len(fleet_.clients["right"].payloads), 2)
-        self.assertEqual(fleet_.clients["right"].payloads[0]["seg"][0]["id"], 1)
+        # The right controller's bus 0 (GPIO 16, 47 px) is middle-right.
+        self.assertEqual(fleet_.clients["right"].payloads[0]["seg"][0]["id"], 0)
         self.assertEqual(fleet_.clients["right"].payloads[0]["seg"][0]["col"][0][:3], [255, 40, 0])
-        self.assertEqual(fleet_.clients["right"].payloads[1]["seg"][0]["id"], 1)
+        self.assertEqual(fleet_.clients["right"].payloads[1]["seg"][0]["id"], 0)
         self.assertEqual(fleet_.clients["right"].payloads[1]["seg"][0]["bri"], 180)
 
     def test_multiple_tool_calls_then_answer(self):
@@ -356,16 +357,35 @@ class RunChatTests(unittest.TestCase):
         tool_messages = [m for m in second_body_messages if m.get("role") == "tool"]
         self.assertTrue(any("error" in m["content"] for m in tool_messages))
 
-    def test_bad_arguments_json_treated_as_empty(self):
+    def test_bad_arguments_json_is_not_executed(self):
+        """Malformed arguments mean unknown intent, so nothing may be posted.
+
+        The old contract executed the tool with {} "so light_off still runs",
+        but the same rule turned a truncated set_color into a black wall that
+        was reported as success. Fail closed and let the model retry.
+        """
         rounds = [
             tool_call_round("c1", "light_off", "{not json"),
             text_round("Lights off."),
         ]
         fleet_ = make_fleet()
         with patch.object(ai_chat, "_chat_round", side_effect=rounds):
-            ai_chat.run_chat(fleet_, "off", settings=SETTINGS)
+            result = ai_chat.run_chat(fleet_, "off", settings=SETTINGS)
         for client in fleet_.clients.values():
-            self.assertEqual(client.payloads[-1]["on"], False)
+            self.assertEqual(client.payloads, [])
+        self.assertEqual(result["log"], ["light_off({}) -> error"])
+        self.assertIn("error", result["log"][0])
+
+    def test_truncated_color_arguments_cannot_black_out_the_wall(self):
+        rounds = [
+            tool_call_round("c1", "set_color", '{"red": 255, "green": 0, "blue":'),
+            text_round("Tried."),
+        ]
+        fleet_ = make_fleet()
+        with patch.object(ai_chat, "_chat_round", side_effect=rounds):
+            ai_chat.run_chat(fleet_, "make it red", settings=SETTINGS)
+        for client in fleet_.clients.values():
+            self.assertEqual(client.payloads, [])
 
     def test_round_limit_returns_gracefully(self):
         endless = [tool_call_round("c1", "get_state", "{}")] * 10
@@ -387,3 +407,55 @@ def test_static_tool_prompt_has_no_invented_geometry():
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_cancelled_chat_does_not_execute_delayed_provider_tools(monkeypatch):
+    cancelled = False
+    def provider(*args, **kwargs):
+        nonlocal cancelled
+        cancelled = True
+        return tool_call_round('late', 'light_off', '{}')
+    monkeypatch.setattr(ai_chat, '_chat_round', provider)
+    with patch.object(ai_chat.mcp_light, 'call_tool') as execute:
+        with __import__('pytest').raises(ai_chat.ToolChatError, match='cancelled'):
+            ai_chat.run_chat(make_fleet(), 'turn the lights off',
+                settings={'base_url': 'https://example.test/v1', 'model': 'm'},
+                is_cancelled=lambda: cancelled)
+    execute.assert_not_called()
+
+
+def test_chat_keeps_full_model_response_for_ui_ticker(monkeypatch):
+    full = ('A detailed lighting response. ' * 40).strip()
+    monkeypatch.setattr(ai_chat, '_chat_round', lambda *args, **kwargs: {'choices':[{'message':{'content':full}}]})
+    result = ai_chat.run_chat(make_fleet(), 'describe the current look',
+        settings={'base_url':'https://example.test/v1','model':'m'})
+    assert result['raw_response'] == full
+    assert len(result['text']) <= 250
+
+
+def test_long_response_is_summarized_by_model_without_lighting_tools(monkeypatch):
+    captured = {}
+    def provider(url, headers, body, timeout, **kwargs):
+        captured.update(body)
+        return {'choices': [{'message': {'content': 'Applied a warm amber look with slow motion.'}}]}
+    monkeypatch.setattr(ai_chat, '_chat_round', provider)
+    result = ai_chat.summarize_response('Detailed output. ' * 80,
+        settings={'base_url': 'https://example.test/v1', 'model': 'm'})
+    assert result == 'Applied a warm amber look with slow motion.'
+    assert 'tools' not in captured
+    assert captured['model'] == 'm'
+
+
+def test_short_summary_does_not_call_model(monkeypatch):
+    with patch.object(ai_chat, '_chat_round') as provider:
+        assert ai_chat.summarize_response('Warm\namber applied.', settings={}) == 'Warm amber applied.'
+    provider.assert_not_called()
+
+
+def test_summary_failure_keeps_single_bounded_line(monkeypatch):
+    monkeypatch.setattr(ai_chat, '_chat_round', lambda *args, **kwargs: (_ for _ in ()).throw(ai_chat.ToolChatError('offline')))
+    result = ai_chat.summarize_response('Detailed\noutput. ' * 80,
+        settings={'base_url': 'https://example.test/v1', 'model': 'm'})
+    assert len(result) <= 250
+    assert '\n' not in result
+    assert result.endswith('...')

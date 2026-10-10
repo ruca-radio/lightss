@@ -179,7 +179,7 @@ class CalibrationServiceTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         posts = light_fleet.clients["left"].posts
         self.assertEqual(posts[0], {"on": True, "bri": 24, "seg": [{"id": 0, "on": True, "bri": 24, "fx": 0, "col": [[255, 160, 32, 0]]}], "udpn": {"nn": True}})
-        self.assertEqual(posts[-1], {"on": True, "bri": 123, "seg": [{"id": 0, "start": 0, "stop": 10, "on": True, "bri": 99, "fx": 9}], "udpn": {"nn": True}})
+        self.assertEqual(posts[-1], {"on": True, "bri": 123, "seg": [{"id": 0, "on": True, "bri": 99, "fx": 9}], "udpn": {"nn": True}})
         self.assertEqual(sleeps, [service.IDENTIFY_SECONDS])
         self.assertFalse(service.identify("left", 9)["ok"])
         self.assertFalse(service.identify("", 0)["ok"])

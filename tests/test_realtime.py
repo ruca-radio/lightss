@@ -61,8 +61,10 @@ def test_ddp_topology_mapping_right_offsets_and_wall_order():
     entries = realtime.ddp_topology(FakeFleet())
     assert [e.channel for e in entries] == ["far-left", "middle-left", "middle-right", "far-right"]
     right = {e.channel: e for e in entries if e.controller == "right"}
-    assert (right["middle-right"].seg_id, right["middle-right"].ddp_offset, right["middle-right"].ddp_length) == (1, 0, 47)
-    assert (right["far-right"].seg_id, right["far-right"].ddp_offset, right["far-right"].ddp_length) == (0, 47, 40)
+    # Verified against the controllers: bus 0 (GPIO 16, 47 px) is middle-right
+    # and bus 1 (GPIO 2, 40 px) is far-right, so the DDP offsets stay 0 and 47.
+    assert (right["middle-right"].seg_id, right["middle-right"].ddp_offset, right["middle-right"].ddp_length) == (0, 0, 47)
+    assert (right["far-right"].seg_id, right["far-right"].ddp_offset, right["far-right"].ddp_length) == (1, 47, 40)
 
 
 def test_render_frame_lengths_bounds_and_determinism():
@@ -70,7 +72,7 @@ def test_render_frame_lengths_bounds_and_determinism():
     a = realtime.render_frames(entries, shader="aurora_flow", seed=3, t=0.5)
     b = realtime.render_frames(entries, shader="aurora_flow", seed=3, t=0.5)
     assert a == b
-    assert len(a["left"]) == 82 * 3
+    assert len(a["left"]) == 81 * 3
     assert len(a["right"]) == 87 * 3
     assert all(0 <= byte <= 210 for frame in a.values() for byte in frame)
 
@@ -280,6 +282,50 @@ def test_runner_aborts_after_sustained_send_errors_without_raising():
     assert runner.sent_frames == 0
 
 
+@pytest.mark.parametrize("runner_kind", ["realtime", "static"])
+def test_runner_keeps_painting_when_one_controller_fails(runner_kind, caplog):
+    class PerHostTransport(FakeTransport):
+        def __init__(self):
+            super().__init__()
+            self.bad_host = None
+            self.failed_sends = 0
+
+        def sendto(self, data, address):
+            if address[0] == self.bad_host:
+                self.failed_sends += 1
+                raise OSError("network is unreachable")
+            return super().sendto(data, address)
+
+    target_fleet = FakeFleet()
+    transport = PerHostTransport()
+    if runner_kind == "realtime":
+        runner = realtime.RealtimeRunner(
+            target_fleet, fps=40, duration_s=600, transport=transport, seed=1
+        )
+    else:
+        frames = realtime.render_frames(realtime.ddp_topology(target_fleet), seed=1)
+        runner = realtime.StaticFrameRunner(
+            target_fleet, frames, fps=40, duration_s=600, transport=transport
+        )
+    transport.bad_host = runner.hosts["left"]
+    runner.start()
+    try:
+        deadline = time.monotonic() + 5
+        while runner.sent_frames < 110 and runner.is_alive() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert runner.is_alive()
+        assert len(transport.sent) >= 110
+        assert runner.sent_frames >= 110
+        assert transport.failed_sends == 100
+        assert {address[0] for _, address in transport.sent} == {runner.hosts["right"]}
+        assert [packet[1] for packet, _ in transport.sent[:110]] == list(range(110))
+        assert any("dropping" in record.message and "left" in record.message for record in caplog.records)
+    finally:
+        runner.stop()
+        runner.join(timeout=2)
+    assert not runner.is_alive()
+
+
 def test_realtime_start_stops_running_show(monkeypatch):
     import shows
 
@@ -408,5 +454,87 @@ def test_realtime_start_replaces_frame_runner(monkeypatch):
         realtime.realtime_start(f, shader="aurora_flow")
         assert realtime.frame_status()["running"] is False
         assert realtime.realtime_status()["running"] is True
+    finally:
+        realtime.realtime_stop()
+
+
+# ---------------------------------------------------------------------------
+# Single-writer and per-controller fault isolation
+# ---------------------------------------------------------------------------
+
+class _PerHostTransport:
+    """Sends only to hosts that resolve; records every successful destination."""
+
+    def __init__(self, bad_host: str):
+        self.bad_host = bad_host
+        self.destinations: list[str] = []
+        self.closed = False
+
+    def sendto(self, data, address):
+        host, _port = address
+        if host == self.bad_host:
+            raise OSError("network is unreachable")
+        self.destinations.append(host)
+        return len(data)
+
+    def close(self):
+        self.closed = True
+
+
+def test_one_unreachable_controller_does_not_starve_the_others():
+    topo_fleet = FleetWithTwoControllers()
+    transport = _PerHostTransport(bad_host="10.0.0.2")
+    runner = realtime.StaticFrameRunner(
+        topo_fleet,
+        {"left": bytes(12), "right": bytes(12)},
+        fps=40,
+        duration_s=0.05,
+        transport=transport,
+    )
+    runner.run()
+
+    # The reachable controller still received frames despite the other failing.
+    assert set(transport.destinations) == {"10.0.0.1"}
+    assert len(transport.destinations) > 1
+
+
+class FleetWithTwoControllers:
+    """Minimal duck-typed fleet with one reachable and one unreachable host."""
+
+    def __init__(self):
+        self.installation = fleet.InstallationConfig(
+            wall_order=["a", "b"],
+        )
+        self.controllers = [
+            fleet.ControllerConfig(
+                name="left",
+                host="http://10.0.0.1",
+                segments={0: fleet.SegmentConfig("a", gpio=1, pixels=4, start=0, stop=4)},
+            ),
+            fleet.ControllerConfig(
+                name="right",
+                host="http://10.0.0.2",
+                segments={1: fleet.SegmentConfig("b", gpio=2, pixels=4, start=0, stop=4)},
+            ),
+        ]
+
+
+def test_frame_start_hands_over_an_active_realtime_renderer():
+    """Two DDP writers on the same controllers would tear every frame."""
+    topo_fleet = FleetWithTwoControllers()
+    frames = {"left": bytes(12), "right": bytes(12)}
+    try:
+        realtime.realtime_start(
+            topo_fleet,
+            shader="aurora_flow",
+            fps=1,
+            duration_s=1,
+        )
+        assert realtime.realtime_status()["running"] is True
+
+        realtime.frame_start(topo_fleet, frames, fps=40, duration_s=0.05)
+
+        assert realtime.realtime_status()["running"] is False
+        assert realtime.frame_status()["running"] is True
     finally:
         realtime.realtime_stop()

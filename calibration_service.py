@@ -384,6 +384,7 @@ class CalibrationService:
                 finally:
                     restore = {key: copy.deepcopy(prior[key]) for key in ("on", "bri", "seg") if key in prior}
                     restore["udpn"] = {"nn": True}
+                    restore = fleet.drop_sacred_segment_fields(restore)
                     poster.post_state(restore)
                 result.update(ok=True, message="Low-brightness identification marker displayed and prior state restored.", segment=segment_id)
             except Exception as exc:

@@ -56,10 +56,10 @@ def default_controllers() -> list[fleet.ControllerConfig]:
     return [
         fleet.ControllerConfig("left", "http://10.27.27.110",
                                {0: fleet.SegmentConfig("far-left", gpio=16, pixels=34, start=0, stop=34),
-                                1: fleet.SegmentConfig("middle-left", gpio=2, pixels=48, start=34, stop=82)}),
+                                1: fleet.SegmentConfig("middle-left", gpio=2, pixels=47, start=34, stop=81)}),
         fleet.ControllerConfig("right", "http://10.27.27.112",
-                               {0: fleet.SegmentConfig("far-right", gpio=2, pixels=40, start=47, stop=87),
-                                1: fleet.SegmentConfig("middle-right", gpio=16, pixels=47, start=0, stop=47)}),
+                               {0: fleet.SegmentConfig("middle-right", gpio=16, pixels=47, start=0, stop=47),
+                                1: fleet.SegmentConfig("far-right", gpio=2, pixels=40, start=47, stop=87)}),
     ]
 
 
@@ -89,11 +89,13 @@ class LoadControllersTests(unittest.TestCase):
         controllers = {c.name: c for c in fleet.load_controllers({})}
         self.assertEqual(controllers["left"].segments, {
             0: fleet.SegmentConfig("far-left", gpio=16, pixels=34, start=0, stop=34),
-            1: fleet.SegmentConfig("middle-left", gpio=2, pixels=48, start=34, stop=82),
+            1: fleet.SegmentConfig("middle-left", gpio=2, pixels=47, start=34, stop=81),
         })
+        # Segment ids follow the controller's own bus order: bus 0 is the
+        # GPIO 16 strip (middle-right), bus 1 the GPIO 2 strip (far-right).
         self.assertEqual(controllers["right"].segments, {
-            0: fleet.SegmentConfig("far-right", gpio=2, pixels=40, start=47, stop=87),
-            1: fleet.SegmentConfig("middle-right", gpio=16, pixels=47, start=0, stop=47),
+            0: fleet.SegmentConfig("middle-right", gpio=16, pixels=47, start=0, stop=47),
+            1: fleet.SegmentConfig("far-right", gpio=2, pixels=40, start=47, stop=87),
         })
 
     def test_config_controllers_win_and_parse_string_seg_keys(self):
@@ -184,8 +186,8 @@ class FleetResolutionTests(unittest.TestCase):
             {
                 "far-left": ("left", 0),
                 "middle-left": ("left", 1),
-                "far-right": ("right", 0),
-                "middle-right": ("right", 1),
+                "middle-right": ("right", 0),
+                "far-right": ("right", 1),
             },
         )
 
@@ -198,7 +200,7 @@ class FleetResolutionTests(unittest.TestCase):
 
     def test_resolve_channel_name(self):
         self.assertEqual(self.fleet.resolve("middle-left"), [("left", 1)])
-        self.assertEqual(self.fleet.resolve("middle-right"), [("right", 1)])
+        self.assertEqual(self.fleet.resolve("middle-right"), [("right", 0)])
 
     def test_resolve_all_is_case_insensitive(self):
         self.assertEqual(sorted(self.fleet.resolve("ALL")), [("left", None), ("right", None)])
@@ -283,7 +285,7 @@ class FleetFanOutTests(unittest.TestCase):
         self.assertEqual(set(result), {"left"})
         self.assertEqual(
             fleet_.clients["left"].payloads,
-            [{"seg": [{"fx": 9, "sx": 180, "id": 1, "start": 34, "stop": 82, "on": True}], "udpn": {"nn": True}}],
+            [{"seg": [{"fx": 9, "sx": 180, "id": 1}], "udpn": {"nn": True}}],
         )
         self.assertEqual(fleet_.clients["right"].payloads, [])
 
@@ -295,8 +297,8 @@ class FleetFanOutTests(unittest.TestCase):
             fleet_.clients["right"].payloads,
             [{
                 "seg": [
-                    {"fx": 9, "id": 1, "start": 0, "stop": 47, "on": True},
-                    {"col": [[1, 2, 3, 0]], "id": 1, "start": 0, "stop": 47, "on": True},
+                    {"fx": 9, "id": 0},
+                    {"col": [[1, 2, 3, 0]], "id": 0},
                 ],
                 "udpn": {"nn": True},
             }],
@@ -308,8 +310,16 @@ class FleetFanOutTests(unittest.TestCase):
         fleet_.post_state({"seg": [{"fx": 28}]}, target="middle-right")
         self.assertEqual(
             fleet_.clients["right"].payloads,
-            [{"seg": [{"fx": 28, "id": 1, "start": 0, "stop": 47, "on": True}], "udpn": {"nn": True}}],
+            [{"seg": [{"fx": 28, "id": 0}], "udpn": {"nn": True}}],
         )
+
+    def test_post_state_strips_sacred_segment_fields(self):
+        fleet_ = make_fleet()
+        payload = {"seg": [{"fx": 9, "start": 1, "stop": 2, "mi": True, "of": 22, "rev": True, "grp": 2, "n": "nope"}]}
+        fleet_.post_state(payload, target="middle-left")
+        seg = fleet_.clients["left"].payloads[0]["seg"][0]
+        self.assertEqual(seg, {"fx": 9, "id": 1})
+        self.assertEqual(payload["seg"][0]["mi"], True)
 
     def test_channel_target_without_seg_passes_payload_through(self):
         fleet_ = make_fleet()
@@ -323,13 +333,11 @@ class FleetFanOutTests(unittest.TestCase):
         right = {seg["id"]: seg for seg in fleet_.clients["right"].payloads[0]["seg"]}
         self.assertEqual(set(left), {0, 1})
         self.assertEqual(set(right), {0, 1})
-        self.assertEqual((left[0]["start"], left[0]["stop"], left[0]["on"]), (0, 34, True))
-        self.assertEqual((left[1]["start"], left[1]["stop"]), (34, 82))
-        self.assertEqual((right[1]["start"], right[1]["stop"]), (0, 47))
-        self.assertEqual((right[0]["start"], right[0]["stop"]), (47, 87))
         for seg in list(left.values()) + list(right.values()):
             self.assertEqual(seg["fx"], 9)
             self.assertEqual(seg["sx"], 140)
+            for key in ("start", "stop", "on", "mi", "of", "rev", "grp", "spc"):
+                self.assertNotIn(key, seg)
 
     def test_effect_on_left_controller_hits_both_left_strips_only(self):
         fleet_ = make_fleet()
@@ -344,7 +352,7 @@ class FleetFanOutTests(unittest.TestCase):
         left = fleet_.clients["left"].payloads[0]["seg"]
         right = fleet_.clients["right"].payloads[0]["seg"]
         self.assertEqual([seg["id"] for seg in left], [0])
-        self.assertEqual([seg["id"] for seg in right], [0])
+        self.assertEqual([seg["id"] for seg in right], [1])
         self.assertEqual(left[0]["fx"], 46)
         self.assertEqual(right[0]["fx"], 46)
 
@@ -352,7 +360,7 @@ class FleetFanOutTests(unittest.TestCase):
         fleet_ = make_fleet()
         fleet_.post_state({"seg": [{"fx": 12}]}, target="far-left,middle-right")
         self.assertEqual([seg["id"] for seg in fleet_.clients["left"].payloads[0]["seg"]], [0])
-        self.assertEqual([seg["id"] for seg in fleet_.clients["right"].payloads[0]["seg"]], [1])
+        self.assertEqual([seg["id"] for seg in fleet_.clients["right"].payloads[0]["seg"]], [0])
         self.assertEqual(len(fleet_.clients["left"].payloads), 1)
         self.assertEqual(len(fleet_.clients["right"].payloads), 1)
 
@@ -360,11 +368,11 @@ class FleetFanOutTests(unittest.TestCase):
         fleet_ = make_fleet()
         self.assertEqual(
             sorted(fleet_.resolve("inner")),
-            [("left", 1), ("right", 1)],
+            [("left", 1), ("right", 0)],
         )
         self.assertEqual(
             sorted(fleet_.resolve("far-left+far-right")),
-            [("left", 0), ("right", 0)],
+            [("left", 0), ("right", 1)],
         )
 
     def test_post_state_does_not_mutate_the_callers_payload(self):
@@ -445,15 +453,19 @@ def test_builtin_topology_matches_verified_wall():
     assert installation.column_length_m == 2.0
     assert installation.pixels_per_meter == 20
     assert installation.visible_leds_per_meter == 720
-    assert installation.color_order == "BRG"
+    assert installation.color_order == "RGB"
     by_host = {controller.host: controller for controller in controllers}
     assert by_host["http://10.27.27.110"].segments == {
         0: fleet.SegmentConfig("far-left", gpio=16, pixels=34, start=0, stop=34),
-        1: fleet.SegmentConfig("middle-left", gpio=2, pixels=48, start=34, stop=82),
+        1: fleet.SegmentConfig("middle-left", gpio=2, pixels=47, start=34, stop=81),
     }
+    # Verified against the controllers: on the right controller bus 0 is the
+    # 47-pixel GPIO 16 strip (middle-right) and bus 1 the 40-pixel GPIO 2 strip
+    # (far-right). The earlier table had these two channels swapped, so every
+    # per-channel command for far-right landed on middle-right.
     assert by_host["http://10.27.27.112"].segments == {
-        0: fleet.SegmentConfig("far-right", gpio=2, pixels=40, start=47, stop=87),
-        1: fleet.SegmentConfig("middle-right", gpio=16, pixels=47, start=0, stop=47),
+        0: fleet.SegmentConfig("middle-right", gpio=16, pixels=47, start=0, stop=47),
+        1: fleet.SegmentConfig("far-right", gpio=2, pixels=40, start=47, stop=87),
     }
 
 
@@ -479,3 +491,148 @@ def test_duplicate_wall_channel_is_rejected():
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# Geometry single-source-of-truth
+# ---------------------------------------------------------------------------
+
+VERIFIED_WALL_LENGTHS = {
+    "far-left": 34,
+    "middle-left": 47,
+    "middle-right": 47,
+    "far-right": 40,
+}
+
+
+def test_lightctl_topology_matches_the_builtin_wall():
+    """lightctl publishes channel geometry to the AI snapshot and to zone math.
+
+    It must agree with the fleet's built-in controllers (and therefore with the
+    README and the deployed config); a stale length makes the model compute
+    wrong per-LED/zone targets and can address pixels past the end of a strip.
+    """
+    from_builtin = {
+        segment["channel"]: segment
+        for entry in fleet._BUILTIN_CONTROLLERS
+        for segment in entry["segments"].values()
+    }
+    from_lightctl = lightctl.CHANNEL_TOPOLOGY
+
+    assert set(from_lightctl) == set(from_builtin)
+    for channel, segment in from_builtin.items():
+        assert from_lightctl[channel]["length"] == segment["pixels"], channel
+        assert from_lightctl[channel]["gpio"] == segment["gpio"], channel
+    assert lightctl.CHANNEL_LENGTHS == VERIFIED_WALL_LENGTHS
+
+
+def test_builtin_controller_hosts_match_the_documented_installation():
+    hosts = {
+        segment["channel"]: entry["host"]
+        for entry in fleet._BUILTIN_CONTROLLERS
+        for segment in entry["segments"].values()
+    }
+    assert hosts == {
+        "far-left": "http://10.27.27.110",
+        "middle-left": "http://10.27.27.110",
+        "middle-right": "http://10.27.27.112",
+        "far-right": "http://10.27.27.112",
+    }
+
+
+def test_channel_lengths_are_per_column_not_uniform():
+    assert lightctl.channel_length("far-left") == 34
+    assert lightctl.channel_length("middle-left") == 47
+    assert lightctl.channel_length("middle-right") == 47
+    assert lightctl.channel_length("far-right") == 40
+    with pytest.raises(ValueError):
+        lightctl.channel_length("nope")
+
+
+# ---------------------------------------------------------------------------
+# Topology verification against the live controllers
+# ---------------------------------------------------------------------------
+
+class _FakeTopologyClient:
+    """Reports a fixed bus layout + segment state, like a real WLED device."""
+
+    def __init__(self, segments, buses):
+        self.host = "http://fake.test"
+        self._segments = segments
+        self._buses = buses
+
+    def get_state(self):
+        return {"seg": [{"id": sid, "start": s, "stop": e} for sid, (s, e) in self._segments.items()]}
+
+    def get_config(self):
+        return {"hw": {"led": {"ins": self._buses}}}
+
+
+def _wall_with(controller_config, state_segments, buses):
+    client = _FakeTopologyClient(state_segments, buses)
+    return fleet.LightFleet({controller_config.name: client}, [controller_config])
+
+
+RIGHT_BUSES = [
+    {"pin": [16], "len": 47, "start": 0},
+    {"pin": [2], "len": 40, "start": 47},
+]
+RIGHT_STATE = {0: (0, 47), 1: (47, 87)}
+
+
+def test_topology_matches_the_real_right_controller_layout():
+    config = fleet.ControllerConfig("right", "http://fake.test", {
+        0: fleet.SegmentConfig("middle-right", gpio=16, pixels=47, start=0, stop=47),
+        1: fleet.SegmentConfig("far-right", gpio=2, pixels=40, start=47, stop=87),
+    })
+    assert fleet.topology_mismatches(_wall_with(config, RIGHT_STATE, RIGHT_BUSES)) == []
+
+
+def test_topology_check_catches_a_swapped_segment_mapping():
+    """The bug that made far-right commands land on middle-right.
+
+    Segment ids are posted verbatim, so a config whose numbering disagrees with
+    the controller silently drives the wrong physical column while wall-wide
+    looks still appear to work.
+    """
+    swapped = fleet.ControllerConfig("right", "http://fake.test", {
+        0: fleet.SegmentConfig("far-right", gpio=2, pixels=40, start=47, stop=87),
+        1: fleet.SegmentConfig("middle-right", gpio=16, pixels=47, start=0, stop=47),
+    })
+    problems = fleet.topology_mismatches(_wall_with(swapped, RIGHT_STATE, RIGHT_BUSES))
+    assert any("segment 0 is configured as far-right" in p for p in problems)
+    assert any("segment 1 is configured as middle-right" in p for p in problems)
+
+
+def test_topology_check_catches_a_wrong_pixel_count_and_gpio():
+    config = fleet.ControllerConfig("right", "http://fake.test", {
+        0: fleet.SegmentConfig("middle-right", gpio=2, pixels=36, start=0, stop=47),
+        1: fleet.SegmentConfig("far-right", gpio=16, pixels=40, start=47, stop=87),
+    })
+    problems = fleet.topology_mismatches(_wall_with(config, RIGHT_STATE, RIGHT_BUSES))
+    assert any("36 pixels but bus 0 has 47" in p for p in problems)
+    assert any("configured on GPIO 2 but bus 0 uses GPIO 16" in p for p in problems)
+
+
+def test_topology_check_reports_a_segment_the_controller_does_not_have():
+    config = fleet.ControllerConfig("right", "http://fake.test", {
+        0: fleet.SegmentConfig("middle-right", gpio=16, pixels=47, start=0, stop=47),
+        5: fleet.SegmentConfig("far-right", gpio=2, pixels=40, start=47, stop=87),
+    })
+    problems = fleet.topology_mismatches(_wall_with(config, RIGHT_STATE, RIGHT_BUSES))
+    assert any("no such segment" in p for p in problems)
+
+
+def test_builtin_topology_matches_the_verified_segment_ids():
+    """fleet's built-in default and lightctl's published topology must agree."""
+    builtin = {
+        seg["channel"]: (seg["pixels"], seg["gpio"], seg["start"], seg["stop"])
+        for entry in fleet._BUILTIN_CONTROLLERS
+        for seg in entry["segments"].values()
+    }
+    for channel, spec in lightctl.CHANNEL_TOPOLOGY.items():
+        pixels, gpio, start, stop = builtin[channel]
+        assert (spec["length"], spec["gpio"]) == (pixels, gpio), channel
+    # Far-right is bus 1 on the right controller (GPIO 2, LEDs 47-87).
+    assert lightctl.CHANNEL_TOPOLOGY["far-right"]["segment"] == 1
+    assert lightctl.CHANNEL_TOPOLOGY["middle-right"]["segment"] == 0

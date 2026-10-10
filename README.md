@@ -10,18 +10,33 @@ columns each:
 
 - **Controller `left`** — `http://10.27.27.110`
   - Segment 0 → channel **far-left** (GPIO 16, 34 addressable pixels)
-  - Segment 1 → channel **middle-left** (GPIO 2, 48 addressable pixels)
+  - Segment 1 → channel **middle-left** (GPIO 2, LEDs 34-80, 47 addressable pixels)
 - **Controller `right`** — `http://10.27.27.112`
-  - Segment 0 → channel **far-right** (GPIO 2, 40 addressable pixels)
-  - Segment 1 → channel **middle-right** (GPIO 16, 47 addressable pixels)
+  - Segment 0 → channel **middle-right** (GPIO 16, LEDs 0-46, 47 addressable pixels)
+  - Segment 1 → channel **far-right** (GPIO 2, LEDs 47-86, 40 addressable pixels)
+
+Configured WLED `stop` is exclusive: middle-left `34..81`, middle-right `0..47`, far-right `47..87`.
+
+Segment ids are the controller's own, so they follow bus order (bus 0 first).
+On the right controller the first bus is middle-right, which is why far-right is
+segment 1 there. `verify_controllers()` / `GET /api/controllers/verify` compares
+this table against what the controllers actually report and flags any drift.
 
 Physical wall order (left → right): `far-left`, `middle-left`, `middle-right`,
-`far-right`. The LED buses use physical **BRG** color order (WLED color order
-enum 2); that mapping lives only at the WLED bus layer, so API colors on every
+`far-right`. The LED buses use physical **RGB** color order (WLED color order
+enum 1); that mapping lives only at the WLED bus layer, so API colors on every
 surface remain semantic RGB.
 
 Every surface (CLI, GUI, tray, MCP) can target `all` controllers (default), a
 single controller, or a single channel/segment.
+
+Effect, palette, color, speed, and intensity may differ per strip. A look may
+program 1, 2, 3, or all 4 strips; those strips may match or differ.
+
+Segment bounds, mirror (`mi`), offset (`of`), reverse (`rev`), grouping (`grp`),
+spacing (`spc`), names, and selection stay on the controller; looks must not write
+them. Hardware (GPIO, bus length, color order, LED driver) also stays on the
+controller.
 
 ## Opinionated dynamic scenes
 
@@ -36,9 +51,9 @@ JSON per-LED `seg.i` frames). Pass `colors` (hex or RGB stops) and a
 modes (`unison`, `independent`, `pairs`, `center_vs_outer`, `left_vs_right`,
 `alternating`, `random_groups`) decide whether strips match, differ, or form
 groups, with per-segment brightness variance baked into the pixels. Optional
-`engine="effect"` preserves the stock safe-effect behavior. Dynamic scenes
-reassert configured segment start/stop bounds in payloads but never mutate
-WLED hardware configuration or create/delete extra segments. Use explicit
+`engine="effect"` preserves the stock safe-effect behavior. Dynamic scenes do
+not reassert segment start/stop in payloads, mutate WLED hardware configuration,
+or create/delete extra segments. Use explicit
 actions (`color`, `effect`, `brightness`, wall modes, etc.) when a
 request gives exact values.
 
@@ -178,8 +193,8 @@ uv sync
 ## WLED Topology Migration
 
 `scripts/migrate_wled_topology.py` migrates the two live controllers to the
-verified topology described above: .110 uses starts/stops 0..34 and 34..82;
-.112 uses starts/stops 0..47 and 47..87 (BRG color order). The utility is backup-first — every run saves `/json/cfg`,
+verified topology described above: .110 uses starts/stops 0..34 and 34..81;
+.112 uses starts/stops 0..47 and 47..87 (RGB color order). The utility is backup-first — every run saves `/json/cfg`,
 `/json/state`, `/json/info`, `/json/eff`, and `/json/pal` for both hosts
 before anything else — and dry-run is the default; writes require `--apply`.
 
@@ -197,6 +212,66 @@ Roll back from a backup directory:
 python scripts/migrate_wled_topology.py --restore "$backup_dir"
 ```
 
+## AI-authored palettes (WLED 16+)
+
+WLED 16.0 added first-class **custom palettes**: a device holds many
+(`info.cpalmax` — 129 on ESP32, 10 on ESP8266), they get real palette ids, and
+any palette-driven effect renders them. `design_palette` lets the AI author one
+and put it on the wall.
+
+There is no "create palette" JSON endpoint — the WLED UI itself saves palettes
+by uploading `paletteN.json` through the file manager, and the firmware reloads
+them **immediately** with no reboot:
+
+```c
+// wled_server.cpp: handleUpload()
+if (filename.indexOf("palette") >= 0 && filename.indexOf(".json") >= 0)
+    loadCustomPalettes();
+```
+
+So `design_palette` uploads the same file to each controller in the target and
+returns the palette id it landed on. Palette ids are version dependent: on 16.0+
+custom palettes live in **72..200** and are allocated downward (the first is
+`palette0.json` = id **200**, the next 199), while before 16.0 they count down
+from 255. Both on-disk shapes are read back (`[pos,r,g,b,…]` and the
+`[pos,"RRGGBB",…]` form the UI writes); the tool writes the documented integer
+form.
+
+```
+design_palette {"colors": ["#ff2104","#ff4419","#fffff2","#2aff16"]}   # -> id 200
+design_palette {"stops": [[0,255,0,0],[64,0,0,255],[255,255,255,255]], "apply": true}
+design_palette {"action": "list"}
+design_palette {"action": "delete", "slot": 0}
+```
+
+Deleting uses the state API rather than the file manager: the docs describe
+`rmcpal` as a boolean, but the firmware reads it as a **palette slot** and both
+removes `palette<slot>.json` and reloads the palette list (`json.cpp`). Deleting
+the file alone leaves the device serving a palette that is gone from disk.
+
+`apply: true` also posts `{"seg":[{"pal": <id>}]}` to the target, so the wall
+switches onto the new palette straight away. Custom palettes persist across
+reboots and can be referenced from presets.
+
+## Effect selection policy
+
+Every effect the controllers actually expose is selectable — by the AI, the MCP
+tools, and the GUI's effect pickers. The blink, strobe, flash, lightning,
+fireworks and sparkle families are **not** blocked. Only WLED's
+reserved/placeholder entries (`RSVD`, `-`, empty) are treated as unavailable,
+because those ids are not real effects on the firmware.
+
+The safety machinery is still present and inert:
+
+- `lightctl.BLOCKED_EFFECTS` — numeric id blocklist (currently empty)
+- `lightctl.FORBIDDEN_EFFECT_TERMS` — name-substring blocklist (currently empty)
+- `atmospheres.UNSAFE_FX_NAMES` / `UNSAFE_FX_SUBSTRINGS` — live-catalog blocklists (currently empty)
+- `look_agents._UNSAFE` — look-agent shader blocklist (currently empty)
+
+Repopulating any of these restores that layer. Note that rapid flashing is a
+genuine photosensitive-seizure trigger; if anyone else is in the room, prefer
+smooth effects or keep brightness low.
+
 ## Environment Variables
 
 | Variable | Description | Default |
@@ -209,6 +284,8 @@ python scripts/migrate_wled_topology.py --restore "$backup_dir"
 | `LIGHT_HOST` | WLED controller URL for MCP server | `http://10.27.27.110` |
 | `LIGHT_HOSTS` | Comma-separated WLED controller URLs defining the fleet (names `light-1`, `light-2`, …; no channel aliases) | config `controllers` / built-in two-controller default |
 | `LIGHT_AUDIO_SOURCE` | Audio capture source: `monitor`, `mic`, or a device name | `monitor` |
+| `LIGHTSS_ALLOWED_HOSTS` | Extra `Host` header names the GUI accepts (mDNS name, reverse proxy, tunnel). IP literals and `localhost` are always accepted. | *(none)* |
+| `LIGHTSS_TRUST_PROXY` | Set only when a reverse proxy fronts the GUI; enables `X-Forwarded-Proto`/`X-Forwarded-Host` for the Apple sign-in URL. | *(off)* |
 | `LD_LIBRARY_PATH` | May be needed for `sounddevice` / PortAudio | `/home/linuxbrew/.linuxbrew/lib` |
 
 ## Commands
@@ -253,10 +330,13 @@ automatically address the matching WLED segment id.
 
 Wall-wide composer modes across all four columns:
 
+Wall mirror and wall chase post the same effect and palette on every strip;
+neither sets the controller mirror bit (`mi`) or offset (`of`).
+
 ```bash
 ./lightctl wall span --fx 9               # Same effect on all four columns
-./lightctl wall mirror --fx 9             # Left pair mirrors the right pair
-./lightctl wall chase --fx 28             # Staggered chase along the wall
+./lightctl wall mirror --fx 9             # Same effect and palette on every strip
+./lightctl wall chase --fx 28             # Same effect and palette on every strip
 ./lightctl wall versus --fx-left 9 --fx-right 46   # Left vs right duel
 ```
 
@@ -313,8 +393,30 @@ Then open:
 http://127.0.0.1:8123/
 ```
 
+### GUI network exposure
+
+The GUI has no login. It is intended for a trusted LAN, and it defaults to
+binding `0.0.0.0` so the FireTV browser can open `/tv`. Three defences are built
+in and should be understood before exposing it:
+
+- **Same-origin enforcement.** Every state-changing `POST` must either carry no
+  `Origin` (non-browser client) or an `Origin` matching the request's own
+  `Host`. A random web page therefore cannot drive the lights, and the API
+  rejects non-JSON content types so an HTML `<form>` cannot either.
+- **Host validation.** Only IP literals and `localhost` are accepted in the
+  `Host` header unless the name is listed in `LIGHTSS_ALLOWED_HOSTS`. This is
+  what stops DNS rebinding from turning an attacker's domain into a
+  same-origin request.
+- **No proxy trust by default.** `X-Forwarded-*` headers are ignored unless
+  `LIGHTSS_TRUST_PROXY` is set.
+
+These checks are defensive, not authentication. For anything beyond a trusted
+LAN, put the GUI behind a reverse proxy that authenticates, or bind
+`--listen 127.0.0.1` and reach it over an SSH tunnel.
+
 The GUI includes:
 - **Live state** display auto-updated via SSE (`/api/events`), aggregated per controller
+- **Effect pickers** filled from the live device catalog (`GET /api/effects`), so every installed effect is selectable
 - **Target selector** — All / controllers / individual channels
 - **Wall panel** with the four wall modes (span, mirror, chase, left-vs-right)
 - Power, brightness, RGBW colors, hex color input, effect control
@@ -334,10 +436,9 @@ The GUI includes:
 - **📺 TV** toggle and **↗** cast button for Fire TV integration (see below)
 
 GUI Mode 1 uses the browser microphone permission on `localhost`, so it can react
-to room music even when Python cannot see a system audio device. Effects are
-restricted to safe non-strobe options, including Breathe, Colorloop, Rainbow,
-Fade, Chase, Chase Rainbow, Rainbow Runner, Colorwaves, Pacifica, Flow, Drift,
-Swirl, and similar smooth movement effects.
+to room music even when Python cannot see a system audio device. Smooth movement
+effects (Breathe, Colorloop, Rainbow, Fade, Chase, Chase Rainbow, Rainbow
+Runner, Colorwaves, Pacifica, Flow, Drift, Swirl) work well for this.
 
 The AI prompt box uses `OPENAI_API_KEY` from the GUI server environment. Optional
 model override:
@@ -353,7 +454,7 @@ lightss
 ```
 
 The AI receives the system map: power, brightness, full RGBW color space, hex
-colors, safe non-strobe effects, effect speed, scenes, random scenes, WLED presets,
+colors, the full live effect catalog, effect speed, scenes, random scenes, WLED presets,
 temperature, transitions, sunrise simulation, scene cycling, fade timers, and
 browser microphone beat mode. It can also use a webcam snapshot as room context.
 It returns a visible response plus operation confirmations in the GUI.
@@ -471,8 +572,8 @@ segment id → segment config (channel name, GPIO pin, pixel count):
 ```json
 {
   "controllers": [
-    {"name": "left",  "host": "http://10.27.27.110", "segments": {"0": {"channel": "far-left", "gpio": 16, "pixels": 34, "start": 0, "stop": 34}, "1": {"channel": "middle-left", "gpio": 2, "pixels": 48, "start": 34, "stop": 82}}},
-    {"name": "right", "host": "http://10.27.27.112", "segments": {"0": {"channel": "far-right", "gpio": 2, "pixels": 40, "start": 47, "stop": 87}, "1": {"channel": "middle-right", "gpio": 16, "pixels": 47, "start": 0, "stop": 47}}}
+    {"name": "left",  "host": "http://10.27.27.110", "segments": {"0": {"channel": "far-left", "gpio": 16, "pixels": 34, "start": 0, "stop": 34}, "1": {"channel": "middle-left", "gpio": 2, "pixels": 47, "start": 34, "stop": 81}}},
+    {"name": "right", "host": "http://10.27.27.112", "segments": {"0": {"channel": "middle-right", "gpio": 16, "pixels": 47, "start": 0, "stop": 47}, "1": {"channel": "far-right", "gpio": 2, "pixels": 40, "start": 47, "stop": 87}}}
   ]
 }
 ```
@@ -495,7 +596,7 @@ shown match the verified installation):
     "column_length_m": 2.0,
     "pixels_per_meter": 20,
     "visible_leds_per_meter": 720,
-    "color_order": "BRG",
+    "color_order": "RGB",
     "addressable_pixel_physical_leds": 5
   }
 }
