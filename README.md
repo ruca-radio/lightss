@@ -30,6 +30,19 @@ surface remain semantic RGB.
 Every surface (CLI, GUI, tray, MCP) can target `all` controllers (default), a
 single controller, or a single channel/segment.
 
+Device reads use pinned `python-wled` 1.1.1 on standard HTTP controllers. The GUI
+keeps one read-only WebSocket observer per device, reconnects with backoff, and
+falls back to HTTP when observations expire. Raw firmware fields and segment IDs
+are preserved. HTTPS and custom ports retain the existing HTTP transport;
+validated JSON writes and DDP rendering retain their existing paths. Upstream
+reads have three bounded attempts; `LightClient.retries` controls the legacy
+transport. Replaced clients and CLI/MCP/GUI sessions close their sockets.
+
+VU readings remain visible with the lights off. Fresh controller audio takes
+precedence over older director status, survives brief stream reconnects, and
+clears when expired. Controller audio uses multicast `239.0.0.1:11988`; a working
+WLED HTTP connection alone does not establish audio packet reception.
+
 Effect, palette, color, speed, and intensity may differ per strip. A look may
 program 1, 2, 3, or all 4 strips; those strips may match or differ.
 

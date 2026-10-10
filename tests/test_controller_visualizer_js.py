@@ -109,3 +109,85 @@ def test_audio_stream_coalesces_messages_to_latest_animation_frame():
       console.log(JSON.stringify({energy:rendered.energy,scheduledCount,url:controllerAudioStream.url}));
     '''
     assert run_bridge(extra) == {'energy': .8, 'scheduledCount': 1, 'url': '/api/audio/events'}
+
+
+def test_manual_director_status_preserves_fresh_audio_stream():
+    extra = 'renderControllerAudioTelemetry(' + json.dumps(STATUS['audio']) + ');'
+    extra += "renderControllerVisualization({running:false,selected_mode:'manual'});"
+    extra += 'console.log(JSON.stringify({energy:rendered.energy,status:nodes.vizStatus.textContent}));'
+    assert run_bridge(extra) == {'energy': .6, 'status': 'Controller mic · live audio'}
+
+
+def test_director_audio_does_not_replace_newer_stream_measurement():
+    extra = 'renderControllerAudioTelemetry(' + json.dumps(STATUS['audio']) + ');'
+    older = {**STATUS, 'audio': {'active': False, 'level': 0, 'fft': [0] * 16}}
+    extra += 'renderControllerVisualization(' + json.dumps(older) + ');'
+    extra += 'console.log(JSON.stringify({energy:rendered.energy,status:nodes.vizStatus.textContent}));'
+    result = run_bridge(extra)
+    assert result['energy'] == .6
+    assert 'unavailable' not in result['status'].lower()
+
+
+def test_audio_reconnect_keeps_fresh_measurement_then_expires():
+    extra = '''
+      class EventSource {constructor(){this.listeners={};} addEventListener(name,fn){this.listeners[name]=fn;}}
+      startControllerAudioStream();
+      renderControllerAudioTelemetry(''' + json.dumps(STATUS['audio']) + ''');
+      now+=100;controllerAudioStream.onerror();
+      const fresh=rendered.energy;
+      now+=3000;expireControllerAudioTelemetry();
+      console.log(JSON.stringify({fresh,expired:rendered.energy,status:nodes.vizStatus.textContent}));
+    '''
+    result = run_bridge(extra)
+    assert result['fresh'] == .6
+    assert result['expired'] == 0
+    assert 'unavailable' in result['status'].lower()
+
+
+def test_expired_audio_cannot_reappear_from_a_queued_animation_frame():
+    extra = '''
+      let scheduled=null;
+      const requestAnimationFrame=fn=>{scheduled=fn;return 1;};
+      class EventSource {constructor(){this.listeners={};} addEventListener(name,fn){this.listeners[name]=fn;}}
+      startControllerAudioStream();
+      renderControllerAudioTelemetry(''' + json.dumps(STATUS['audio']) + ''');
+      controllerAudioStream.listeners.audio({data:JSON.stringify({audio:{active:true,level:.8}})});
+      now+=3000;expireControllerAudioTelemetry();
+      scheduled();
+      console.log(JSON.stringify({energy:rendered.energy}));
+    '''
+    assert run_bridge(extra) == {'energy': 0}
+
+
+def test_vu_and_beat_remain_visible_when_lights_are_off():
+    html = light_gui.render_html()
+    code = html[html.index('function updateVu('):html.index('function averageBand(')]
+    script = '''let peakLevel=0;const nodes={};
+      const document={getElementById:id=>nodes[id]||(nodes[id]={style:{},classList:{toggle(name,on){nodes[id].on=on;},add(){},remove(){}}})};
+      const getActiveColors=()=>({on:false,bri:0,c1:'#22d3ee',c2:'#fbbf24'});
+      const setTimeout=()=>{};
+    ''' + code + '''
+      updateVu(.6,true,true);
+      console.log(JSON.stringify({fill:nodes.vuFill.style.background,beat:nodes.beatLamp.on}));
+    '''
+    result = subprocess.run(['node', '-e', script], text=True, capture_output=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    measured = json.loads(result.stdout)
+    assert 'linear-gradient' in measured['fill']
+    assert measured['beat'] is True
+
+
+def test_byte_scaled_browser_audio_has_a_bounded_energy_orb():
+    html = light_gui.render_html()
+    code = html[html.index('function updateVu('):html.index('function averageBand(')]
+    script = '''let peakLevel=0;const nodes={};
+      const document={getElementById:id=>nodes[id]||(nodes[id]={style:{},classList:{toggle(){},add(){},remove(){}}})};
+      const getActiveColors=()=>({on:true,bri:255,c1:'#22d3ee',c2:'#fbbf24'});
+      const setTimeout=()=>{};
+    ''' + code + '''
+      updateVu(100,false);
+      console.log(JSON.stringify(nodes.energyOrb.style.boxShadow));
+    '''
+    result = subprocess.run(['node', '-e', script], text=True, capture_output=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == '0 0 50px #22d3ee'
