@@ -351,15 +351,40 @@ class LightFleet:
                     continue
                 self._channels[channel] = (controller.name, seg_id)
         self._effect_ids: dict[str, set[int]] = {}
+        self._closed = False
 
     @classmethod
     def from_config(cls, *, dry_run: bool = False, timeout: float = 10.0) -> "LightFleet":
         installation, controllers = load_topology()
         clients = {
-            controller.name: lightctl.LightClient(host=controller.host, timeout=timeout, dry_run=dry_run)
+            controller.name: lightctl.LightClient(
+                host=controller.host, timeout=timeout, dry_run=dry_run, use_python_wled=True
+            )
             for controller in controllers
         }
         return cls(clients, controllers, installation=installation)
+
+    def start_observing(self) -> None:
+        """Start configured live observers explicitly, never during construction."""
+        if self._closed:
+            return
+        for client in {id(client): client for client in self.clients.values()}.values():
+            start = getattr(client, "start_observing", None)
+            if callable(start):
+                start()
+
+    def close(self) -> None:
+        """Release controller sockets and sessions; duck-typed clients remain valid."""
+        if self._closed:
+            return
+        self._closed = True
+        for client in {id(client): client for client in self.clients.values()}.values():
+            close = getattr(client, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    logger.warning("Controller client close failed", exc_info=True)
 
     def topology_dict(self) -> dict:
         """JSON-ready dump of the installation and controller topology."""

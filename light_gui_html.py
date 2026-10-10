@@ -1936,10 +1936,14 @@ __PLAYER_SETTINGS_CARD__
       const wasRunning = controllerVizStatus.running;
       const manual = controllerVizStatus.selected_mode === 'manual';
       controllerVizStatus = null;
-      controllerLevelHistory = []; controllerLastSequence = null; controllerLastBeatCount = 0;
-      resetAnalysisDisplay(); setMusicModeUi(false);
-      setText('vizStatus', manual ? 'Manual lighting' : wasRunning ? 'Controller feed unavailable' : 'idle');
-      setText('waveformLabel', 'WAVEFORM + BEAT');
+      controllerLastBeatCount = 0;
+      if (!controllerAudioActive()) {
+        controllerLevelHistory = []; controllerLastSequence = null;
+        resetAnalysisDisplay();
+        setText('vizStatus', manual ? 'Manual lighting' : wasRunning ? 'Controller feed unavailable' : 'idle');
+        setText('waveformLabel', 'WAVEFORM + BEAT');
+      }
+      setMusicModeUi(false);
       setText('musicModeBtn', 'Start Music Director');
       updateMusicIdentity(null);
     }
@@ -1973,7 +1977,9 @@ __PLAYER_SETTINGS_CARD__
       updateMusicIdentity(status.tv || null);
       if (!controllerVizActive()) { expireControllerVisualization(); return; }
       if (audioReactiveRunning) return;
-      const audio = status.audio || {}, renderer = status.renderer || {};
+      const streamed = controllerAudioActive();
+      const audio = streamed ? controllerAudioStatus : (status.audio || {});
+      const renderer = status.renderer || {};
       const unit = value => Math.max(0, Math.min(1, Number(value) || 0));
       const active = audio.active === true;
       const fft = Array.from({length:16}, (_, i) => active ? unit((audio.fft || [])[i]) : 0);
@@ -2003,12 +2009,26 @@ __PLAYER_SETTINGS_CARD__
       setText('songSourceState', 'TV metadata');
       setText('nextMatchState', status.selected_mode === 'auto' ? 'Automatic TV / music' : 'Manual mode selection');
       setText('autoStatus', status.reason || 'Controller audio connected');
-      setText('vizStatus', active ? `Controller mic · ${playing ? 'Music' : 'Steady TV'}` : 'Controller mic unavailable');
+      setText('vizStatus', active ? (streamed ? 'Controller mic · live audio' : `Controller mic · ${playing ? 'Music' : 'Steady TV'}`) : 'Controller mic unavailable');
       setText('waveformLabel', 'CONTROLLER LEVEL HISTORY + BEAT');
     }
 
     function controllerAudioActive() {
       return !!(controllerAudioStatus?.active && performance.now() - controllerAudioAt < 2500);
+    }
+
+    function expireControllerAudioTelemetry() {
+      if (!controllerAudioStatus || controllerAudioActive() || audioReactiveRunning) return;
+      controllerAudioStatus = null;
+      controllerAudioPending = null;
+      if (controllerVizActive()) {
+        renderControllerVisualization(controllerVizStatus);
+        return;
+      }
+      controllerLevelHistory = []; controllerLastSequence = null;
+      resetAnalysisDisplay();
+      setText('vizStatus', 'Controller audio unavailable');
+      setText('micPipelineState', 'Controller mic unavailable');
     }
 
     function renderControllerAudioTelemetry(audio) {
@@ -2046,11 +2066,11 @@ __PLAYER_SETTINGS_CARD__
         if (document.hidden || controllerAudioFrame !== null) return;
         controllerAudioFrame = requestAnimationFrame(() => {
           controllerAudioFrame = null;
-          renderControllerAudioTelemetry(controllerAudioPending);
+          if (controllerAudioPending) renderControllerAudioTelemetry(controllerAudioPending);
         });
       });
       controllerAudioStream.onerror = () => {
-        renderControllerAudioTelemetry({active:false});
+        expireControllerAudioTelemetry();
         // EventSource reconnects automatically; do not queue stale requests.
       };
     }
@@ -3745,7 +3765,8 @@ __PLAYER_SETTINGS_CARD__
       const orb = document.getElementById('energyOrb');
       
       const colors = getActiveColors();
-      const isOn = colors.on && colors.bri > 0;
+      const isOn = level > 0;
+      const normalizedEnergy = level / 100;
 
       if (vuF) {
         vuF.style.width = `${level}%`;
@@ -3771,14 +3792,14 @@ __PLAYER_SETTINGS_CARD__
         }, 90);
       }
       if (orb) {
-        const pulse = Math.max(0.85, Math.min(1.35, 0.9 + energy * 0.6));
+        const pulse = Math.max(0.85, Math.min(1.35, 0.9 + normalizedEnergy * 0.6));
         orb.style.transform = (beat && isOn) ? `scale(${pulse + 0.15})` : `scale(${pulse})`;
         if (!isOn) {
           orb.style.background = `radial-gradient(circle at 40% 30%, #555, #222, #050505)`;
           orb.style.boxShadow = 'none';
         } else {
           orb.style.background = `radial-gradient(circle at 40% 30%, #fff, ${beat ? colors.c2 : colors.c1}, #000)`;
-          orb.style.boxShadow = `0 0 ${20 + energy * 30}px ${beat ? colors.c2 : colors.c1}`;
+          orb.style.boxShadow = `0 0 ${20 + normalizedEnergy * 30}px ${beat ? colors.c2 : colors.c1}`;
         }
         if (beat && isOn) orb.classList.add('beat');
         setTimeout(() => orb && orb.classList.remove('beat'), 140);
@@ -4090,6 +4111,7 @@ __PLAYER_SETTINGS_CARD__
     }
 
     function resetAnalysisDisplay() {
+      peakLevel = 0;
       Object.assign(musicAnalysis, {source:'browser', spectrum:Array(16).fill(0), energy: 0, rms: 0, bass: 0, mid: 0, treble: 0, beatConfidence: 0, beat: false, bpm: 0, drive: 0, waveform: [], beatTimes: []});
       renderAnalyzerFrame(musicAnalysis);
     }
@@ -4948,6 +4970,7 @@ __PLAYER_SETTINGS_CARD__
     refreshNowPlaying();
     setInterval(refreshNowPlaying, 5000);
     setInterval(expireControllerVisualization, 500);
+    setInterval(expireControllerAudioTelemetry, 500);
     startControllerAudioStream();
     loadMusicDirectorState();
 

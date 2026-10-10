@@ -2026,11 +2026,23 @@ class McpServer:
     def __init__(self, client: lightctl.LightClient | fleet.LightFleet) -> None:
         self.client = client
         self.modes = lightctl.ReactiveThread(client)
+        self._cleanup_lock = threading.Lock()
+        self._closed = False
         atexit.register(self._cleanup)
 
     def _cleanup(self) -> None:
-        self.modes.stop()
-        _stop_timers()
+        with self._cleanup_lock:
+            if self._closed:
+                return
+            self._closed = True
+        try:
+            self.modes.stop()
+            _stop_timers()
+        finally:
+            close = getattr(self.client, "close", None)
+            if callable(close):
+                close()
+            atexit.unregister(self._cleanup)
 
     def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
@@ -2086,6 +2098,8 @@ class McpServer:
                     sys.stdout.flush()
         except (EOFError, OSError):
             logger.info("Stdin closed, shutting down.")
+        finally:
+            self._cleanup()
 
 
 def main() -> int:
@@ -2102,7 +2116,9 @@ def main() -> int:
 
     client: lightctl.LightClient | fleet.LightFleet
     if args.host:
-        client = StderrDryRunClient(args.host) if args.dry_run else lightctl.LightClient(args.host)
+        client = StderrDryRunClient(args.host) if args.dry_run else lightctl.LightClient(
+            args.host, use_python_wled=True
+        )
         try:
             seed_effect_catalog(client.host, client.get_effects(), client.get_fxdata())
         except Exception:

@@ -2976,17 +2976,28 @@ class ScheduleExecutor:
 def _build_fleet_client(
     dry_run: bool = False,
 ) -> tuple[Any, lightctl.LightClient | None]:
-    """Build a LightFleet (plus a dedicated primary info client) from the current config."""
+    """Build a fleet and share its primary client's live info observation."""
     import fleet  # lazy: fleet imports lightctl
 
     client = fleet.LightFleet.from_config(dry_run=dry_run)
-    controllers = fleet.load_controllers()
+    controllers = client.controllers
     info_client = (
-        lightctl.LightClient(controllers[0].host, dry_run=dry_run)
+        client.clients[controllers[0].name]
         if controllers
         else None
     )
     return client, info_client
+
+
+def _controller_client_lifecycle(method: str, *clients: Any) -> None:
+    """Apply lifecycle operations once per client, including shared info clients."""
+    for client in {id(client): client for client in clients if client is not None}.values():
+        operation = getattr(client, method, None)
+        if callable(operation):
+            try:
+                operation()
+            except Exception:
+                logger.warning("Controller client %s failed", method, exc_info=True)
 
 
 class ControllerAudioMonitor:
@@ -3084,8 +3095,8 @@ class GuiState:
         self.target = target or "all"
         self.dry_run = dry_run
         self.is_fleet = _is_fleet(client)
-        # /json/info is per-device; in fleet mode a dedicated client on the
-        # primary controller feeds the SSE intel block.
+        # /json/info is per-device; fleet mode shares its primary client so the
+        # SSE intel block does not create another socket or raw polling stream.
         self._info_client = info_client or client
         self.mode1 = lightctl.ReactiveThread(client)
         self.autonomous = BrowserFirstAutonomousMode()
@@ -3119,6 +3130,8 @@ class GuiState:
         self.action_lock = threading.RLock()
         self._reload_lock = threading.Lock()
         self._closed = False
+        if not self.dry_run:
+            _controller_client_lifecycle("start_observing", self.client, self._info_client)
 
     @property
     def is_offline(self) -> bool:
@@ -3279,10 +3292,14 @@ class GuiState:
         if self._closed:
             raise RuntimeError("GUI state is shutting down.")
         with self._reload_lock:
+            if self._closed:
+                raise RuntimeError("GUI state is shutting down.")
             if not _ai_execution_lock.acquire(blocking=False):
                 raise ValueError(
                     "Cannot reload controllers while an AI lighting request is running."
                 )
+            new_client = info_client = None
+            swapped = False
             try:
                 if self._mood_samples_inflight:
                     raise ValueError(
@@ -3291,6 +3308,7 @@ class GuiState:
                 new_client, info_client = _build_fleet_client(
                     dry_run=getattr(self, "dry_run", False)
                 )
+                old_client, old_info_client = self.client, self._info_client
                 # The effect catalog belongs to the old fleet; drop it so the
                 # manual pickers pick up the replacement controllers.
                 invalidate_effect_catalog()
@@ -3356,6 +3374,10 @@ class GuiState:
                     self._offline.clear()
                     self._offline_checked_at.clear()
                     self._cache_fetched_at.clear()
+                    swapped = True
+                _controller_client_lifecycle("close", old_client, old_info_client)
+                if not self.dry_run:
+                    _controller_client_lifecycle("start_observing", new_client, self._info_client)
                 new_schedule.start()
                 start_configured_smart_director(self)
                 if director_was_running or music_director_config().get("enabled"):
@@ -3367,10 +3389,18 @@ class GuiState:
                     else [str(getattr(new_client, "host", "default"))]
                 )
             finally:
+                if not swapped and new_client is not None:
+                    _controller_client_lifecycle("close", new_client, info_client)
                 _ai_execution_lock.release()
 
     def shutdown(self) -> None:
         """Stop background workers and release executors without hanging shutdown."""
+        # A reload may already be constructing replacement clients. Wait until
+        # their ownership has transferred so shutdown closes the current fleet.
+        with self._reload_lock:
+            self._shutdown_workers()
+
+    def _shutdown_workers(self) -> None:
         if self._closed:
             return
         self._closed = True
@@ -3394,6 +3424,7 @@ class GuiState:
             import music_director
 
             music_director.stop_director()
+        _controller_client_lifecycle("close", self.client, self._info_client)
 
 
 def smart_suggestions(
@@ -5608,7 +5639,7 @@ def main() -> int:
 
     info_client = None
     if args.host:
-        client: Any = lightctl.LightClient(args.host, dry_run=args.dry_run)
+        client: Any = lightctl.LightClient(args.host, dry_run=args.dry_run, use_python_wled=True)
     else:
         client, info_client = _build_fleet_client(dry_run=args.dry_run)
         logger.info(

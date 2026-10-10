@@ -14,6 +14,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence, TypedDict
@@ -1878,6 +1879,10 @@ class LightClient:
     dry_run: bool = False
     retries: int = 3
     min_request_interval: float = 0.1
+    use_python_wled: bool = False
+    _wled_transport: Any = field(default=None, init=False, repr=False)
+    _wled_observer: Any = field(default=None, init=False, repr=False)
+    _closed: bool = field(default=False, init=False, repr=False)
     _last_req_time: float = field(default=0.0, init=False, repr=False)
     _http_lock: threading.RLock = field(
         default_factory=threading.RLock, init=False, repr=False
@@ -1961,6 +1966,8 @@ class LightClient:
         retryable_statuses = {408, 425, 429, 500, 502, 503, 504}
         last_exc: BaseException | None = None
         with self._http_lock:
+            if self._closed:
+                raise RuntimeError("Light client is closed")
             for attempt in range(self.retries):
                 self._wait_for_rate_limit()
                 try:
@@ -1999,12 +2006,65 @@ class LightClient:
         ) from last_exc
 
     def _get_json_url(self, url: str) -> dict[str, Any] | list[Any]:
+        if self._closed:
+            raise RuntimeError("Light client is closed")
+        if self._wled_observer is not None:
+            snapshot = self._wled_observer.cached_json()
+            if isinstance(snapshot, dict):
+                if url == self.json_url:
+                    return snapshot
+                key = "state" if url == self.state_url else "info" if url == self.info_url else None
+                if key is not None and isinstance(snapshot.get(key), dict):
+                    return snapshot[key]
+        if self.use_python_wled:
+            from wled_transport import WledHttpTransport
+
+            if WledHttpTransport.supports_host(self.host) and url.startswith(f"{self.host}/"):
+                with self._http_lock:
+                    if self._closed:
+                        raise RuntimeError("Light client is closed")
+                    self._wait_for_rate_limit()
+                    if self._wled_transport is None:
+                        self._wled_transport = WledHttpTransport(self.host, self.timeout)
+                        self._wled_transport_finalizer = weakref.finalize(self, self._wled_transport.close)
+                    try:
+                        return self._wled_transport.get_json(url[len(self.host):])
+                    finally:
+                        self._last_req_time = time.monotonic()
         request = urllib.request.Request(
             url,
             headers={"Accept": "application/json", "User-Agent": "lightsctl/2"},
             method="GET",
         )
         return self._decode_json_bytes(self._request_bytes(request), url)
+
+    def start_observing(self) -> None:
+        """Opt in to read-only push observations for a persistent controller."""
+        from wled_transport import WledHttpTransport
+
+        if not self.use_python_wled or self.dry_run or not WledHttpTransport.supports_host(self.host):
+            return
+        with self._http_lock:
+            if self._closed:
+                raise RuntimeError("Light client is closed")
+            if self._wled_observer is None:
+                from wled_observer import PythonWLEDObserver
+
+                self._wled_observer = PythonWLEDObserver(self.host, self.timeout)
+                self._wled_observer_finalizer = weakref.finalize(self, self._wled_observer.close)
+                self._wled_observer.start()
+
+    def close(self) -> None:
+        """Release optional async sessions and observation worker threads."""
+        with self._http_lock:
+            self._closed = True
+            for name in ("_wled_observer", "_wled_transport"):
+                resource = getattr(self, name, None)
+                if resource is not None:
+                    resource.close()
+                finalizer = getattr(self, f"{name}_finalizer", None)
+                if finalizer is not None:
+                    finalizer.detach()
 
     def get_json(self) -> dict[str, Any]:
         data = self._get_json_url(self.json_url)
@@ -2156,6 +2216,8 @@ class LightClient:
         return data
 
     def post_state(self, payload: WledPayload) -> dict[str, Any] | None:
+        if self._closed:
+            raise RuntimeError("Light client is closed")
         validate_wled_payload(payload)
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         if self.dry_run:
@@ -2171,7 +2233,13 @@ class LightClient:
             },
             method="POST",
         )
-        response_body = self._request_bytes(request)
+        if self._wled_observer is not None:
+            self._wled_observer.invalidate()
+        try:
+            response_body = self._request_bytes(request)
+        finally:
+            if self._wled_observer is not None:
+                self._wled_observer.invalidate()
         if not response_body.strip():
             return None
         data = self._decode_json_bytes(response_body, self.state_url)
@@ -2761,6 +2829,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     fleet_mod: Any = None
     fleet_obj: Any = None
+    client: LightClient | _FleetRouter | None = None
     try:
         segment_capable_commands = {
             "on",
@@ -2783,8 +2852,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise ValueError(
                     "--target is only valid in fleet mode; omit --host or leave --target=all."
                 )
-            client: LightClient | _FleetRouter = LightClient(
-                args.host, dry_run=args.dry_run
+            client = LightClient(
+                args.host, dry_run=args.dry_run, use_python_wled=True
             )
         else:
             import fleet as fleet_mod  # lazy: fleet.py imports lightsctl/lightctl
@@ -3081,6 +3150,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (RuntimeError, ValueError, OSError) as exc:
         logger.error("%s", exc)
         return 1
+    finally:
+        if fleet_obj is not None:
+            fleet_obj.close()
+        elif client is not None:
+            client.close()
     return 0
 
 
