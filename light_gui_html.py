@@ -68,7 +68,11 @@ HTML_TEMPLATE = """<!doctype html>
       position: relative;
       z-index: 1;
     }
-    /* Logo styles are inline for the WLED logo replacement */
+    .music-identity { text-align:center; margin:12px 0 22px; min-height:58px; min-width:0; max-width:100%; overflow:hidden; }
+    .music-identity h1, .music-identity p, .music-identity-source { min-width:0; max-width:100%; overflow-wrap:anywhere; word-break:break-word; }
+    .music-identity h1 { margin:0; font-size:clamp(24px,4vw,42px); line-height:1.08; }
+    .music-identity p { margin:5px 0 0; color:var(--text-secondary); }
+    .music-identity-source { display:inline-block; margin-top:6px; padding:3px 9px; border:1px solid var(--border); border-radius:999px; color:var(--accent-2); font-size:11px; }
     h2 { font-size: 16px; margin: 0 0 14px; font-weight: 800; display: flex; align-items: center; gap: 8px; letter-spacing: .01em; }
     .grid {
       display: grid;
@@ -177,6 +181,57 @@ HTML_TEMPLATE = """<!doctype html>
       display: block;
       animation: tab-fade-in 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
     }
+    .target-bar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin: 0 0 14px;
+      padding: 10px 14px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,.06);
+      border-radius: var(--radius-md);
+      width: fit-content;
+      font-size: 13px;
+      font-weight: 800;
+      color: var(--text-secondary);
+    }
+    .target-bar select { min-width: 190px; }
+    .target-bar .target-hint { font-size: 11px; color: var(--muted); font-weight: 650; }
+    .target-bar .firetv-bar { display: flex; gap: 8px; align-items: center; margin-left: 10px; padding-left: 12px; border-left: 1px solid var(--border); }
+    .target-bar .firetv-toggle { display: flex; gap: 5px; align-items: center; cursor: pointer; white-space: nowrap; }
+    .target-bar .firetv-toggle input { cursor: pointer; }
+    .target-bar .firetv-open { padding: 3px 9px; font-size: 13px; line-height: 1.4; }
+    .target-bar .firetv-media { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .target-bar .firetv-media button { padding: 3px 8px; font-size: 12px; line-height: 1.3; min-width: 34px; }
+    .tv-observation { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius-md); font-size: 13px; }
+    .tv-observation label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+    .tv-observation button { padding: 5px 10px; }
+    .tv-observation .observation-status { flex: 1 1 280px; min-width: 0; overflow-wrap: anywhere; color: var(--text-secondary); }
+    .tv-observation small { flex-basis: 100%; color: var(--muted); }
+    .smart-director-card { margin-bottom: 18px; padding: 16px; border: 1px solid rgba(6,182,212,.32); border-radius: var(--radius-md); background: linear-gradient(135deg, rgba(6,182,212,.10), rgba(139,92,246,.08)); }
+    .smart-director-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .smart-director-header h2 { margin: 0 0 4px; font-size: 17px; }
+    .smart-director-header p { margin: 0; color: var(--text-secondary); font-size: 12px; }
+    .smart-director-toggle { display: flex; align-items: center; gap: 7px; font-weight: 800; white-space: nowrap; }
+    .smart-director-grid { display: grid; grid-template-columns: repeat(2, minmax(150px, 1fr)); gap: 10px; }
+    .smart-director-grid label, .smart-brightness-grid label { margin: 0; }
+    .smart-director-grid select { width: 100%; margin-top: 5px; }
+    .smart-brightness-grid { display: grid; grid-template-columns: repeat(4, minmax(110px, 1fr)); gap: 10px; margin-top: 12px; }
+    .smart-brightness-label { display: block; white-space: nowrap; line-height: 1.25; }
+    .smart-brightness-grid input, .smart-brightness-grid select { width: 100%; }
+    .smart-brightness-grid select { margin-top: 5px; }
+    .live-show-help { color: var(--text-secondary); font-size: 12px; margin: 12px 0 0; }
+    .smart-director-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: 14px; }
+    .smart-director-status { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+    .smart-director-status div { min-width: 0; padding: 9px 10px; border-radius: var(--radius-sm); background: rgba(4,8,20,.42); }
+    .smart-director-status span { display: block; color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+    .smart-director-status strong { display: block; margin-top: 3px; color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; }
+    @media (max-width: 640px) {
+      .target-bar { max-width: 100%; flex-wrap: wrap; }
+      .target-bar .firetv-bar { margin-left: 0; padding-left: 0; border-left: 0; }
+      .smart-director-header { flex-direction: column; }
+      .smart-director-grid, .smart-brightness-grid, .smart-director-status { grid-template-columns: 1fr; }
+    }
     /* Custom scrollbars for a premium feel */
     ::-webkit-scrollbar {
       width: 8px;
@@ -257,6 +312,21 @@ HTML_TEMPLATE = """<!doctype html>
     input[type="number"] { width: 86px; }
     select { min-width: 160px; }
     .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    .card-note { margin: 0 0 12px; font-size: 12px; line-height: 1.45; color: var(--text-secondary); }
+    .status-output { margin-top: 10px; min-height: 18px; font-size: 12px; line-height: 1.45; color: var(--text-secondary); }
+    .memory-output {
+      margin-top: 10px;
+      min-height: 96px;
+      padding: 12px 14px;
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,.10);
+      background: rgba(4,8,20,.52);
+      color: var(--text-secondary);
+      white-space: pre-wrap;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .score-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
     .swatch { width: 44px; height: 44px; border-radius: 16px; border: 1px solid rgba(255,255,255,.28); padding: 0; cursor: pointer; transition: transform .15s ease; box-shadow: 0 0 26px currentColor; }
     .swatch:hover { transform: scale(1.08) rotate(-2deg); }
 
@@ -276,6 +346,126 @@ HTML_TEMPLATE = """<!doctype html>
       border: 1px solid var(--border);
       background: linear-gradient(145deg, rgba(18,22,42,.95), rgba(8,10,24,.92));
       box-shadow: 0 30px 90px rgba(0,0,0,.6);
+    }
+    .player-stage {
+      margin: 0 0 14px;
+    }
+    .player-stage-main {
+      display: grid;
+      grid-template-columns: 148px minmax(0, 1fr) minmax(180px, 220px);
+      gap: 18px;
+      align-items: stretch;
+      padding: 16px 16px 10px;
+    }
+    .player-art {
+      width: 148px;
+      height: 148px;
+      border-radius: 18px;
+      overflow: hidden;
+      background: radial-gradient(circle at 30% 20%, rgba(139,92,246,.45), #0b1020 62%);
+      border: 1px solid rgba(255,255,255,.14);
+      box-shadow: 0 18px 40px rgba(0,0,0,.45);
+      position: relative;
+    }
+    .player-stage .album-art {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      display: none;
+      border: 0;
+      border-radius: 0;
+    }
+    .player-stage .album-art.visible { display: block; }
+    .player-art-fallback {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 42px; color: rgba(247,251,255,.72);
+    }
+    .player-art.has-art .player-art-fallback { display: none; }
+    .player-now { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+    .player-kicker { font-size: 11px; font-weight: 800; color: var(--text-secondary); }
+    .player-title {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: -.02em;
+      line-height: 1.15;
+      color: #fff;
+    }
+    .player-artist { margin: 0; font-size: 14px; color: var(--text-secondary); min-height: 1.2em; }
+    .player-transport { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+    .player-transport select { min-width: 150px; }
+    .player-play { min-width: 52px; }
+    .player-auth {
+      padding: 12px;
+      border-radius: 16px;
+      background: rgba(4,8,20,.54);
+      border: 1px solid rgba(255,255,255,.10);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      justify-content: center;
+    }
+    .player-auth[hidden], #applePairing[hidden], #appleSignedIn[hidden] { display: none; }
+    .apple-qr { width: 180px; height: 180px; margin: 0 auto; background: #fff; border-radius: 12px; padding: 8px; }
+    .apple-qr img { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+    .player-code { margin: 0; text-align: center; font-size: 12px; color: var(--text-secondary); }
+    .player-code strong { color: #fff; letter-spacing: .12em; }
+    .player-hint { margin: 0; text-align: center; font-size: 11px; color: var(--muted); line-height: 1.35; }
+    .player-auth a { color: #67e8f9; font-size: 12px; text-align: center; }
+    .player-deck {
+      display: grid;
+      grid-template-columns: minmax(280px, 1.1fr) minmax(0, .9fr);
+      gap: 14px;
+      margin: 0 0 14px;
+    }
+    .player-library {
+      padding: 14px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      background: linear-gradient(145deg, rgba(18,22,42,.95), rgba(8,10,24,.92));
+      min-height: 220px;
+    }
+    .player-library h3 {
+      margin: 0 0 8px;
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--text-secondary);
+    }
+    .library-search { display: flex; gap: 8px; margin-bottom: 12px; }
+    .library-search input { flex: 1; min-width: 0; }
+    .library-cols { display: grid; grid-template-columns: 1fr 1.2fr; gap: 12px; }
+    .library-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; }
+    .library-row {
+      display: grid;
+      grid-template-columns: 36px minmax(0, 1fr);
+      gap: 8px;
+      align-items: center;
+      padding: 6px 8px;
+      border-radius: 10px;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+      text-align: left;
+      color: inherit;
+      width: 100%;
+    }
+    .library-row:hover { background: rgba(255,255,255,.08); }
+    .library-row img, .library-thumb {
+      width: 36px; height: 36px; border-radius: 8px; object-fit: cover; background: #12182c;
+    }
+    .library-row b { display: block; font-size: 13px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .library-row span { display: block; font-size: 11px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .library-empty { font-size: 12px; color: var(--muted); padding: 8px; }
+    .player-follow {
+      padding: 14px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      background: linear-gradient(135deg, rgba(139,92,246,.22), rgba(6,182,212,.10));
+    }
+    @media (max-width: 900px) {
+      .player-stage-main, .player-deck, .library-cols { grid-template-columns: 1fr; }
+      .player-art { width: 120px; height: 120px; }
     }
     .visualizer-header {
       display: flex; align-items: center; justify-content: space-between;
@@ -312,8 +502,8 @@ HTML_TEMPLATE = """<!doctype html>
       cursor: pointer;
     }
     .responses-scroll {
-      max-height: 110px;
-      overflow-y: auto;
+      height: 40px;
+      overflow: hidden;
       padding: 6px 10px;
       font-size: 11px;
       line-height: 1.35;
@@ -321,12 +511,18 @@ HTML_TEMPLATE = """<!doctype html>
       background: rgba(0,0,0,.15);
     }
     .responses-scroll .resp {
-      margin-bottom: 4px;
-      white-space: pre-wrap;
-      word-break: break-word;
+      margin: 0;
+      white-space: nowrap;
     }
     .responses-scroll .ai { color: #a5f3fc; }
     .responses-scroll .user { color: #c4b5fd; opacity: 0.9; }
+    .responses-scroll .decision { color:#fde68a; }
+    .responses-scroll .error { color:#fda4af; }
+    .responses-scroll .resp-meta { display:block; color:var(--muted); font-size:9px; margin-bottom:2px; }
+    .band-gains { display:grid; grid-template-columns:repeat(8,minmax(44px,1fr)); gap:8px; margin-top:10px; }
+    .band-gains label { font-size:10px; text-align:center; }
+    .band-gains input { width:100%; }
+    @media (max-width:700px) { .band-gains { grid-template-columns:repeat(4,minmax(44px,1fr)); } }
 
     /* Marquee / right-to-left scrolling for model plan responses */
     .marquee-wrapper {
@@ -491,144 +687,88 @@ HTML_TEMPLATE = """<!doctype html>
     .btn-vision:hover {
       box-shadow: 0 0 15px rgba(0, 240, 255, 0.5);
     }
+
+    /* Settings tab */
+    .settings-msg { min-height: 18px; font-size: 12px; margin-top: 8px; font-weight: 650; }
+    .settings-msg.ok { color: var(--success); }
+    .settings-msg.err { color: var(--danger); }
+    .settings-msg.info { color: var(--text-secondary); }
+    .settings-badge { padding: 6px 12px; border-radius: 999px; font-size: 12px; font-weight: 800; border: 1px solid rgba(251,70,102,.45); background: rgba(251,70,102,.12); color: #fda4af; white-space: nowrap; }
+    .settings-badge.set { border-color: rgba(52,211,153,.45); background: rgba(16,185,129,.14); color: #6ee7b7; }
+    .agent-role { margin: 10px 0; padding: 10px; border-radius: var(--radius-sm); background: rgba(4,8,20,.46); border: 1px solid rgba(255,255,255,.10); }
+    .agent-role h3 { margin: 0 0 8px; font-size: 13px; font-weight: 800; color: var(--text-secondary); }
+    .agent-role .row { gap: 8px; }
+    .agent-role input[type="text"] { width: 100%; }
+    .controller-row { display: grid; grid-template-columns: auto minmax(90px,.8fr) minmax(120px,1.2fr) minmax(120px,1.2fr) minmax(0,1fr) auto; gap: 8px; align-items: center; margin: 8px 0; padding: 8px; border-radius: var(--radius-sm); background: rgba(4,8,20,.46); border: 1px solid rgba(255,255,255,.10); }
+    .controller-row input { width: 100%; padding: 7px 9px; font-size: 12px; }
+    .ctl-info { font-size: 11px; color: var(--text-secondary); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ctl-remove { padding: 6px 10px; font-size: 11px; }
+    .dot { width: 12px; height: 12px; border-radius: 50%; background: #64748b; box-shadow: 0 0 6px rgba(100,116,139,.6); flex: 0 0 auto; }
+    .dot.ok { background: var(--success); box-shadow: 0 0 8px rgba(52,211,153,.8); }
+    .dot.fail { background: var(--danger); box-shadow: 0 0 8px rgba(251,70,102,.8); }
+    .sys-default { max-height: 160px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: rgba(4,8,20,.58); border: 1px solid rgba(255,255,255,.10); border-radius: var(--radius-sm); padding: 10px; color: var(--text-secondary); }
+    @media (max-width: 640px) {
+      .controller-row { grid-template-columns: auto 1fr auto; }
+      .controller-row .ctl-host, .controller-row .ctl-segments, .controller-row .ctl-info { grid-column: 2 / -1; }
+    }
   </style>
 </head>
 <body>
   <main>
-    <div class="wled-logo" style="text-align: center; margin: 12px 0 28px;">
-      <img src="/wled-logo.png" alt="WLED" style="max-height: 55px; width: auto; filter: drop-shadow(0 4px 12px rgba(0,0,0,0.5)); transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);" class="logo-img" onmouseover="this.style.transform='scale(1.06)'" onmouseout="this.style.transform='scale(1)'">
+    <div class="music-identity" aria-live="polite">
+      <h1 id="musicIdentityTitle">Nothing playing</h1>
+      <p id="musicIdentityArtist"></p>
+      <span class="music-identity-source" id="musicIdentitySource">No active source</span>
     </div>
 
-    <!-- VISUALIZERS AT THE TOP: Prominent, beautiful, always-visible live preview + audio reactive viz -->
-    <div class="visualizer-hero" id="visualizerHero">
-      <div class="visualizer-header">
-        <div><span class="title">🎨 LIVE VISUALIZERS</span> — LED Preview + Audio Reaction</div>
-        <div style="display:flex;gap:8px;align-items:center;">
-          <span id="vizStatus" style="font-size:11px;opacity:.7;">idle</span>
-          <button class="secondary" style="padding:4px 10px;font-size:12px;" onclick="startMusicMode()" title="Start browser mic beat-reactive + music matching">▶ Start Reactive</button>
-          <button class="secondary" style="padding:4px 10px;font-size:12px;background:rgba(255,100,100,.2);" onclick="stopMusicMode()" title="Stop">⏹ Stop</button>
-        </div>
-      </div>
+__PLAYER_STAGE__
 
-      <!-- LED Strip Preview (creative simulation of current effect + colors) -->
-      <div class="full-bleed-preview" style="width:100%; margin:0; margin-left:0; margin-right:0; border:none; box-shadow:none; padding:3px 0 1px; background:transparent;">
-        <div class="strip-wrapper">
-          <div class="led-strip off" id="ledStrip" style="height: clamp(24px, 3.5vw, 45px);"></div>
-        </div>
-        <div class="preview-meta" style="margin-top:1px;">
-          <div class="light-info" id="lightInfo">Waiting for state...</div>
-        </div>
-      </div>
+__PLAYER_DECK__
 
-      <!-- Audio Visualizers row: Waveform + Spectrum + Energy/Beat orb -->
-      <div class="viz-row">
-        <div class="viz-panel">
-          <div class="viz-label">WAVEFORM + BEAT</div>
-          <canvas class="waveform-canvas" id="waveformCanvas" width="680" height="50" style="height:50px;"></canvas>
-          <div style="display:flex; gap:8px; align-items:center; margin-top:4px;" id="vuMeter">
-            <div class="meter" style="flex:1;height:14px;">
-              <div class="meter-fill" id="vuFill"></div>
-              <div class="meter-peak" id="vuPeak"></div>
-            </div>
-            <div class="beat-lamp" id="beatLamp" title="Beat detected"></div>
-          </div>
-          <!-- legacy ids for tests / compatibility (visuals are in the spectrum + readouts above) -->
-          <div style="display:none">
-            <div class="band-fill" id="bassFill"></div>
-            <div class="band-fill" id="midFill"></div>
-            <div class="band-fill" id="trebleFill"></div>
-            <div class="confidence-fill" id="beatConfidenceFill"></div>
-            <span id="beatMixReadout"></span>
-            <span id="bpmReadout"></span>
-          </div>
-        </div>
-
-        <div class="viz-panel">
-          <div class="viz-label">FREQUENCY SPECTRUM (click bars to boost lights creatively)</div>
-          <canvas class="spectrum-canvas" id="spectrumCanvas" width="720" height="40"></canvas>
-
-          <div style="display:grid; grid-template-columns: auto 1fr; gap:10px; align-items:center; margin-top:6px;">
-            <!-- Energy orb (pulses on beat, colored by current light) -->
-            <div>
-              <div class="viz-label" style="margin-bottom:4px;">ENERGY / BEAT</div>
-              <div class="energy-orb" id="energyOrb" title="Click to trigger a creative energy pulse">
-                <div class="inner"></div>
-              </div>
-            </div>
-
-            <div>
-              <div class="analysis-readouts" style="grid-template-columns: repeat(4,1fr); font-size:12px;">
-                <div class="readout" style="padding:6px 8px;">
-                  <span class="label">BASS</span>
-                  <span class="value" id="bassReadout" style="font-size:13px;">0%</span>
-                </div>
-                <div class="readout" style="padding:6px 8px;">
-                  <span class="label">MID</span>
-                  <span class="value" id="midReadout" style="font-size:13px;">0%</span>
-                </div>
-                <div class="readout" style="padding:6px 8px;">
-                  <span class="label">TREBLE</span>
-                  <span class="value" id="trebleReadout" style="font-size:13px;">0%</span>
-                </div>
-                <div class="readout" style="padding:6px 8px;">
-                  <span class="label">DRIVE</span>
-                  <span class="value" id="driveReadout" style="font-size:13px;">0%</span>
-                </div>
-              </div>
-              <div style="margin-top:6px; display:flex; gap:6px; flex-wrap:wrap;">
-                <button onclick="creativeSpectrumMap()" style="font-size:11px;padding:5px 10px;">Spectrum → Colors</button>
-                <button onclick="creativeEnergyPulse()" style="font-size:11px;padding:5px 10px;">Energy Pulse</button>
-                <button onclick="creativeEvolve()" style="font-size:11px;padding:5px 10px;">Evolve Scene</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
+    <div class="target-bar">
+      <span>🎯 Target</span>
+      <select id="targetSelect" onchange="setTarget(this.value)" title="Which controller or channel actions apply to">
+        <option value="all">All 4 strips</option>
+      </select>
+      <span class="target-hint" id="targetHint">applies to every action below</span>
+      <span class="firetv-bar">
+        <label class="firetv-toggle" title="Let the TV mirror the wall visuals">
+          <input type="checkbox" id="firetvEnabled" onchange="toggleFiretv(this.checked)"> 📺 TV control
+        </label>
+        <button class="secondary firetv-open" onclick="openFiretvVisuals()" title="Open the ambient wall visuals on the TV">↗</button>
+        <span class="firetv-media" role="group" aria-label="TV media controls">
+          <button class="secondary" onclick="firetvMediaAction('previous')" title="Previous track" aria-label="Previous track">⏮</button>
+          <button class="secondary" onclick="firetvMediaAction('play_pause')" title="Play or pause" aria-label="Play or pause">⏯</button>
+          <button class="secondary" onclick="firetvMediaAction('next')" title="Next track" aria-label="Next track">⏭</button>
+          <button class="secondary" onclick="firetvMediaAction('volume_down')" title="Volume down" aria-label="Volume down">🔉</button>
+          <button class="secondary" onclick="firetvMediaAction('mute')" title="Mute" aria-label="Mute">🔇</button>
+          <button class="secondary" onclick="firetvMediaAction('volume_up')" title="Volume up" aria-label="Volume up">🔊</button>
+        </span>
+        <span class="target-hint" id="firetvMsg"></span>
+      </span>
+      <span class="firetv-bar">
+        <label class="firetv-toggle" title="Identify the current song and let AI direct the lights">
+          <input type="checkbox" id="musicDirectorEnabled" onchange="toggleMusicDirector(this.checked)"> 🎵 Music Director
+        </label>
+        <span class="target-hint" id="musicDirectorTrack"></span>
+        <span class="target-hint" id="musicDirectorMsg"></span>
+      </span>
     </div>
 
-    <!-- Scrollable window for model responses between visualizers and Music Mode -->
-    <div class="model-responses-pane" id="modelResponsesPane">
-      <div class="responses-header">
-        <span>Model Responses</span>
-        <button onclick="clearModelResponses()" title="Clear">clear</button>
-      </div>
-      <div id="modelResponses" class="responses-scroll" aria-live="polite"></div>
+    <div class="tv-observation" role="region" aria-label="Read-only TV observation">
+      <label><input type="checkbox" id="tvObservationEnabled" onchange="toggleTvObservation(this.checked)"> Observe TV (read-only)</label>
+      <button class="secondary" id="tvObservationRefresh" onclick="refreshTvObservation()">Refresh TV status</button>
+      <span class="observation-status" id="tvObservationStatus" role="status">Loading observation setting...</span>
+      <small>Read-only TV context. Refresh to read current TV activity; this does not control lighting.</small>
     </div>
 
-    <!-- Music / Beat Mode summary card (kept but smaller) -->
-    <div class="card auto-card">
-      <div class="mode-header">
-        <div>
-          <h2>Music Mode</h2>
-          <p class="mode-subtitle">Browser-mic beat detection + now-playing AI mood matching. Visualizers above react live.</p>
-        </div>
-        <span class="mode-pill" id="musicModeState">Idle</span>
-      </div>
-      <div class="mode-actions">
-        <button class="big-button" id="musicModeBtn" onclick="startMusicMode()">Start Full Music Mode</button>
-        <button class="secondary stop-button" id="musicModeStopBtn" onclick="stopMusicMode()">Stop</button>
-      </div>
-      <div class="mode-summary">
-        <div class="mode-summary-item">
-          <span>Mic Pipeline</span>
-          <strong id="micPipelineState">Idle</strong>
-        </div>
-        <div class="mode-summary-item">
-          <span>Song Source</span>
-          <strong id="songSourceState">Media metadata</strong>
-        </div>
-        <div class="mode-summary-item">
-          <span>Next Match</span>
-          <strong id="nextMatchState">Manual</strong>
-        </div>
-      </div>
-      <div class="auto-status" id="autoStatus"></div>
-      <div class="smart-grid" id="smartSuggestions" aria-live="polite"></div>
-    </div>
+
 
     <div class="tab-bar">
+      <button class="tab-btn" onclick="openCalibration()">Calibrate LEDs</button>
       <button class="tab-btn active" data-tab="live" onclick="switchTab('live')">Live View</button>
       <button class="tab-btn" data-tab="manual" onclick="switchTab('manual')">Manual Controls</button>
+      <button class="tab-btn" data-tab="settings" onclick="switchTab('settings')">⚙ Settings</button>
     </div>
 
     <div id="tab-live" class="tab-content active">
@@ -642,7 +782,7 @@ HTML_TEMPLATE = """<!doctype html>
             <div class="chat-container">
               <div id="chatHistory" class="chat-history"></div>
               <div class="chat-input-row">
-                <input id="aiInput" type="text" placeholder="Try: slow rainbow chase at medium brightness" onkeydown="if(event.key==='Enter')askAI()">
+                <input id="aiInput" type="text" placeholder="Try: make the live music show faster with vivid colors" onkeydown="if(event.key==='Enter')askAI()">
                 <button onclick="askAI()" title="Send message to AI">➤</button>
               </div>
             </div>
@@ -677,23 +817,9 @@ HTML_TEMPLATE = """<!doctype html>
               <button class="danger" onclick="restartController()" title="Reboot the WLED controller — device will be offline briefly">Restart Device</button>
             </div>
             <div style="margin-top:10px;font-size:12px;color:var(--text-secondary);">
-              Visualizers &amp; audio analysis are now at the top (hero section). State updates live via SSE.
+              Player, visualizers, and audio analysis sit at the top. State updates live via SSE.
             </div>
-          </div>
-          <div class="card">
-            <h2>Now Playing</h2>
-            <div class="music-toolbar">
-              <button class="secondary" onclick="refreshNowPlaying()" title="Refresh media-player metadata">Refresh Song</button>
-              <button class="secondary" onclick="matchLightsFromNowPlaying()" title="Apply a song-aware light mood once">Apply Mood</button>
-            </div>
-            <div class="music-display">
-              <p class="music-title" id="musicTitle">No song detected yet.</p>
-              <p class="music-artist" id="musicArtist"></p>
-              <span class="music-genre" id="musicGenre" style="display:none;"></span>
-              <img class="album-art" id="albumArt" alt="Album art">
-            </div>
-            <span class="now-playing" id="nowPlaying"></span>
-          </div>
+          </div>__NOW_PLAYING_CARD__
         </div>
       </div>
     </div>
@@ -754,6 +880,47 @@ HTML_TEMPLATE = """<!doctype html>
       </label>
     </div>
     <div class="card">
+      <h2>🧱 Wall (4 columns)</h2>
+      <div class="row">
+        <label>Effect
+          <select id="wallFx">
+            __SAFE_EFFECT_OPTIONS__
+          </select>
+        </label>
+        <label>Palette <input id="wallPal" type="number" min="0" max="70" value="6"></label>
+        <label>Speed <input id="wallSpeed" type="number" min="0" max="255" value="140"></label>
+      </div>
+      <div class="row">
+        <button onclick="wallMode('wall_span')" title="Same effect spanned across all four columns">Span</button>
+        <button onclick="wallMode('wall_mirror')" title="Left half mirrors the right half">Mirror</button>
+        <button onclick="wallMode('wall_chase')" title="Effect chase staggered along the wall">Chase</button>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <label>Left FX
+          <select id="wallFxL">
+            __SAFE_EFFECT_OPTIONS__
+          </select>
+        </label>
+        <label>Right FX
+          <select id="wallFxR">
+            __SAFE_EFFECT_OPTIONS__
+          </select>
+        </label>
+        <button onclick="wallVersus()" title="Left half vs right half with different effects">Left vs Right</button>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <label>Channel
+          <select id="wallChannel">
+            <option value="far-left">far-left</option>
+            <option value="middle-left">middle-left</option>
+            <option value="middle-right">middle-right</option>
+            <option value="far-right">far-right</option>
+          </select>
+        </label>
+        <button class="secondary" onclick="applyWallChannel()" title="Apply the effect/palette above to one channel only">Set Channel</button>
+      </div>
+    </div>
+    <div class="card">
       <h2>🎬 Scenes</h2>
       <div class="row">
         <button onclick="send('scene', {name: 'warm'})" title="Apply warm scene">Warm</button>
@@ -768,6 +935,160 @@ HTML_TEMPLATE = """<!doctype html>
         <button class="secondary" onclick="send('save_scene', {name: saveSceneName.value})" title="Save current state as named scene">Save Scene</button>
         <button class="danger" onclick="send('delete_scene', {name: saveSceneName.value})" title="Delete named scene">Delete</button>
       </div>
+    </div>
+    <div class="card">
+      <h2>🧬 Dynamic AI Scenes</h2>
+      <p class="card-note">Generated mode is not a stock WLED effect. It paints the wall directly with exact-length per-strip frames and knows the top/bottom strip layout.</p>
+      <label>Mood
+        <input id="dynMood" type="text" placeholder="ocean calm, smoky neon, soft sunrise" style="width:100%;">
+      </label>
+      <div class="row">
+        <label style="flex:1; margin:0;">Energy
+          <select id="dynEnergy" style="width:100%;">
+            <option value="">Auto</option>
+            <option value="subtle">Subtle</option>
+            <option value="low">Low</option>
+            <option value="medium" selected>Medium</option>
+            <option value="high">High</option>
+            <option value="party">Party</option>
+          </select>
+        </label>
+        <label style="flex:1; margin:0;">Motion
+          <select id="dynMotion" style="width:100%;">
+            <option value="">Auto</option>
+            <option value="still">Still</option>
+            <option value="drift">Drift</option>
+            <option value="flow" selected>Flow</option>
+            <option value="rise">Rise</option>
+            <option value="chase">Chase</option>
+            <option value="pulse">Pulse</option>
+            <option value="shimmer">Shimmer</option>
+          </select>
+        </label>
+      </div>
+      <label>Strategy
+        <input id="dynStrategy" type="text" placeholder="vertical_rise, center_bloom, left_to_right" style="width:100%;">
+      </label>
+      <div class="row">
+        <label style="flex:1; margin:0;">Engine
+          <select id="dynEngine" style="width:100%;">
+            <option value="generated" selected>generated</option>
+            <option value="effect">effect</option>
+          </select>
+        </label>
+        <label style="flex:1; margin:0;">Composition
+          <select id="dynComposition" style="width:100%;">
+            <option value="unison" selected>unison</option>
+            <option value="independent">independent</option>
+            <option value="pairs">pairs</option>
+            <option value="center_vs_outer">center_vs_outer</option>
+            <option value="left_vs_right">left_vs_right</option>
+            <option value="alternating">alternating</option>
+            <option value="random_groups">random_groups</option>
+          </select>
+        </label>
+      </div>
+      <label>Intensity <span id="dynIntensityText">72</span>%
+        <input id="dynIntensity" type="range" min="0" max="100" value="72" oninput="dynIntensityText.textContent=this.value">
+      </label>
+      <label>Unique colors
+        <input id="dynColors" type="text" placeholder="#00c8b4, #003c64, #7a3cff" style="width:100%;">
+      </label>
+      <label>Seed
+        <input id="dynSeed" type="text" placeholder="optional unique seed" style="width:100%;">
+      </label>
+      <div class="row" style="margin-top:8px;">
+        <button onclick="applyDynamicScene()" title="Apply a dynamic AI scene">Apply Dynamic Scene</button>
+      </div>
+      <div class="card-note">Effect mode stays within the safe stock WLED effect surface. Generated mode is the new pixel-frame painter for this wall layout.</div>
+      <div class="status-output" id="dynSceneStatus">Ready.</div>
+    </div>
+    <div class="card">
+      <h2>⚡ Realtime Direct Mode</h2>
+      <p class="card-note">Realtime streams unique palettes and motion over DDP and overrides WLED effects until you stop it or the timeout ends. Pass your own colors and a seed to build a look, or leave them blank and let mood + seed invent one.</p>
+      <div class="row">
+        <label style="flex:1; margin:0;">Shader
+          <select id="rtShader" style="width:100%;">
+            <option value="auto">auto from mood</option>
+            <option value="red_rocks">red_rocks</option>
+            <option value="aurora_flow">aurora_flow</option>
+            <option value="bass_bloom">bass_bloom</option>
+            <option value="liquid_gradient" selected>liquid_gradient</option>
+            <option value="center_wave">center_wave</option>
+            <option value="vertical_scan">vertical_scan</option>
+            <option value="ember_rise">ember_rise</option>
+            <option value="tide_pull">tide_pull</option>
+            <option value="comet_fall">comet_fall</option>
+            <option value="dusk_bloom">dusk_bloom</option>
+            <option value="magma_column">magma_column</option>
+            <option value="twin_helix">twin_helix</option>
+            <option value="ribbon_drift">ribbon_drift</option>
+          </select>
+        </label>
+        <label style="flex:1; margin:0;">Mood
+          <input id="rtMood" type="text" placeholder="nocturne, storm, neon, sunrise" style="width:100%;">
+        </label>
+      </div>
+      <div class="row">
+        <label style="flex:1; margin:0;">Composition
+          <select id="rtComposition" style="width:100%;">
+            <option value="unison" selected>unison</option>
+            <option value="independent">independent</option>
+            <option value="pairs">pairs</option>
+            <option value="center_vs_outer">center_vs_outer</option>
+            <option value="left_vs_right">left_vs_right</option>
+            <option value="alternating">alternating</option>
+            <option value="random_groups">random_groups</option>
+          </select>
+        </label>
+        <label style="flex:1; margin:0;">Intensity <span id="rtIntensityText">60</span>%
+          <input id="rtIntensity" type="range" min="0" max="100" value="60" oninput="rtIntensityText.textContent=this.value">
+        </label>
+      </div>
+      <div class="row">
+        <label style="margin:0;">FPS
+          <input id="rtFps" type="number" min="1" max="40" value="24" style="width:90px;">
+        </label>
+        <label style="margin:0;">Duration (s)
+          <input id="rtDuration" type="number" min="1" max="900" value="60" style="width:100px;">
+        </label>
+        <label style="margin:0;">Seed
+          <input id="rtSeed" type="text" placeholder="unique-look" style="width:110px;">
+        </label>
+      </div>
+      <label>Unique colors
+        <input id="rtColors" type="text" placeholder="#c8320c, #501004, #f0a028" style="width:100%;">
+      </label>
+      <div class="row" style="margin-top:8px;">
+        <button onclick="startRealtime()" title="Start direct DDP realtime rendering">Start Realtime</button>
+        <button onclick="designLook()" title="Design a unique look with the colorist/motion/critic agents">Design unique look</button>
+        <button class="danger" onclick="stopRealtime()" title="Stop the realtime stream">Stop Realtime</button>
+        <button class="secondary" onclick="refreshRealtimeStatus()" title="Fetch realtime status">Status</button>
+      </div>
+      <div class="status-output" id="realtimeStatus">Idle.</div>
+    </div>
+    <div class="card">
+      <h2>🗣 Feedback & Memory</h2>
+      <p class="card-note">Save a quick reaction so the next generated look can repeat what worked and avoid what missed.</p>
+      <label>Notes
+        <input id="feedbackNotes" type="text" placeholder="too dim on top, loved the teal, wrong strip" style="width:100%;">
+      </label>
+      <label>Tags
+        <input id="feedbackTags" type="text" placeholder="liked-colors, too-dim, wrong-strip" style="width:100%;">
+      </label>
+      <label>Look ID (optional)
+        <input id="feedbackLookId" type="text" placeholder="last look or paste an id" style="width:100%;">
+      </label>
+      <div class="score-row">
+        <button onclick="submitLookFeedback(1)" title="Mark the look as working">That worked</button>
+        <button class="danger" onclick="submitLookFeedback(-1)" title="Mark the look as bad">Bad look</button>
+        <button class="secondary" onclick="submitLookFeedback(0)" title="Send notes without a positive or negative score">Note only</button>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <button class="secondary" onclick="refreshLookMemory()" title="Load the remembered look summary">Show memory summary</button>
+      </div>
+      <div class="status-output" id="feedbackStatus">Ready.</div>
+      <pre class="memory-output" id="lookMemorySummary">No look memory loaded yet.</pre>
     </div>
     <div class="card">
       <h2>⏱️ Timers & Simulations</h2>
@@ -819,6 +1140,158 @@ HTML_TEMPLATE = """<!doctype html>
       </div>
     </div>
   </div>
+
+  <div id="tab-settings" class="tab-content">
+    <div class="manual-grid">
+      <div class="card">
+        <h2>🤖 AI Provider</h2>
+        <label>Provider
+          <select id="setAiProvider" onchange="aiProviderChanged()">
+            <option value="openai">OpenAI</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="ollama">Ollama (local)</option>
+            <option value="custom">Custom</option>
+          </select>
+        </label>
+        <label>Base URL
+          <input id="setAiBaseUrl" type="text" placeholder="https://api.openai.com/v1" style="width:100%;">
+        </label>
+        <div class="row">
+          <label style="flex:1;">Model
+            <input id="setAiModel" type="text" placeholder="gpt-4o-mini" style="width:100%;">
+          </label>
+          <label style="flex:1;">Vision model
+            <input id="setAiVisionModel" type="text" placeholder="gpt-4o" style="width:100%;">
+          </label>
+        </div>
+        <div class="row" style="align-items:flex-end;">
+          <label style="flex:1;">API key env var
+            <input id="setAiKeyEnv" type="text" placeholder="OPENAI_API_KEY" style="width:100%;">
+          </label>
+          <span class="settings-badge" id="setAiKeyBadge">API key: unknown</span>
+        </div>
+        <div class="row" style="margin-top:10px;">
+          <button onclick="saveAiSettings(this)" title="Save AI provider settings">Save</button>
+          <button class="secondary" onclick="testAiConnection(this)" title="Test the configured AI connection">Test connection</button>
+        </div>
+        <div class="settings-msg" id="aiSettingsMsg"></div>
+      </div>
+
+      <div class="card">
+        <h2>🎨 Look Agents</h2>
+        <p class="card-note">Optional per-role models. Leave provider/base URL blank to inherit the main AI provider. The librarian indexes effects and palettes for song chapters. Point its base URL at an OpenAI-compatible host such as Ollama. Leave it off to let an enabled colorist suggest song palettes.</p>
+        <div class="agent-role">
+          <h3>Colorist</h3>
+          <label><input type="checkbox" id="agentColoristEnabled"> Enabled</label>
+          <label>Model
+            <input id="agentColoristModel" type="text" placeholder="inherit or e.g. gpt-4o-mini" style="width:100%;">
+          </label>
+          <div class="row">
+            <label style="flex:1;">Provider
+              <input id="agentColoristProvider" type="text" placeholder="optional" style="width:100%;">
+            </label>
+            <label style="flex:1;">Base URL
+              <input id="agentColoristBaseUrl" type="text" placeholder="optional" style="width:100%;">
+            </label>
+          </div>
+        </div>
+        <div class="agent-role">
+          <h3>Motion</h3>
+          <label><input type="checkbox" id="agentMotionEnabled"> Enabled</label>
+          <label>Model
+            <input id="agentMotionModel" type="text" placeholder="inherit or e.g. gpt-4o-mini" style="width:100%;">
+          </label>
+          <div class="row">
+            <label style="flex:1;">Provider
+              <input id="agentMotionProvider" type="text" placeholder="optional" style="width:100%;">
+            </label>
+            <label style="flex:1;">Base URL
+              <input id="agentMotionBaseUrl" type="text" placeholder="optional" style="width:100%;">
+            </label>
+          </div>
+        </div>
+        <div class="agent-role">
+          <h3>Critic</h3>
+          <label><input type="checkbox" id="agentCriticEnabled"> Enabled</label>
+          <label>Model
+            <input id="agentCriticModel" type="text" placeholder="inherit or e.g. gpt-4o-mini" style="width:100%;">
+          </label>
+          <div class="row">
+            <label style="flex:1;">Provider
+              <input id="agentCriticProvider" type="text" placeholder="optional" style="width:100%;">
+            </label>
+            <label style="flex:1;">Base URL
+              <input id="agentCriticBaseUrl" type="text" placeholder="optional" style="width:100%;">
+            </label>
+          </div>
+        </div>
+        <div class="agent-role">
+          <h3>Librarian</h3>
+          <label><input type="checkbox" id="agentLibrarianEnabled"> Enabled</label>
+          <label>Model
+            <input id="agentLibrarianModel" type="text" placeholder="e.g. an Ollama Cloud model" style="width:100%;">
+          </label>
+          <div class="row">
+            <label style="flex:1;">Provider
+              <input id="agentLibrarianProvider" type="text" placeholder="ollama" style="width:100%;">
+            </label>
+            <label style="flex:1;">Base URL
+              <input id="agentLibrarianBaseUrl" type="text" placeholder="https://ollama.com/v1" style="width:100%;">
+            </label>
+          </div>
+          <label>API key env
+            <input id="agentLibrarianKeyEnv" type="text" placeholder="optional, e.g. OLLAMA_API_KEY" style="width:100%;">
+          </label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>🧠 System Prompt</h2>
+        <textarea id="setSysPrompt" rows="9" style="width:100%; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px;" placeholder="Loading..."></textarea>
+        <div class="row" style="margin-top:10px;">
+          <button onclick="saveSystemPrompt(this)" title="Save a custom system prompt">Save custom</button>
+          <button class="secondary" onclick="resetSystemPrompt(this)" title="Reset to the built-in default prompt">Reset to default</button>
+        </div>
+        <details style="margin-top:10px; font-size:12px; color:var(--text-secondary);">
+          <summary style="cursor:pointer;">View default prompt</summary>
+          <pre id="setSysDefault" class="sys-default"></pre>
+        </details>
+        <div style="font-size:12px; color:var(--muted); margin-top:8px;">Changes apply to new AI requests immediately.</div>
+        <div class="settings-msg" id="sysPromptMsg"></div>
+      </div>
+
+      <div class="card">
+        <h2>🔌 Controllers</h2>
+        <div id="controllerRows"></div>
+        <div class="row" style="margin-top:10px;">
+          <button class="secondary" onclick="addControllerRow()" title="Add a controller row">+ Add controller</button>
+          <button class="secondary" onclick="verifyControllers(this)" title="Ping every configured controller">Verify connections</button>
+          <button onclick="saveControllers(this)" title="Save controllers and hot-reload the fleet">Save &amp; reload</button>
+        </div>
+        <div class="settings-msg" id="controllersMsg"></div>
+      </div>
+
+      <div class="card">
+        <h2>🎙 Audio Input</h2>
+        <label>Audio source
+          <select id="setAudioSource" onchange="audioSourceChanged()">
+            <option value="monitor">Monitor (system output bus — what the PC plays)</option>
+            <option value="mic">Microphone / webcam</option>
+            <option value="wled_mic">WLED controller mic (GPIO — listens over UDP)</option>
+            <option value="custom">Custom device</option>
+          </select>
+        </label>
+        <label id="micDeviceRow">Device name
+          <input id="setMicDevice" type="text" placeholder="e.g. alsa_input.pci-0000_00_1f.3.analog-stereo" style="width:100%;">
+        </label>
+        <div class="row" style="margin-top:10px;">
+          <button onclick="saveAudioSettings(this)" title="Save audio input settings">Save</button>
+        </div>
+        <div class="settings-msg" id="audioMsg"></div>
+      </div>
+__PLAYER_SETTINGS_CARD__
+    </div>
+  </div>
   </main>
   <div class="status-bar">
     <div class="indicator">
@@ -828,14 +1301,31 @@ HTML_TEMPLATE = """<!doctype html>
     <div class="state-summary" id="stateSummary">--</div>
     <div class="last-action" id="status">Ready</div>
   </div>
+  __DESKTOP_DIALOGS__
   <script>
+    __DESKTOP_SCRIPT__
     let audioContext, analyser, micStream, micSource, frequencyData, waveformData, rafId;
+    let playerMediaSource = null;
+    let musicKitReady = null;
+    let applePairTimer = null;
+    let appleUserToken = '';
+    let lastPlayerStatus = null;
+    let playerEnabled = false;
+    let playerPollTimer = null;
     let audioReactiveRunning = false;
     let musicModeRunning = false;
+    let controllerVizStatus = null, controllerVizAt = 0;
+    let controllerAudioStatus = null, controllerAudioAt = 0, controllerAudioBusy = false;
+    let controllerAudioStream = null, controllerAudioFrame = null, controllerAudioPending = null;
+    let controllerLevelHistory = [], controllerLastSequence = null, controllerLastBeatCount = 0;
     let musicRecognitionTimer = null;
     let musicRecognitionBusy = false;
+    let musicMetadataKey = '';
+    let musicMetadataActive = false;
+    let musicModeGeneration = 0;
     let moodRecorder = null;
     let moodRecorderInterval = null;
+    let beatRequestInFlight = false;
     const MUSIC_RECOGNITION_INTERVAL_MS = 30000;
     let baseline = 18;
     let lastBeat = 0;
@@ -929,6 +1419,7 @@ HTML_TEMPLATE = """<!doctype html>
       // activate the corresponding button using data attribute
       const activeBtn = document.querySelector('.tab-btn[data-tab="' + tab + '"]');
       if (activeBtn) activeBtn.classList.add('active');
+      if (tab === 'settings') loadSettings();
     }
 
     function addChatMessage(role, text) {
@@ -972,41 +1463,1411 @@ HTML_TEMPLATE = """<!doctype html>
 
     function clearModelResponses() {
       const pane = document.getElementById('modelResponses');
-      if (pane) pane.innerHTML = '';
+      if (pane) { pane.textContent = ''; pane.currentResponseEntry = null; }
+      try { localStorage.removeItem('light_model_responses'); } catch (_) { /* storage is optional */ }
+    }
+
+    function savedModelResponses() {
+      try {
+        const value = JSON.parse(localStorage.getItem('light_model_responses') || '[]');
+        return Array.isArray(value) ? value.slice(-50) : [];
+      } catch (_) { return []; }
+    }
+
+    function appendModelResponse(kind, text, persist = true) {
+      const pane = document.getElementById('modelResponses');
+      if (!pane || !text) return;
+      const entry = {kind: String(kind || 'ai'), text: String(text), at: new Date().toISOString()};
+      text = entry.text.replace(/\\s+/g, ' ').trim();
+      const longResponse = text.length > 250;
+      if (longResponse) text = text.slice(0, 247).trimEnd() + '...';
+      pane.textContent = '';
+      pane.currentResponseEntry = entry;
+      const wrapper = document.createElement('div');
+      wrapper.className = 'resp ' + entry.kind;
+      const content = document.createElement('div');
+      content.className = 'marquee-content';
+      content.textContent = text;
+      content.style.animationDuration = Math.max(12, Math.min(90, entry.text.length / 5)) + 's';
+      const viewport = document.createElement('div');
+      viewport.className = 'marquee-wrapper';
+      viewport.appendChild(content);
+      wrapper.appendChild(viewport);
+      pane.appendChild(wrapper);
+      if (persist) {
+        const entries = savedModelResponses();
+        entries.push(entry);
+        try { localStorage.setItem('light_model_responses', JSON.stringify(entries.slice(-50))); }
+        catch (_) { /* keep the visible response when storage is unavailable */ }
+      }
+      if (longResponse) {
+        postJson('/api/model-response/summary', {text: entry.text.slice(0, 20000)})
+          .then(data => {
+            if (pane.currentResponseEntry !== entry || !data.ok || !data.summary) return;
+            content.textContent = String(data.summary).replace(/\\s+/g, ' ').trim().slice(0, 250);
+            content.style.animationDuration = Math.max(12, content.textContent.length / 5) + 's';
+          }).catch(() => { /* bounded single-line fallback stays visible */ });
+      }
+    }
+
+    function loadModelResponses() {
+      const entries = savedModelResponses();
+      const latest = entries.at(-1);
+      if (latest) appendModelResponse(latest.kind, latest.text, false);
+      const lastSummary = entries.filter(entry => entry.kind === 'decision' || entry.kind === 'recipe').at(-1);
+      if (lastSummary && typeof smartDecisionSummary === 'function') {
+        smartDecisionSummary.lastKey = lastSummary.kind + '|' + lastSummary.text;
+      }
     }
 
     function showScrollingModelResponse(text) {
-      const pane = document.getElementById('modelResponses');
-      if (!pane) return;
-      pane.innerHTML = '';  // replace with latest scrolling response (right-to-left ticker)
-      const wrapper = document.createElement('div');
-      wrapper.className = 'marquee-wrapper';
-      const content = document.createElement('div');
-      content.className = 'marquee-content';
-      // Make it one continuous line for smooth scrolling
-      const clean = text.replace(/\\s+/g, ' ').trim();
-      content.textContent = clean;
-      // Dynamic speed: longer text = longer duration (slower per char feel)
-      const duration = Math.max(10, Math.min(35, Math.floor(clean.length / 6)));
-      content.style.animationDuration = duration + 's';
-      wrapper.appendChild(content);
-      pane.appendChild(wrapper);
+      appendModelResponse('ai', text);
     }
 
-    async function send(action, values = {}) {
-      status.textContent = 'Sending...';
-      // Optimistic immediate update to LED preview for accurate live colors + motion feel
-      try { optimisticPreviewFromAction(action, values); } catch(e) {}
+    let currentTarget = 'all';
+    let fleetInfo = {fleet: false, targets: ['all'], channels: {}};
+
+    function setTarget(value) {
+      currentTarget = value || 'all';
+    }
+
+    function applyFleetInfo(data) {
+      if (!data) return;
+      if (Array.isArray(data.targets) && data.targets.length) fleetInfo.targets = data.targets;
+      if (data.channels && typeof data.channels === 'object') fleetInfo.channels = data.channels;
+      fleetInfo.fleet = !!data.fleet;
+      const sel = document.getElementById('targetSelect');
+      if (!sel) return;
+      if (fleetInfo.targets.length <= 1) {
+        // Fleet shrank to a single controller: drop stale controller options.
+        const current = Array.from(sel.options).map(o => o.value).join('|');
+        if (current !== 'all') {
+          sel.innerHTML = '';
+          const opt = document.createElement('option');
+          opt.value = 'all';
+          opt.textContent = 'All controllers';
+          sel.appendChild(opt);
+        }
+        sel.value = 'all';
+        currentTarget = 'all';
+        return;
+      }
+      const wanted = Array.from(sel.options).map(o => o.value).join('|');
+      const offered = fleetInfo.targets.join('|');
+      if (wanted === offered) return;  // already populated
+      const channels = fleetInfo.channels || {};
+      sel.innerHTML = '';
+      for (const name of fleetInfo.targets) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name === 'all' ? 'All 4 strips'
+          : name === 'outer' ? 'Group: outer (far pair)'
+          : (name === 'inner' || name === 'center') ? 'Group: inner (middle pair)'
+          : (name in channels ? 'Strip: ' + name : 'Controller: ' + name);
+        sel.appendChild(opt);
+      }
+      sel.value = fleetInfo.targets.includes(currentTarget) ? currentTarget : 'all';
+      currentTarget = sel.value;
+    }
+
+    // Resolve the state blob to display: raw single-controller state, or the
+    // controller matching the current target (first controller otherwise).
+    // Channel targets also carry the segment id to preview (mapping[1]).
+    function displayState(st) {
+      if (!st || typeof st !== 'object') return {state: {}, name: '', segId: 0};
+      if ('seg' in st || 'on' in st) return {state: st, name: '', segId: 0};
+      const names = Object.keys(st);
+      if (!names.length) return {state: {}, name: '', segId: 0};
+      let name = names[0];
+      let segId = 0;
+      const mapping = fleetInfo.channels || {};
+      if (currentTarget in mapping && names.includes(mapping[currentTarget][0])) {
+        name = mapping[currentTarget][0];
+        segId = Number(mapping[currentTarget][1]) || 0;
+      } else if (names.includes(currentTarget)) {
+        name = currentTarget;
+      }
+      return {state: st[name] || {}, name, segId};
+    }
+
+    function fleetConnectionStatus(st) {
+      if (!st || typeof st !== 'object') return {connected: [], total: 0, fleet: false};
+      if ('seg' in st || 'on' in st) {
+        return {connected: st.error ? [] : ['controller'], total: 1, fleet: false};
+      }
+      const names = Object.keys(st);
+      const connected = names.filter(function (name) {
+        const value = st[name];
+        return value && typeof value === 'object' && !value.error;
+      });
+      return {connected, total: names.length, fleet: true};
+    }
+
+    function updateConnectionStatusFromState(st) {
+      const health = fleetConnectionStatus(st);
+      if (health.connected.length) {
+        connIndicator.textContent = health.connected.length === health.total ? '🟢' : '🟡';
+        connText.textContent = health.fleet
+          ? `Connected: ${health.connected.join(', ')}`
+          : 'Connected';
+      } else {
+        connIndicator.textContent = '🔴';
+        connText.textContent = health.fleet ? 'Controllers disconnected' : 'Disconnected';
+      }
+      return health;
+    }
+
+    // --- FireTV companion visuals ------------------------------------------
+    function firetvMsg(text, kind) {
+      const el = document.getElementById('firetvMsg');
+      if (!el) return;
+      el.textContent = text || '';
+      el.style.color = kind === 'err' ? 'var(--danger)' : (kind === 'ok' ? 'var(--success)' : '');
+    }
+
+    async function loadFiretvState() {
+      try {
+        const data = await fetchJsonWithTimeout('/api/firetv', {}, 5000);
+        const cb = document.getElementById('firetvEnabled');
+        if (cb && typeof data.enabled === 'boolean') cb.checked = data.enabled;
+      } catch (err) {
+        console.warn('FireTV state unavailable:', err);
+      }
+    }
+
+    async function toggleFiretv(enabled) {
+      const cb = document.getElementById('firetvEnabled');
+      firetvMsg('Saving...', '');
+      try {
+        const data = await postJson('/api/firetv', {enabled: !!enabled});
+        if (data.ok === false) throw new Error(data.error || 'Save failed.');
+        firetvMsg(enabled ? 'TV visuals enabled' : 'TV visuals disabled', 'ok');
+      } catch (err) {
+        if (cb) cb.checked = !enabled;  // revert on error
+        firetvMsg(err.message || 'Error saving FireTV setting.', 'err');
+      }
+    }
+
+    async function openFiretvVisuals() {
+      firetvMsg('Opening visuals on TV...', '');
+      try {
+        const url = location.protocol + '//' + location.host + '/tv';
+        const data = await postJson('/api/firetv', {action: 'open_url', url: url});
+        if (data.ok === false) throw new Error(data.error || 'Failed to open TV.');
+      } catch (err) {
+        firetvMsg(err.message || 'Error reaching FireTV.', 'err');
+      }
+    }
+
+    async function firetvMediaAction(action) {
+      const labels = {
+        previous: 'Previous track',
+        play_pause: 'Play / pause',
+        next: 'Next track',
+        volume_down: 'Volume down',
+        mute: 'Mute',
+        volume_up: 'Volume up',
+      };
+      const label = labels[action] || action.replace(/_/g, ' ');
+      firetvMsg(`Sending ${label}…`, '');
+      try {
+        const data = await postJson('/api/firetv', {action: action});
+        if (data.ok === false) throw new Error(data.error || 'FireTV action failed.');
+        firetvMsg(data.message || `${label} sent`, 'ok');
+      } catch (err) {
+        firetvMsg(err.message || `Error sending ${label}.`, 'err');
+      }
+    }
+
+    // --- Read-only TV observation: separate from TV control -----------------
+    let tvObservationBusy = false;
+
+    function setTvObservationBusy(busy) {
+      tvObservationBusy = busy;
+      for (const id of ['tvObservationEnabled', 'tvObservationRefresh']) {
+        const el = document.getElementById(id);
+        if (el) el.disabled = busy;
+      }
+    }
+
+    function showTvObservation(data) {
+      if (!data || data.ok === false) throw new Error((data && data.error) || 'TV observation unavailable.');
+      const cb = document.getElementById('tvObservationEnabled');
+      if (cb) cb.checked = data.observation_enabled === true;
+      let message;
+      if (!data.observation_enabled) message = 'Observation off. TV control is unchanged.';
+      else if (!data.connected) message = 'TV unavailable. Activity is unknown; no lighting changes.';
+      else if (data.awake === false) message = 'TV asleep. No lighting changes.';
+      else {
+        const label = data.awake === null ? 'Power state unknown' :
+          data.activity_hint === 'music' ? 'Music app playing' :
+          data.activity_hint === 'tv' ? 'Video app open' :
+          data.activity_hint === 'idle' ? 'Playback idle' : 'Content type ambiguous';
+        const media = data.media_session;
+        message = label + (data.foreground_app ? ' — ' + data.foreground_app : '') +
+          (media && media.description ? ' — ' + media.description : '') +
+          (data.media_error ? ' — Playback metadata unavailable.' : '');
+      }
+      setText('tvObservationStatus', message);
+    }
+
+    async function refreshTvObservation() {
+      if (tvObservationBusy) return;
+      setTvObservationBusy(true);
+      setText('tvObservationStatus', 'Reading TV context...');
+      try {
+        lastTvObservation = await fetchJsonWithTimeout('/api/tv-observation', {}, 20000);
+        showTvObservation(lastTvObservation);
+        updateMusicIdentity(lastTvObservation);
+      } catch (err) {
+        lastTvObservation = null;
+        updateMusicIdentity(null);
+        setText('tvObservationStatus', 'Observation unavailable: ' + err.message);
+      } finally {
+        setTvObservationBusy(false);
+      }
+    }
+
+    async function toggleTvObservation(enabled) {
+      if (tvObservationBusy) return;
+      const cb = document.getElementById('tvObservationEnabled');
+      setTvObservationBusy(true);
+      let saved = false;
+      try {
+        const data = await postJson('/api/tv-observation', {enabled: !!enabled});
+        if (!data || data.ok === false) throw new Error((data && data.error) || 'Save failed.');
+        if (cb) cb.checked = data.observation_enabled === true;
+        saved = true;
+      } catch (err) {
+        if (cb) cb.checked = !enabled;
+        setText('tvObservationStatus', 'Observation setting not saved: ' + err.message);
+      } finally {
+        setTvObservationBusy(false);
+      }
+      if (saved) await refreshTvObservation();
+    }
+
+    // --- Smart Director: one output owner for TV and controller mic ---------
+    let smartDirectorDirty = false;
+    let smartDirectorLoaded = false;
+    let smartDirectorBusy = false;
+    let smartDirectorWriting = false;
+    let smartDirectorRevision = 0;
+    let smartDirectorPriorityWrites = 0;
+    let liveShowPending = {};
+    let liveShowTimer = null;
+
+    function queueLiveShowControl(key, value) {
+      // Shortcuts and sliders share the same form state. A later TV Apply must
+      // not undo a live shortcut using stale, unsaved music control values.
+      const fields = {
+        music_brightness: ['smartDirectorMusicBrightness', 'smartDirectorMusicBrightnessText'],
+        music_speed: ['smartDirectorSpeed', 'smartDirectorSpeedText'],
+        music_intensity: ['smartDirectorIntensity', 'smartDirectorIntensityText'],
+        music_colorfulness: ['smartDirectorColorfulness', 'smartDirectorColorfulnessText']
+      };
+      if (key === 'music_motion') {
+        const element = document.getElementById('smartDirectorMotion');
+        if (element) element.value = value;
+      } else if (fields[key]) {
+        const [id, textId] = fields[key];
+        const element = document.getElementById(id);
+        if (element) element.value = String(Math.round(Number(value) * 100));
+        setText(textId, key === 'music_speed' ? Number(value).toFixed(2) + '×' : String(Math.round(Number(value) * 100)));
+      }
+      liveShowPending[key] = value;
+      clearTimeout(liveShowTimer);
+      setText('liveShowMessage', 'Updating live show…');
+      liveShowTimer = setTimeout(flushLiveShowControls, 250);
+    }
+
+    async function flushLiveShowControls() {
+      if (smartDirectorPriorityWrites || !Object.keys(liveShowPending).length) return;
+      if (smartDirectorWriting) {
+        liveShowTimer = setTimeout(flushLiveShowControls, 150);
+        return;
+      }
+      const updates = {...liveShowPending};
+      smartDirectorWriting = true;
+      smartDirectorRevision++;
+      let succeeded = false;
+      try {
+        const data = await postJson('/api/smart-director', updates);
+        if (!data || data.ok === false) throw new Error(data?.error || 'Update failed.');
+        for (const [key, value] of Object.entries(updates)) {
+          if (liveShowPending[key] === value) delete liveShowPending[key];
+        }
+        renderSmartDirectorResponse(data, false);
+        succeeded = true;
+        const running = data.status?.mode === 'music' && data.status?.renderer?.running;
+        setText('liveShowMessage', running ? 'Live show updated · music keeps running' : 'Saved for the next music show');
+      } catch (err) {
+        setText('liveShowMessage', 'Live update failed: ' + err.message + ' · adjust a control to retry');
+      } finally {
+        smartDirectorWriting = false;
+        if (succeeded && Object.keys(liveShowPending).length) {
+          liveShowTimer = setTimeout(flushLiveShowControls, 150);
+        }
+      }
+    }
+
+    function markSmartDirectorDirty() {
+      smartDirectorDirty = true;
+      setText('smartDirectorMessage', 'Unsaved changes');
+    }
+
+    function smartDirectorFraction(id) {
+      const value = Number((document.getElementById(id) || {}).value);
+      return Math.max(0, Math.min(1, (Number.isFinite(value) ? value : 0) / 100));
+    }
+
+    function readSmartDirectorForm() {
+      return {
+        enabled: !!document.getElementById('smartDirectorEnabled').checked,
+        mode: document.getElementById('smartDirectorMode').value,
+        tv_theme: document.getElementById('smartDirectorTheme').value,
+        music_brightness: smartDirectorFraction('smartDirectorMusicBrightness'),
+        music_motion: document.getElementById('smartDirectorMotion').value,
+        music_speed: Number(document.getElementById('smartDirectorSpeed').value) / 100,
+        music_intensity: smartDirectorFraction('smartDirectorIntensity'),
+        music_colorfulness: smartDirectorFraction('smartDirectorColorfulness'),
+        day_brightness: smartDirectorFraction('smartDirectorDayBrightness'),
+        evening_brightness: smartDirectorFraction('smartDirectorEveningBrightness'),
+        night_brightness: smartDirectorFraction('smartDirectorNightBrightness')
+      };
+    }
+
+    function populateSmartDirectorSettings(settings) {
+      if (!settings) return;
+      const setValue = (id, value) => {
+        const element = document.getElementById(id);
+        if (element && value !== undefined && value !== null) element.value = String(value);
+      };
+      const setPercent = (id, textId, fraction, cap = 100) => {
+        const percent = Math.max(0, Math.min(cap, Math.round(Number(fraction || 0) * 100)));
+        setValue(id, percent);
+        setText(textId, String(percent));
+      };
+      const enabled = document.getElementById('smartDirectorEnabled');
+      if (enabled) enabled.checked = settings.enabled === true;
+      setValue('smartDirectorMode', settings.mode || 'auto');
+      setValue('smartDirectorTheme', settings.tv_theme || 'warm');
+      if (!('music_brightness' in liveShowPending)) setPercent('smartDirectorMusicBrightness', 'smartDirectorMusicBrightnessText', settings.music_brightness, 100);
+      if (!('music_motion' in liveShowPending)) setValue('smartDirectorMotion', settings.music_motion || 'auto');
+      if (!('music_speed' in liveShowPending)) {
+        const speed = Number(settings.music_speed ?? 1);
+        setValue('smartDirectorSpeed', Math.round(speed * 100));
+        setText('smartDirectorSpeedText', speed.toFixed(2) + '×');
+      }
+      if (!('music_intensity' in liveShowPending)) setPercent('smartDirectorIntensity', 'smartDirectorIntensityText', settings.music_intensity ?? .85);
+      if (!('music_colorfulness' in liveShowPending)) setPercent('smartDirectorColorfulness', 'smartDirectorColorfulnessText', settings.music_colorfulness ?? .9);
+      setPercent('smartDirectorDayBrightness', 'smartDirectorDayBrightnessText', settings.day_brightness);
+      setPercent('smartDirectorEveningBrightness', 'smartDirectorEveningBrightnessText', settings.evening_brightness);
+      setPercent('smartDirectorNightBrightness', 'smartDirectorNightBrightnessText', settings.night_brightness);
+      if (!bandGainWriting && !bandGainWritePending && !bandGainDirty && Array.isArray(settings.band_gains) && settings.band_gains.length === 16) {
+        document.querySelectorAll('.band-gain').forEach((input, index) => input.value = String(settings.band_gains[index]));
+      }
+    }
+
+    function readBandGains() {
+      return Array.from(document.querySelectorAll('.band-gain')).map(input => {
+        const value = Number(input.value);
+        const gain = Number.isFinite(value) ? Math.max(0, Math.min(3, value)) : 1;
+        input.value = String(gain);
+        return gain;
+      });
+    }
+
+    let bandGainWriteQueue = [], bandGainWritePending = 0, bandGainWriting = false, bandGainDirty = false;
+
+    async function flushBandGainWrites() {
+      if (bandGainWriting) return;
+      bandGainWriting = true;
+      while (bandGainWriteQueue.length) {
+        const entry = bandGainWriteQueue.shift();
+        smartDirectorRevision++;
+        setText('liveShowMessage', 'Updating 16-band response…');
+        try {
+          const data = await postJson('/api/music-show', {action:'tune',band_gains:entry.gains});
+          if (!data || data.ok === false) throw new Error(data?.error || 'Band tuning failed.');
+          if (data.status) renderSmartDirectorStatus(data.status);
+          bandGainDirty = bandGainWriteQueue.length > 0;
+          setText('liveShowMessage', bandGainDirty ? 'Applying latest band gains…' : 'Band gains updated live');
+          entry.resolve(data);
+        } catch (err) {
+          bandGainDirty = true;
+          setText('liveShowMessage', 'Band tuning failed: ' + err.message + ' · change a gain to retry');
+          entry.resolve({ok:false,error:err.message});
+        } finally { bandGainWritePending--; }
+      }
+      bandGainWriting = false;
+    }
+
+    function tuneBandGains() {
+      const gains = readBandGains();
+      bandGainDirty = true;
+      bandGainWritePending++;
+      const completion = new Promise(resolve => bandGainWriteQueue.push({gains, resolve}));
+      flushBandGainWrites();
+      return completion;
+    }
+
+    async function resetBandGains() {
+      document.querySelectorAll('.band-gain').forEach(input => input.value = '1');
+      await tuneBandGains();
+    }
+
+    function controllerVizActive() {
+      return !!(controllerVizStatus && controllerVizStatus.running &&
+        controllerVizStatus.selected_mode !== 'manual' && performance.now() - controllerVizAt < 2500);
+    }
+
+    function controllerPreviewColors() {
+      if (!controllerVizActive() || !controllerVizStatus.renderer?.running) return [];
+      const preview = controllerVizStatus.renderer.preview || [];
+      return preview.filter(item => currentTarget === 'all' || item.channel === currentTarget ||
+        item.controller === currentTarget ||
+        (['inner','center'].includes(currentTarget) && item.channel.startsWith('middle-')) ||
+        (currentTarget === 'outer' && item.channel.startsWith('far-'))).flatMap(item => item.colors || []);
+    }
+
+    function expireControllerVisualization() {
+      if (!controllerVizStatus || controllerVizActive() || audioReactiveRunning) return;
+      const wasRunning = controllerVizStatus.running;
+      const manual = controllerVizStatus.selected_mode === 'manual';
+      controllerVizStatus = null;
+      controllerLevelHistory = []; controllerLastSequence = null; controllerLastBeatCount = 0;
+      resetAnalysisDisplay(); setMusicModeUi(false);
+      setText('vizStatus', manual ? 'Manual lighting' : wasRunning ? 'Controller feed unavailable' : 'idle');
+      setText('waveformLabel', 'WAVEFORM + BEAT');
+      setText('musicModeBtn', 'Start Music Director');
+      updateMusicIdentity(null);
+    }
+
+    function parseMediaIdentity(tv) {
+      const media = tv && tv.media_session;
+      if (!media || tv.connected === false || tv.awake === false || media.active !== true || Number(media.state) !== 3 ||
+          !tv.foreground_app || media.package !== tv.foreground_app) return null;
+      const parts = String(media.description || '').split(',').map(value => value.trim());
+      const clean = value => value && value.toLowerCase() !== 'null' ? value : '';
+      const album = clean(parts.pop());
+      const artist = clean(parts.pop());
+      const title = clean(parts.join(', '));
+      if (!title) return null;
+      return {title, artist, album, source: 'TV · ' + tv.foreground_app};
+    }
+
+    function updateMusicIdentity(tv) {
+      const local = lastPlayerStatus && lastPlayerStatus.playing && (lastPlayerStatus.title || lastPlayerStatus.artist)
+        ? {title:lastPlayerStatus.title || 'Unknown', artist:lastPlayerStatus.artist || '', source:'Local player · ' + currentPlayerSource()}
+        : null;
+      const observed = typeof lastObservedSong !== 'undefined' ? lastObservedSong : null;
+      const identity = local || parseMediaIdentity(tv) || observed;
+      setText('musicIdentityTitle', identity ? identity.title : 'Nothing playing');
+      setText('musicIdentityArtist', identity ? identity.artist : '');
+      setText('musicIdentitySource', identity ? identity.source : 'No active source');
+    }
+
+    function renderControllerVisualization(status) {
+      controllerVizStatus = status; controllerVizAt = performance.now();
+      updateMusicIdentity(status.tv || null);
+      if (!controllerVizActive()) { expireControllerVisualization(); return; }
+      if (audioReactiveRunning) return;
+      const audio = status.audio || {}, renderer = status.renderer || {};
+      const unit = value => Math.max(0, Math.min(1, Number(value) || 0));
+      const active = audio.active === true;
+      const fft = Array.from({length:16}, (_, i) => active ? unit((audio.fft || [])[i]) : 0);
+      const level = active ? unit(audio.level) : 0;
+      const sequence = audio.receive_sequence;
+      const fresh = sequence !== controllerLastSequence;
+      if (fresh || !active) {
+        controllerLastSequence = sequence;
+        controllerLevelHistory.push(level);
+        if (controllerLevelHistory.length > 100) controllerLevelHistory.shift();
+      }
+      const beats = Number(renderer.beat_count) || 0;
+      const beat = active && ((fresh && !!audio.beat) || beats > controllerLastBeatCount);
+      controllerLastBeatCount = beats;
+      const band = (start, end) => fft.slice(start,end).reduce((sum,n) => sum+n,0)/(end-start);
+      Object.assign(musicAnalysis, {source:'controller', energy:level, rms:level,
+        bass:band(0,4), mid:band(4,10), treble:band(10,16), drive:level,
+        beatConfidence:active ? unit(renderer.bpm_confidence) : 0, beat,
+        bpm:active ? Math.round(Number(renderer.bpm) || 0) : 0,
+        spectrum:fft.map(value => Math.round(value*255)), levelHistory:controllerLevelHistory.slice(), waveform:[]});
+      renderAnalyzerFrame(musicAnalysis);
+      const playing = status.mode === 'music' && !!renderer.running;
+      setMusicModeUi(playing, 'TV metadata');
+      if (status.mode === 'tv') setText('musicModeState', 'Steady TV');
+      setText('musicModeBtn', playing ? 'Controller Music Running' : 'Start Music Director');
+      setText('micPipelineState', active ? 'Controller mic' : 'Controller mic unavailable');
+      setText('songSourceState', 'TV metadata');
+      setText('nextMatchState', status.selected_mode === 'auto' ? 'Automatic TV / music' : 'Manual mode selection');
+      setText('autoStatus', status.reason || 'Controller audio connected');
+      setText('vizStatus', active ? `Controller mic · ${playing ? 'Music' : 'Steady TV'}` : 'Controller mic unavailable');
+      setText('waveformLabel', 'CONTROLLER LEVEL HISTORY + BEAT');
+    }
+
+    function controllerAudioActive() {
+      return !!(controllerAudioStatus?.active && performance.now() - controllerAudioAt < 2500);
+    }
+
+    function renderControllerAudioTelemetry(audio) {
+      controllerAudioStatus = audio; controllerAudioAt = performance.now();
+      if (audioReactiveRunning) return; // explicitly selected browser audio wins
+      const active = audio.active === true;
+      const unit = value => Math.max(0, Math.min(1, Number(value) || 0));
+      const fft = Array.from({length:16}, (_, i) => active ? unit((audio.fft || [])[i]) : 0);
+      const level = active ? unit(audio.level) : 0;
+      const fresh = audio.receive_sequence !== controllerLastSequence;
+      if (!active) controllerLevelHistory = [];
+      if (fresh || !active) {
+        controllerLastSequence = audio.receive_sequence;
+        controllerLevelHistory.push(level);
+        if (controllerLevelHistory.length > 100) controllerLevelHistory.shift();
+      }
+      const band = (start, end) => fft.slice(start,end).reduce((sum,n) => sum+n,0)/(end-start);
+      Object.assign(musicAnalysis, {source:'controller', energy:level, rms:level,
+        bass:band(0,4), mid:band(4,10), treble:band(10,16), drive:level,
+        beat:active && fresh && !!audio.beat, beatConfidence:0, bpm:0,
+        spectrum:fft.map(value => Math.round(value*255)),
+        levelHistory:controllerLevelHistory.slice(), waveform:[]});
+      renderAnalyzerFrame(musicAnalysis);
+      setText('waveformLabel', 'CONTROLLER LEVEL HISTORY + BEAT');
+      setText('vizStatus', active ? 'Controller mic · live audio' : 'Controller audio unavailable');
+      setText('micPipelineState', active ? 'Controller mic' : 'Controller mic unavailable');
+    }
+
+    function startControllerAudioStream() {
+      if (controllerAudioStream) return;
+      controllerAudioStream = new EventSource('/api/audio/events');
+      controllerAudioStream.addEventListener('audio', event => {
+        try { controllerAudioPending = JSON.parse(event.data).audio || {active:false}; }
+        catch (_) { return; }
+        if (document.hidden || controllerAudioFrame !== null) return;
+        controllerAudioFrame = requestAnimationFrame(() => {
+          controllerAudioFrame = null;
+          renderControllerAudioTelemetry(controllerAudioPending);
+        });
+      });
+      controllerAudioStream.onerror = () => {
+        renderControllerAudioTelemetry({active:false});
+        // EventSource reconnects automatically; do not queue stale requests.
+      };
+    }
+
+    function populateEffectiveShowStatus(status) {
+      const renderer = status.renderer || {};
+      if (!renderer.running) return;
+      const overrides = status.show_overrides || {};
+      if (!bandGainWriting && !bandGainWritePending && !bandGainDirty && Array.isArray(overrides.band_gains) && overrides.band_gains.length === 16 && document.querySelectorAll) {
+        document.querySelectorAll('.band-gain').forEach((input, index) => {
+          if (document.activeElement !== input) input.value = String(overrides.band_gains[index]);
+        });
+      }
+      const effective = [
+        Number.isFinite(Number(status.brightness_percent)) ? Math.round(Number(status.brightness_percent)) + '%' : '',
+        renderer.motion || '', Number.isFinite(Number(renderer.speed)) ? Number(renderer.speed).toFixed(2) + '×' : '',
+        Number.isFinite(Number(renderer.intensity)) ? 'intensity ' + Math.round(Number(renderer.intensity) * 100) + '%' : '',
+        Object.keys(overrides).some(key => key !== 'band_gains') ? 'AI/session override active' : ''
+      ].filter(Boolean).join(' · ');
+      setText('smartDirectorEffectiveShow', effective || 'renderer active');
+    }
+
+    function smartDecisionSummary(status) {
+      const error = status.last_error || status.startup_error || status.renderer?.last_error;
+      if (error) return {kind:'error', text:'Music Director error: ' + error};
+      const intelligence = status.intelligence || {};
+      if (status.mode === 'music' && intelligence.kind === 'music') {
+        const media = status.tv?.media_session?.description;
+        const recipe = [intelligence.composition_mode,
+          Array.isArray(intelligence.colors) ? intelligence.colors.length + ' colors' : '',
+          intelligence.show?.motion].filter(Boolean).join(' · ');
+        return {kind:'recipe', text:['Automated recipe', media, recipe,
+          intelligence.reason || status.reason].filter(Boolean).join(' · ')};
+      }
+      if (status.selected_mode !== 'auto') return null;
+      const mode = String(status.mode || 'waiting');
+      const label = mode.charAt(0).toUpperCase() + mode.slice(1);
+      const reason = status.reason || status.intelligence?.reason || 'Waiting for a confident signal.';
+      return {kind:'decision', text:'Auto → ' + label + ' · ' + reason};
+    }
+
+    function renderSmartDirectorStatus(status) {
+      status = status || {};
+      populateEffectiveShowStatus(status);
+      const audio = status.audio || {};
+      const renderer = status.renderer || {};
+      const intelligence = status.intelligence || {};
+      const level = Number(audio.level);
+      const mic = audio.active ? `Active${Number.isFinite(level) ? ' · ' + Math.round(level * 100) + '%' : ''}` : 'Idle';
+      const frames = Number(renderer.sent_frames);
+      const beats = Number(renderer.beat_count);
+      const bpm = Number(renderer.bpm);
+      const renderProof = [
+        renderer.motion ? renderer.motion + ' · ' + Number(renderer.speed || 1).toFixed(2) + '×' : '',
+        Number.isFinite(frames) ? frames + ' frames' : '',
+        Number.isFinite(beats) ? beats + ' beats' : '',
+        Number.isFinite(bpm) && bpm > 0 ? Math.round(bpm) + ' BPM' : ''
+      ].filter(Boolean).join(' · ');
+      const renderState = status.output_engine === 'native' && status.mode === 'music'
+        ? `WLED native · effect ${status.native_effect}`
+        : renderer.running ? `DDP running${renderProof ? ' · ' + renderProof : ''}` : 'Idle';
+      let decision = status.reason || intelligence.reason || intelligence.kind || status.mode || 'Waiting';
+      if (status.last_error || status.startup_error || renderer.last_error) decision = `Error: ${status.last_error || status.startup_error || renderer.last_error}`;
+      setText('smartDirectorMicStatus', mic);
+      setText('smartDirectorRendererStatus', renderState);
+      setText('smartDirectorDecisionStatus', decision);
+      const summary = smartDecisionSummary(status);
+      if (summary) {
+        const key = summary.kind + '|' + summary.text;
+        if (smartDecisionSummary.lastKey !== key) appendModelResponse(summary.kind, summary.text);
+        smartDecisionSummary.lastKey = key;
+      }
+      renderControllerVisualization(status);
+    }
+
+    function renderSmartDirectorResponse(data, allowSettings) {
+      if (!data || data.ok === false) throw new Error((data && data.error) || 'Music Director unavailable.');
+      if (allowSettings && !smartDirectorDirty) populateSmartDirectorSettings(data.settings || {});
+      renderSmartDirectorStatus(data.status || {});
+      const status = data.status || {};
+      if (!smartDirectorDirty) setText('smartDirectorMessage', status.running ? `Active · ${status.mode || 'starting'}` : 'Not running');
+    }
+
+    async function pollSmartDirector() {
+      if (document.hidden) return;
+      if (!controllerVizStatus?.running && performance.now() - controllerVizAt < 2000) return;
+      if (smartDirectorBusy) return;
+      if (smartDirectorWriting) return;
+      if (bandGainWriting || bandGainWritePending) return;
+      const revision = smartDirectorRevision;
+      smartDirectorBusy = true;
+      try {
+        const data = await fetchJsonWithTimeout('/api/smart-director', {}, 4000);
+        if (revision === smartDirectorRevision && !smartDirectorWriting) renderSmartDirectorResponse(data, true);
+      } catch (err) {
+        setText('smartDirectorMessage', 'Status unavailable: ' + err.message);
+      } finally {
+        smartDirectorBusy = false;
+      }
+    }
+
+    async function loadSmartDirector() {
+      if (smartDirectorBusy) return;
+      if (smartDirectorWriting) return;
+      const revision = smartDirectorRevision;
+      smartDirectorBusy = true;
+      try {
+        const data = await fetchJsonWithTimeout('/api/smart-director', {}, 4000);
+        if (revision === smartDirectorRevision && !smartDirectorWriting) renderSmartDirectorResponse(data, !smartDirectorLoaded);
+        smartDirectorLoaded = true;
+      } catch (err) {
+        setText('smartDirectorMessage', 'Music Director unavailable: ' + err.message);
+      } finally {
+        smartDirectorBusy = false;
+      }
+    }
+
+    async function applySmartDirectorSettings(button) {
+      smartDirectorPriorityWrites++;
+      if (button) button.disabled = true;
+      while (smartDirectorWriting) await new Promise(resolve => setTimeout(resolve, 25));
+      smartDirectorWriting = true;
+      smartDirectorRevision++;
+      setText('smartDirectorMessage', 'Applying...');
+      try {
+        const data = await postJson('/api/smart-director', readSmartDirectorForm());
+        if (!data || data.ok === false) throw new Error((data && data.error) || 'Apply failed.');
+        smartDirectorDirty = false;
+        renderSmartDirectorResponse(data, true);
+      } catch (err) {
+        setText('smartDirectorMessage', 'Apply failed: ' + err.message);
+      } finally {
+        smartDirectorWriting = false;
+        smartDirectorPriorityWrites--;
+        if (button) button.disabled = false;
+        if (Object.keys(liveShowPending).length) liveShowTimer = setTimeout(flushLiveShowControls, 150);
+      }
+    }
+
+    async function setSmartDirectorMode(updates) {
+      // Explicit Stop/Mode changes must not be dropped behind a slider POST.
+      smartDirectorPriorityWrites++;
+      clearTimeout(liveShowTimer);
+      liveShowPending = {};
+      while (smartDirectorWriting) await new Promise(resolve => setTimeout(resolve, 25));
+      smartDirectorWriting = true;
+      smartDirectorRevision++;
+      try {
+        const data = await postJson('/api/smart-director', updates);
+        if (!data || data.ok === false) throw new Error((data && data.error) || 'Music Director update failed.');
+        smartDirectorDirty = false;
+        renderSmartDirectorResponse(data, true);
+        return data;
+      } finally {
+        smartDirectorWriting = false;
+        smartDirectorPriorityWrites--;
+        if (Object.keys(liveShowPending).length) liveShowTimer = setTimeout(flushLiveShowControls, 150);
+      }
+    }
+
+    async function stopSmartMusicMode() {
+      // An explicit Stop must never be dropped behind an in-flight slider POST:
+      // take priority, discard pending slider edits, wait for the write to
+      // finish, and only then stop. Posting straight away let the slider land
+      // after the stop and turn the music show back on.
+      smartDirectorPriorityWrites++;
+      clearTimeout(liveShowTimer);
+      liveShowPending = {};
+      while (smartDirectorWriting) await new Promise(resolve => setTimeout(resolve, 25));
+      smartDirectorWriting = true;
+      try {
+        const data = await postJson('/api/music-director', {enabled: false});
+        if (!data || data.ok === false) throw new Error(data?.error || 'Music Director could not stop.');
+        await loadMusicDirectorState();
+        stopMusicMode();
+      } catch (err) {
+        setText('autoStatus', 'Could not stop Music Director: ' + err.message);
+      } finally {
+        smartDirectorWriting = false;
+        smartDirectorPriorityWrites--;
+        if (Object.keys(liveShowPending).length) liveShowTimer = setTimeout(flushLiveShowControls, 150);
+      }
+    }
+
+    // --- Music Director (mood-matching music mode) ---------------------------
+    let musicDirectorPollId = null;
+
+    function musicDirectorMsg(text, kind) {
+      const el = document.getElementById('musicDirectorMsg');
+      if (!el) return;
+      el.textContent = text || '';
+      el.style.color = kind === 'err' ? 'var(--danger)' : (kind === 'ok' ? 'var(--success)' : '');
+    }
+
+    function musicDirectorTrack(text) {
+      const el = document.getElementById('musicDirectorTrack');
+      if (el) el.textContent = text || '';
+    }
+
+    async function pollMusicDirector() {
+      try {
+        const data = await fetchJsonWithTimeout('/api/music-director', {}, 5000);
+        const track = data && data.status && data.status.track;
+        musicDirectorTrack(track ? '♪ ' + track : '');
+        const response = data?.status?.last_error || data?.status?.last_response;
+        const key = (track || '') + '|' + (response || '');
+        if (response && pollMusicDirector.lastKey !== key) {
+          if (data.status.last_error) appendModelResponse('error', 'Music Director: ' + response);
+          else appendModelResponse('ai', response);
+          pollMusicDirector.lastKey = key;
+        }
+      } catch (err) {
+        console.warn('Music Director poll failed:', err);
+      }
+    }
+
+    function setMusicDirectorPolling(enabled) {
+      if (musicDirectorPollId) {
+        clearInterval(musicDirectorPollId);
+        musicDirectorPollId = null;
+      }
+      if (enabled) {
+        pollMusicDirector();
+        musicDirectorPollId = setInterval(pollMusicDirector, 10000);
+      } else {
+        musicDirectorTrack('');
+      }
+    }
+
+    async function loadMusicDirectorState() {
+      try {
+        const data = await fetchJsonWithTimeout('/api/music-director', {}, 5000);
+        const cb = document.getElementById('musicDirectorEnabled');
+        const enabled = !!(data && data.enabled);
+        if (cb) cb.checked = enabled;
+        setMusicDirectorPolling(enabled);
+      } catch (err) {
+        console.warn('Music Director state unavailable:', err);
+      }
+    }
+
+    async function toggleMusicDirector(enabled) {
+      const cb = document.getElementById('musicDirectorEnabled');
+      musicDirectorMsg('Saving...', '');
+      try {
+        const data = await postJson('/api/music-director', {enabled: !!enabled});
+        if (data.ok === false) throw new Error(data.error || 'Save failed.');
+        musicDirectorMsg(enabled ? 'Music mode on' : 'Music mode off', 'ok');
+        setMusicDirectorPolling(enabled);
+      } catch (err) {
+        if (cb) cb.checked = !enabled;  // revert on error
+        musicDirectorMsg(err.message || 'Error saving Music setting.', 'err');
+      }
+    }
+
+    async function wallMode(mode) {
+      await send(mode, {fx: Number(wallFx.value), pal: Number(wallPal.value), speed: Number(wallSpeed.value)});
+    }
+
+    async function wallVersus() {
+      await send('wall_versus', {
+        fx_left: Number(wallFxL.value),
+        fx_right: Number(wallFxR.value),
+        pal: Number(wallPal.value),
+        speed: Number(wallSpeed.value)
+      });
+    }
+
+    async function applyWallChannel() {
+      await send('set_channel', {
+        channel: wallChannel.value,
+        fx: Number(wallFx.value),
+        pal: Number(wallPal.value),
+        speed: Number(wallSpeed.value)
+      });
+    }
+
+    async function postAction(action, values = {}, timeoutMs = 4000) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
       try {
         const res = await fetch('/api/action', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({action, ...values})
+          body: JSON.stringify({action, target: currentTarget, ...values}),
+          signal: controller.signal
         });
-        const data = await res.json();
+        return await res.json();
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 15000) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const res = await fetch(url, {...options, signal: controller.signal});
+        return await res.json();
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    async function send(action, values = {}) {
+      // Explicit controller actions take ownership from the continuous Music
+      // Mode beat loop, otherwise the next beat immediately overwrites them.
+      if (musicModeRunning) stopMusicMode();
+      status.textContent = 'Sending...';
+      // Optimistic immediate update to LED preview for accurate live colors + motion feel
+      try { optimisticPreviewFromAction(action, values); } catch(e) {}
+      try {
+        const data = await postAction(action, values);
         status.textContent = data.ok ? data.message : data.error;
+        return data;
       } catch (err) {
         status.textContent = 'Error: ' + err.message;
+        return {ok: false, error: err.message};
+      }
+    }
+
+    async function sendBeatUpdate(values) {
+      if (beatRequestInFlight) return;
+      beatRequestInFlight = true;
+      try {
+        optimisticPreviewFromAction('beat', values);
+        const data = await postAction('beat', values, 900);
+        if (!data.ok) console.warn('Beat update rejected:', data.error);
+      } catch (err) {
+        console.warn('Beat update skipped:', err.message);
+      } finally {
+        beatRequestInFlight = false;
+      }
+    }
+
+    function parseTagList(value) {
+      const tags = [];
+      for (const part of String(value || '').split(/[\\n,]+/)) {
+        for (const tag of part.trim().split(/\\s+/)) {
+          const clean = tag.trim();
+          if (clean && !tags.includes(clean)) tags.push(clean);
+        }
+      }
+      return tags;
+    }
+
+    function parseColorList(value) {
+      return String(value || '').split(/[,;|]+/).map((part) => part.trim()).filter(Boolean);
+    }
+
+    function currentPlayerSource() {
+      return (document.getElementById('playerSource') || {}).value || 'youtube_music';
+    }
+
+    function applyPlayerNowPlaying(data) {
+      lastPlayerStatus = data || lastPlayerStatus;
+      updateMusicIdentity(controllerVizStatus?.tv || null);
+      const titleEl = document.getElementById('musicTitle');
+      const artistEl = document.getElementById('musicArtist');
+      const art = document.getElementById('albumArt');
+      const wrap = document.getElementById('playerArtWrap');
+      const playBtn = document.getElementById('playerPlayBtn');
+      if (data && (data.title || data.artist)) {
+        if (titleEl) titleEl.textContent = data.title || 'Unknown';
+        if (artistEl) artistEl.textContent = data.artist || '';
+      }
+      if (art && data && data.artwork) {
+        art.src = data.artwork;
+        art.classList.add('visible');
+        if (wrap) wrap.classList.add('has-art');
+      }
+      if (playBtn && data) playBtn.textContent = data.playing ? '❚❚' : '▶';
+      const seek = document.getElementById('playerSeek');
+      if (seek && data) {
+        const duration = Number(data.duration || data.duration_s || 0);
+        seek.disabled = !Number.isFinite(duration) || duration <= 0;
+        seek.max = seek.disabled ? 0 : duration;
+        if (document.activeElement !== seek) seek.value = Number(data.position || data.position_s || 0);
+      }
+      if (wrap && data && !data.artwork) wrap.classList.remove('has-art');
+    }
+
+    async function refreshPlayerStatus() {
+      if (!playerEnabled) return null;
+      const source = currentPlayerSource();
+      try {
+        const data = await fetchJsonWithTimeout('/api/player?source=' + encodeURIComponent(source), {}, 4000);
+        const line = data.connected
+          ? ((data.playing ? '▶ ' : '❚❚ ') + (data.title || 'Unknown') + (data.artist ? ' — ' + data.artist : ''))
+          : (data.message || 'Disconnected');
+        setText('playerNowPlaying', line);
+        applyPlayerNowPlaying(data);
+        if (!data.desktop) updateAppleAuthPanel(data);
+        else hideApplePairing();
+        maybeAdvanceLocalQueue(data);
+        return data;
+      } catch (err) {
+        setText('playerNowPlaying', 'Player error: ' + err.message);
+        lastPlayerStatus = null;
+        updateMusicIdentity(controllerVizStatus?.tv || null);
+        return null;
+      }
+    }
+
+    async function playerCommand(command, extra) {
+      if (localQueueRun && ['next','previous'].includes(command)) return playLocalQueue(Math.max(0,localQueueRun.index + (command === 'next' ? 1 : -1)));
+      const source = currentPlayerSource();
+      try {
+        if (source === 'apple_music' && !lastPlayerStatus?.desktop && window.MusicKit && MusicKit.getInstance) {
+          const handled = await handleAppleClientCommand(command, extra || {});
+          if (handled) {
+            await refreshPlayerStatus();
+            return handled;
+          }
+        }
+        const body = Object.assign({source, command}, extra || {});
+        const data = await postJson('/api/player', body);
+        if (data && data.client_play) await handleAppleClientCommand('playItem', data.client_play);
+        setText('playerNowPlaying', data.message || (data.ok ? 'Command sent.' : 'Command failed.'));
+        if (data && data.ok && !data.queued && ['play','playPause','playItem'].includes(command) && !musicModeRunning) startMusicMode();
+        await refreshPlayerStatus();
+        return data;
+      } catch (err) {
+        setText('playerNowPlaying', 'Player error: ' + err.message);
+        return null;
+      }
+    }
+
+    async function onPlayerSourceChange() {
+      const source = currentPlayerSource();
+      const status = await refreshPlayerStatus();
+      if (source === 'apple_music' && !status?.desktop) await ensureApplePairing();
+      else hideApplePairing();
+      await loadPlayerPlaylists();
+    }
+
+    function hideApplePairing() {
+      const panel = document.getElementById('appleAuthPanel');
+      if (panel) panel.hidden = true;
+      if (applePairTimer) { clearInterval(applePairTimer); applePairTimer = null; }
+    }
+
+    function updateAppleAuthPanel(data) {
+      const source = currentPlayerSource();
+      const panel = document.getElementById('appleAuthPanel');
+      const signed = document.getElementById('appleSignedIn');
+      const pairing = document.getElementById('applePairing');
+      if (!panel) return;
+      if (source !== 'apple_music') {
+        panel.hidden = true;
+        return;
+      }
+      panel.hidden = false;
+      const authorized = !!(data && data.authorized);
+      if (signed) signed.hidden = !authorized;
+      if (pairing) pairing.hidden = authorized;
+    }
+
+    async function ensureApplePairing() {
+      const source = currentPlayerSource();
+      if (source !== 'apple_music') return;
+      const status = await refreshPlayerStatus();
+      updateAppleAuthPanel(status);
+      if (status && status.authorized) {
+        appleUserToken = appleUserToken || '';
+        await configureMusicKit();
+        return;
+      }
+      try {
+        const session = await fetchJsonWithTimeout('/api/player/apple/session', {}, 4000);
+        const qr = document.getElementById('appleQr');
+        const code = document.getElementById('applePairCode');
+        const link = document.getElementById('appleLoginLink');
+        if (qr && session.qr_png) {
+          qr.innerHTML = '';
+          const img = document.createElement('img');
+          img.src = session.qr_png;
+          img.alt = 'Apple ID login QR code';
+          qr.appendChild(img);
+        }
+        if (code) code.textContent = session.code || '······';
+        if (link && session.login_url) link.href = session.login_url;
+        updateAppleAuthPanel({authorized: false});
+        if (applePairTimer) clearInterval(applePairTimer);
+        applePairTimer = setInterval(() => pollAppleSession(session.session), 2000);
+      } catch (err) {
+        setText('playerNowPlaying', 'Apple login error: ' + err.message);
+      }
+    }
+
+    async function pollAppleSession(sessionId) {
+      if (!sessionId) return;
+      try {
+        const data = await fetchJsonWithTimeout('/api/player/apple/session?id=' + encodeURIComponent(sessionId), {}, 4000);
+        if (data && data.authorized) {
+          appleUserToken = data.music_user_token || appleUserToken;
+          if (applePairTimer) { clearInterval(applePairTimer); applePairTimer = null; }
+          await configureMusicKit();
+          updateAppleAuthPanel({authorized: true});
+          setText('playerNowPlaying', 'Apple ID connected.');
+          await loadPlayerPlaylists();
+          await refreshPlayerStatus();
+        }
+      } catch (err) {
+        console.warn('Apple session poll failed', err);
+      }
+    }
+
+    async function loadMusicKit() {
+      if (window.MusicKit) return window.MusicKit;
+      await new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://js-cdn.music.apple.com/musickit/v3/musickit.js';
+        s.onload = () => resolve(window.MusicKit);
+        s.onerror = () => reject(new Error('MusicKit failed to load'));
+        document.head.appendChild(s);
+      });
+      return window.MusicKit;
+    }
+
+    async function configureMusicKit() {
+      try {
+        await loadMusicKit();
+        const cfg = await fetchJsonWithTimeout('/api/player/apple/config', {}, 4000);
+        if (!cfg || !cfg.developerToken || !window.MusicKit) return null;
+        if (!musicKitReady) {
+          musicKitReady = MusicKit.configure({
+            developerToken: cfg.developerToken,
+            app: { name: cfg.appName || 'Lightss', build: cfg.appBuild || '0.1.0' },
+            musicUserToken: appleUserToken || undefined
+          });
+        }
+        const music = await musicKitReady;
+        if (appleUserToken && music && !music.isAuthorized) {
+          try { music.musicUserToken = appleUserToken; } catch (e) {}
+        }
+        if (music && music.addEventListener) {
+          music.addEventListener('playbackStateDidChange', syncAppleNowPlaying);
+          music.addEventListener('nowPlayingItemDidChange', syncAppleNowPlaying);
+        }
+        return music;
+      } catch (err) {
+        console.warn('MusicKit configure failed', err);
+        return null;
+      }
+    }
+
+    async function handleAppleClientCommand(command, extra) {
+      const music = await configureMusicKit();
+      if (!music) return null;
+      try {
+        if (command === 'playItem') {
+          const values = Object.assign({}, extra.data || {}, extra);
+          const kind = values.kind || 'song';
+          const song = values.song || values.songId || (kind === 'song' ? values.id : null);
+          const album = values.album || values.albumId || (kind === 'album' ? values.id : null);
+          const playlist = values.playlist || values.playlistId || (kind === 'playlist' ? values.id : null);
+          if (values.artist || values.artistId || kind === 'artist') throw new Error('Open this artist in the desktop provider tab and choose a track or album.');
+          if (song) await music.setQueue({ song });
+          else if (album) await music.setQueue({ album });
+          else if (playlist) await music.setQueue({ playlist });
+          else throw new Error('Choose a playable track, album, or playlist.');
+          await music.play();
+        } else if (command === 'seek') await music.seekToTime(Number((extra.data || extra).position));
+        else if (command === 'volume') music.volume = Math.max(0,Math.min(1,Number((extra.data || extra).volume)));
+        else if (command === 'play') await music.play();
+        else if (command === 'pause') await music.pause();
+        else if (command === 'playPause') {
+          if (music.isPlaying) await music.pause();
+          else await music.play();
+        } else if (command === 'next') await music.skipToNextItem();
+        else if (command === 'previous') await music.skipToPreviousItem();
+        else return null;
+        await ensurePlayerAnalyser();
+        if (!musicModeRunning) startMusicMode();
+        await syncAppleNowPlaying();
+        return {ok: true, client: true, command};
+      } catch (err) {
+        setText('playerNowPlaying', 'Apple playback error: ' + err.message);
+        return {ok: false, command, message: err.message};
+      }
+    }
+
+    async function syncAppleNowPlaying() {
+      try {
+        const music = window.MusicKit && MusicKit.getInstance && MusicKit.getInstance();
+        const item = music && (music.nowPlayingItem || (music.player && music.player.nowPlayingItem));
+        const attrs = (item && (item.attributes || item)) || {};
+        const payload = {
+          title: attrs.name || attrs.title || '',
+          artist: attrs.artistName || attrs.artist || '',
+          album: attrs.albumName || '',
+          artwork: attrs.artwork && attrs.artwork.url ? String(attrs.artwork.url).replace('{w}', '240').replace('{h}', '240') : '',
+          playing: !!(music && (music.isPlaying || (music.player && music.player.isPlaying)))
+        };
+        applyPlayerNowPlaying(payload);
+        await postJson('/api/player/apple/now', payload);
+      } catch (err) {
+        console.warn('Apple now-playing sync failed', err);
+      }
+    }
+
+    async function signOutApple() {
+      appleUserToken = '';
+      try {
+        const music = window.MusicKit && MusicKit.getInstance && MusicKit.getInstance();
+        if (music && music.unauthorize) await music.unauthorize();
+      } catch (e) {}
+      await ensureApplePairing();
+    }
+
+    function renderLibraryRows(el, items, kind) {
+      if (!el) return;
+      const rows = (items || []).filter((item) => item && (item.id || item.title));
+      if (!rows.length) {
+        el.innerHTML = '<div class="library-empty">Nothing here yet.</div>';
+        return;
+      }
+      el.innerHTML = '';
+      for (const item of rows) {
+        const id = String(item.id || '');
+        const title = String(item.title || 'Untitled');
+        const artist = String(item.artist || item.kind || '');
+        const art = String(item.artwork || '');
+        const playKind = item.kind || kind || 'song';
+        const btn = document.createElement('button');
+        btn.className = 'library-row';
+        btn.title = 'Play ' + title;
+        btn.onclick = () => playLibraryItem(playKind, id);
+        if (art && /^https?:[/][/]/i.test(art)) {
+          const img = document.createElement('img');
+          img.src = art;
+          img.alt = '';
+          btn.appendChild(img);
+        } else {
+          const thumb = document.createElement('span');
+          thumb.className = 'library-thumb';
+          btn.appendChild(thumb);
+        }
+        const meta = document.createElement('span');
+        const strong = document.createElement('b');
+        strong.textContent = title;
+        const sub = document.createElement('span');
+        sub.textContent = artist;
+        meta.append(strong, sub);
+        btn.appendChild(meta);
+        el.appendChild(btn);
+      }
+    }
+
+    async function searchPlayerLibrary() {
+      const q = ((document.getElementById('playerSearchInput') || {}).value || '').trim();
+      const box = document.getElementById('playerSearchResults');
+      if (box) box.innerHTML = '<div class="library-empty">Searching…</div>';
+      try {
+        const data = await fetchJsonWithTimeout('/api/player/search?source=' + encodeURIComponent(currentPlayerSource()) + '&q=' + encodeURIComponent(q), {}, 8000);
+        renderLibraryRows(box, data.items || [], null);
+        if (data.message && !(data.items || []).length) setText('playerNowPlaying', data.message);
+      } catch (err) {
+        if (box) box.textContent = 'Search failed: ' + err.message;
+      }
+    }
+
+    function applyPlayerEnabled(enabled) {
+      const wasEnabled = playerEnabled;
+      playerEnabled = enabled === true;
+      const deck = document.querySelector('.player-deck');
+      if (deck) deck.style.display = playerEnabled ? '' : 'none';
+      if (!playerEnabled && playerPollTimer) { clearInterval(playerPollTimer); playerPollTimer = null; }
+      if (playerEnabled && !wasEnabled && !playerPollTimer) {
+        refreshPlayerStatus();
+        loadPlayerPlaylists();
+        playerPollTimer = setInterval(refreshPlayerStatus, 4000);
+      }
+    }
+
+    async function loadPlayerPlaylists() {
+      if (!playerEnabled) return;
+      const box = document.getElementById('playerPlaylists');
+      if (box) box.innerHTML = '<div class="library-empty">Loading playlists…</div>';
+      try {
+        const data = await fetchJsonWithTimeout('/api/player/playlists?source=' + encodeURIComponent(currentPlayerSource()), {}, 8000);
+        renderLibraryRows(box, data.playlists || [], 'playlist');
+        if (data.message && !(data.playlists || []).length) {
+          if (box) box.innerHTML = '<div class="library-empty">' + String(data.message).replace(/</g, '') + '</div>';
+        }
+      } catch (err) {
+        if (box) box.innerHTML = '<div class="library-empty">Playlists unavailable.</div>';
+      }
+    }
+
+    async function playLibraryItem(kind, id) {
+      if (!id) return;
+      const extra = {id, kind, data:{id,kind}};
+      await playerCommand('playItem', extra);
+    }
+
+    async function ensurePlayerAnalyser() {
+      const audio = document.querySelector('audio');
+      if (currentPlayerSource() !== 'apple_music' || !audio || audio.paused || audio.ended) return false;
+      if (!audioContext || audioContext.state === 'closed') {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (audioContext.state === 'suspended') await audioContext.resume();
+      if (!playerMediaSource) {
+        try { playerMediaSource = audioContext.createMediaElementSource(audio); }
+        catch (err) { console.warn('Player analyser already attached', err.message); }
+      }
+      if (!analyser) {
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 2048;
+        analyser.smoothingTimeConstant = 0.72;
+        frequencyData = new Uint8Array(analyser.frequencyBinCount);
+        waveformData = new Uint8Array(analyser.fftSize);
+      }
+      if (playerMediaSource) {
+        try { playerMediaSource.connect(analyser); } catch (e) {}
+        try { analyser.connect(audioContext.destination); } catch (e) {}
+      }
+      if (!audioReactiveRunning) {
+        audioReactiveRunning = true;
+        setText('micPipelineState', 'Player tap');
+        analyzeAudio();
+      }
+      return true;
+    }
+
+    async function applyDynamicScene() {
+      const data = await send('dynamic_scene', {
+        mood: dynMood.value.trim(),
+        energy: dynEnergy.value,
+        motion: dynMotion.value,
+        strategy: dynStrategy.value.trim(),
+        engine: dynEngine.value,
+        composition_mode: dynComposition.value,
+        intensity: Number(dynIntensity.value) / 100,
+        colors: parseColorList(dynColors.value),
+        seed: dynSeed.value.trim() || null
+      });
+      setText('dynSceneStatus', data && data.ok ? (data.message || 'Dynamic scene applied.') : (data && data.error ? ('Dynamic scene error: ' + data.error) : 'Dynamic scene request sent.'));
+    }
+
+    async function startRealtime() {
+      const data = await send('realtime_start', {
+        shader: rtShader.value,
+        mood: rtMood.value.trim(),
+        composition_mode: rtComposition.value,
+        intensity: Number(rtIntensity.value) / 100,
+        fps: Number(rtFps.value),
+        duration_s: Number(rtDuration.value),
+        colors: parseColorList(rtColors.value),
+        seed: rtSeed.value.trim() || null
+      });
+      await refreshRealtimeStatus();
+      setText('realtimeStatus', data && data.ok ? (data.message || 'Realtime stream started.') : (data && data.error ? ('Realtime error: ' + data.error) : 'Realtime request sent.'));
+    }
+
+    async function designLook() {
+      const data = await send('design_look', {
+        prompt: rtMood.value.trim() || 'unique wall look',
+        mood: rtMood.value.trim(),
+        colors: parseColorList(rtColors.value),
+        seed: rtSeed.value.trim() || null,
+        run: true,
+        fps: Number(rtFps.value),
+        duration_s: Number(rtDuration.value),
+        composition_mode: rtComposition.value,
+        intensity: Number(rtIntensity.value)/100
+      });
+      await refreshRealtimeStatus();
+      setText('realtimeStatus', data && data.ok ? (data.message || 'Look design started.') : (data && data.error ? ('Look design error: ' + data.error) : 'Look design request sent.'));
+    }
+
+    async function stopRealtime() {
+      const data = await send('realtime_stop');
+      setText('realtimeStatus', data && data.ok ? (data.message || 'Realtime stopped.') : (data && data.error ? ('Realtime error: ' + data.error) : 'Realtime stop request sent.'));
+    }
+
+    async function refreshRealtimeStatus() {
+      try {
+        const data = await postAction('realtime_status', {}, 4000);
+        const message = data && data.message ? data.message : JSON.stringify(data || {});
+        setText('realtimeStatus', message || 'No realtime status available.');
+        return data;
+      } catch (err) {
+        setText('realtimeStatus', 'Status error: ' + err.message);
+        return null;
+      }
+    }
+
+    async function submitLookFeedback(score) {
+      const payload = {
+        score: Number(score),
+        notes: feedbackNotes.value.trim(),
+        tags: parseTagList(feedbackTags.value),
+        applies_to: 'last'
+      };
+      const lookId = feedbackLookId.value.trim();
+      if (lookId) payload.look_id = lookId;
+      try {
+        const data = await postAction('look_feedback', payload, 6000);
+        setText('feedbackStatus', data && data.message ? data.message : 'Feedback saved.');
+        return data;
+      } catch (err) {
+        setText('feedbackStatus', 'Feedback error: ' + err.message);
+        return null;
+      }
+    }
+
+    async function refreshLookMemory() {
+      try {
+        const data = await postAction('look_memory_summary', {limit: 8}, 6000);
+        setText('lookMemorySummary', data && data.message ? data.message : 'Look memory unavailable.');
+        return data;
+      } catch (err) {
+        setText('lookMemorySummary', 'Memory error: ' + err.message);
+        return null;
       }
     }
 
@@ -1078,6 +2939,9 @@ HTML_TEMPLATE = """<!doctype html>
     async function askAI() {
       const prompt = aiInput.value.trim();
       if (!prompt) return;
+      // Freeze the continuously-writing beat loop before the AI snapshots and
+      // changes WLED so its result remains visible and controllable.
+      if (musicModeRunning) stopMusicMode();
       addChatMessage('user', prompt);
       aiInput.value = '';
       addChatMessage('system', 'Thinking...');
@@ -1087,14 +2951,19 @@ HTML_TEMPLATE = """<!doctype html>
       aiConfirmations.textContent = '';
       try {
         const song = await refreshNowPlaying();
-        const res = await fetch('/api/ai', {
+        const res = await fetchJsonWithTimeout('/api/ai', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({prompt, now_playing: song})
-        });
-        const data = await res.json();
+          body: JSON.stringify({prompt, now_playing: song, target: currentTarget, async: true})
+        }, 180000);
+        let data = res;
+        if (data.ok && data.job_id) {
+          status.textContent = 'AI planning...';
+          data = await waitForAiJob(data.job_id);
+        }
         if (thinkingEl) thinkingEl.remove();
         status.textContent = data.ok ? data.message : data.error;
+        if (!data.ok) appendModelResponse('error', data.error || 'AI request failed.');
         if (data.response) {
           // Instead of cluttering AI Chat tab, scroll descriptive model responses right-to-left in the top box
           showScrollingModelResponse(data.response);
@@ -1121,7 +2990,23 @@ HTML_TEMPLATE = """<!doctype html>
         if (thinkingEl) thinkingEl.remove();
         status.textContent = 'AI error: ' + err.message;
         addChatMessage('ai', 'Error: ' + err.message);
+        appendModelResponse('error', 'AI error: ' + err.message);
       }
+    }
+
+    async function waitForAiJob(jobId) {
+      // Tool-calling AI loops (multi-round function calls) routinely take
+      // 1-4 minutes on slower providers — wait up to 5 minutes.
+      const started = Date.now();
+      while (Date.now() - started < 300000) {
+        const data = await fetchJsonWithTimeout(`/api/ai/jobs/${encodeURIComponent(jobId)}`);
+        const job = data.job || {};
+        if (job.status === 'complete') return job.result || {ok: false, error: 'AI job completed without a result.'};
+        if (job.status === 'error') return {ok: false, error: job.error || 'AI job failed.'};
+        status.textContent = `AI planning... ${Math.floor((Date.now() - started) / 1000)}s`;
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      return {ok: false, error: 'AI job timed out.'};
     }
 
     function useExamplePrompt() {
@@ -1145,7 +3030,7 @@ HTML_TEMPLATE = """<!doctype html>
         card.classList.toggle('running', running);
       }
       setText('micPipelineState', running ? 'Listening' : 'Idle');
-      setText('nextMatchState', running ? (detail || 'Every 30s') : 'Manual');
+      setText('nextMatchState', running ? (detail || 'On song change') : 'Manual');
     }
 
     let webcamStream = null;
@@ -1198,12 +3083,11 @@ HTML_TEMPLATE = """<!doctype html>
       const base64Image = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
 
       try {
-        const response = await fetch('/api/ai_vision', {
+        const data = await fetchJsonWithTimeout('/api/ai_vision', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ image: base64Image })
-        });
-        const data = await response.json();
+        }, 60000);
         laser.style.display = 'none';
         if (data.error) {
           status.innerText = 'Analysis failed: ' + data.error;
@@ -1223,12 +3107,16 @@ HTML_TEMPLATE = """<!doctype html>
         const response = await fetch('/api/state');
         const data = await response.json();
         if (data.ok && data.state) {
-          const st = data.state;
+          applyFleetInfo(data);
+          updateConnectionStatusFromState(data.state);
+          const picked = displayState(data.state);
+          const st = picked.state;
           const onOff = st.on ? 'ON' : 'OFF';
           const bri = st.bri ?? '?';
           const seg = st.seg && st.seg[0] ? st.seg[0] : {};
           const col = seg.col && seg.col[0] ? seg.col[0] : [0,0,0,0];
           let display = `Power: ${onOff}\nBrightness: ${bri}\nColor: RGBW(${col.join(',')})\nEffect: ${seg.fx ?? '-'} Speed: ${seg.sx ?? '-'}`;
+          if (picked.name) display = `Controller: ${picked.name}\n` + display;
           
           const stateDisplay = document.getElementById('stateDisplay');
           const stateSummary = document.getElementById('stateSummary');
@@ -1236,7 +3124,7 @@ HTML_TEMPLATE = """<!doctype html>
           if (stateSummary) stateSummary.textContent = `${onOff} | Bri ${bri} | Fx ${seg.fx ?? '-'} @ ${seg.sx ?? '-'}`;
           
           if (typeof updateLightPreview === 'function') {
-            updateLightPreview(st, ledCapabilities);
+            updateLightPreview(st, ledCapabilities, picked.segId);
           }
         }
       } catch (err) {
@@ -1244,18 +3132,32 @@ HTML_TEMPLATE = """<!doctype html>
       }
     }
 
+    let lastObservedSong = null;
+    let lastTvObservation = null;
+    let nowPlayingBusy = false;
     async function refreshNowPlaying() {
+      if (nowPlayingBusy) return lastObservedSong;
+      nowPlayingBusy = true;
       try {
-        const res = await fetch('/api/now-playing');
-        const data = await res.json();
+        const data = await fetchJsonWithTimeout('/api/now-playing');
         const np = data.now_playing || null;
+        lastObservedSong = np;
+        updateMusicIdentity(lastTvObservation);
         if (np) {
           musicTitle.textContent = np.title || 'Unknown';
           musicArtist.textContent = np.artist || '';
           if (np.genre) { musicGenre.textContent = np.genre; musicGenre.style.display = 'inline-block'; }
           else { musicGenre.style.display = 'none'; }
-          if (np.cover_url) { albumArt.src = np.cover_url; albumArt.classList.add('visible'); }
-          else { albumArt.classList.remove('visible'); }
+          if (np.cover_url) {
+            albumArt.src = np.cover_url;
+            albumArt.classList.add('visible');
+            const wrap = document.getElementById('playerArtWrap');
+            if (wrap) wrap.classList.add('has-art');
+          } else {
+            albumArt.classList.remove('visible');
+            const wrap = document.getElementById('playerArtWrap');
+            if (wrap) wrap.classList.remove('has-art');
+          }
           setText('songSourceState', np.source ? np.source : 'Media metadata');
         } else {
           musicTitle.textContent = data.text || data.error || 'No song detected.';
@@ -1274,6 +3176,8 @@ HTML_TEMPLATE = """<!doctype html>
         nowPlaying.textContent = 'Error fetching song.';
         setText('songSourceState', 'Unavailable');
         return null;
+      } finally {
+        nowPlayingBusy = false;
       }
     }
 
@@ -1295,11 +3199,37 @@ HTML_TEMPLATE = """<!doctype html>
       }
       return buf;
     }
+    async function getPreferredMicStream() {
+      const audio = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+      const initial = await navigator.mediaDevices.getUserMedia({ audio });
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const preferred = devices.find((device) =>
+          device.kind === 'audioinput' && /c920|webcam/i.test(device.label || '')
+        );
+        const currentTrack = initial.getAudioTracks()[0];
+        const currentDeviceId = currentTrack && currentTrack.getSettings
+          ? currentTrack.getSettings().deviceId
+          : '';
+        if (!preferred || !preferred.deviceId || preferred.deviceId === currentDeviceId) return initial;
+
+        const webcamStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            ...audio,
+            deviceId: { exact: preferred.deviceId }
+          }
+        });
+        initial.getTracks().forEach((track) => track.stop());
+        return webcamStream;
+      } catch (err) {
+        console.warn('Could not select webcam microphone; using browser default:', err.message);
+        return initial;
+      }
+    }
+
     async function ensureMicSession() {
       if (!micStream) {
-        micStream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
-        });
+        micStream = await getPreferredMicStream();
       }
       if (!audioContext || audioContext.state === 'closed') {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -1349,14 +3279,15 @@ HTML_TEMPLATE = """<!doctype html>
       albumArt.classList.remove('visible');
       try {
         const b64 = await captureMicWav(6);
-        const res = await fetch('/api/recognize', {
+        const data = await fetchJsonWithTimeout('/api/recognize', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({audio: b64})
-        });
-        const data = await res.json();
+        }, 20000);
         if (data.ok && data.now_playing) {
           const np = data.now_playing;
+          lastObservedSong = np;
+          updateMusicIdentity(lastTvObservation);
           musicTitle.textContent = np.title || 'Song recognized!';
           musicArtist.textContent = np.artist || '';
           if (np.genre) { musicGenre.textContent = np.genre; musicGenre.style.display = 'inline-block'; }
@@ -1377,6 +3308,8 @@ HTML_TEMPLATE = """<!doctype html>
       status.textContent = data.message || 'Lights matched!';
       const np = data.now_playing;
       if (np) {
+        lastObservedSong = np;
+        updateMusicIdentity(lastTvObservation);
         musicTitle.textContent = np.title || 'Unknown';
         musicArtist.textContent = np.artist || '';
         if (np.genre) { musicGenre.textContent = np.genre; musicGenre.style.display = 'inline-block'; }
@@ -1404,12 +3337,11 @@ HTML_TEMPLATE = """<!doctype html>
           if (st) st.textContent = message;
           return {ok: false, now_playing: null, error: message};
         }
-        const res = await fetch('/api/match-lights', {
+        const data = await fetchJsonWithTimeout('/api/match-lights', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({now_playing: song})
         });
-        const data = await res.json();
         if (data.ok) {
           applyMatchedSongResponse(data);
         } else {
@@ -1422,6 +3354,26 @@ HTML_TEMPLATE = """<!doctype html>
       }
     }
 
+    async function matchLightsFromRecognizedSong(song) {
+      if (!song) return {ok: false, now_playing: null, error: 'No song recognized.'};
+      try {
+        const data = await fetchJsonWithTimeout('/api/match-lights', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({now_playing: song})
+        });
+        if (data.ok) {
+          applyMatchedSongResponse(data);
+        } else {
+          status.textContent = data.error || 'Could not match recognized song.';
+        }
+        return data;
+      } catch (err) {
+        status.textContent = 'Recognized song match error: ' + err.message;
+        return {ok: false, now_playing: song, error: err.message};
+      }
+    }
+
     async function matchLightsToSong() {
       return matchLightsFromNowPlaying();
     }
@@ -1430,19 +3382,28 @@ HTML_TEMPLATE = """<!doctype html>
       const box = document.getElementById('smartSuggestions');
       if (!box) return;
       try {
-        const res = await fetch('/api/suggestions');
-        const data = await res.json();
+        const data = await fetchJsonWithTimeout('/api/suggestions');
         const suggestions = data.suggestions || [];
-        box.innerHTML = suggestions.map((item) => {
-          const click = item.action === 'music_match'
-            ? 'matchLightsFromNowPlaying()'
-            : `send('${item.action}', ${JSON.stringify(item.payload || {}).replace(/"/g, '&quot;')})`;
-          return `
-            <button class="smart-chip" onclick="${click}">
-              <b>${item.title}</b><span>${item.reason}</span>
-            </button>
-          `;
-        }).join('');
+        // Song/artist text and controller data are untrusted input: build the
+        // chips from DOM nodes and textContent so media metadata can never
+        // become markup (a track title is attacker-controlled).
+        box.textContent = '';
+        for (const item of suggestions) {
+          const chip = document.createElement('button');
+          chip.className = 'smart-chip';
+          const title = document.createElement('b');
+          title.textContent = item && item.title != null ? String(item.title) : '';
+          const reason = document.createElement('span');
+          reason.textContent = item && item.reason != null ? String(item.reason) : '';
+          chip.append(title, reason);
+          const action = item && item.action != null ? String(item.action) : '';
+          const payload = item && item.payload && typeof item.payload === 'object' ? item.payload : {};
+          chip.addEventListener('click', () => {
+            if (action === 'music_match') matchLightsFromNowPlaying();
+            else send(action, payload);
+          });
+          box.append(chip);
+        }
       } catch (err) {
         box.innerHTML = '<div class="smart-chip"><b>Smart picks offline</b><span>Suggestions will appear when the controller responds.</span></div>';
       }
@@ -1458,7 +3419,7 @@ HTML_TEMPLATE = """<!doctype html>
       btn.disabled = true;
       st.textContent = 'Detecting song and choosing lights…';
       try {
-        await matchLightsFromNowPlaying();
+        await runMusicRecognitionCycle(true);
         st.textContent = status.textContent || 'Done';
       } catch (err) {
         st.textContent = 'Error: ' + err.message;
@@ -1477,22 +3438,23 @@ HTML_TEMPLATE = """<!doctype html>
       const chunks = [];
 
       processor.onaudioprocess = (e) => {
-        if (!musicModeRunning) return;
+        if (!musicModeRunning || musicMetadataActive) return;
         chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
       };
       source.connect(processor);
       processor.connect(audioCtx.destination);
 
       async function uploadChunk() {
-        if (!musicModeRunning || chunks.length === 0) return;
+        if (!musicModeRunning || musicMetadataActive) { chunks.length = 0; return; }
+        if (chunks.length === 0) return;
         const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
         const combined = new Float32Array(totalLength);
         let idx = 0;
         for (const c of chunks) { combined.set(c, idx); idx += c.length; }
         chunks.length = 0;
 
-        const offline = new OfflineAudioContext(1, combined.length, 44100);
-        const buf = offline.createBuffer(1, combined.length, 44100);
+        const offline = new OfflineAudioContext(1, combined.length, audioCtx.sampleRate);
+        const buf = offline.createBuffer(1, combined.length, audioCtx.sampleRate);
         buf.getChannelData(0).set(combined);
         const offlineSource = offline.createBufferSource();
         offlineSource.buffer = buf;
@@ -1529,7 +3491,47 @@ HTML_TEMPLATE = """<!doctype html>
       }
     }
 
-    async function startMusicMode() {
+    async function setMoodSessionRunning(running) {
+      try {
+        const data = await fetchJsonWithTimeout('/api/mood/control', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({command: running ? 'start' : 'stop'})
+        });
+        if (!data.ok) console.warn('Mood session control failed:', data.error);
+        return data.ok;
+      } catch (err) {
+        console.warn('Mood session control failed:', err.message);
+        return false;
+      }
+    }
+
+    async function startMusicMode(options = {}) {
+      const useBrowserMic = options && options.browserMic === true;
+      if (!useBrowserMic) {
+        const btn = document.getElementById('musicModeBtn');
+        const st = document.getElementById('autoStatus');
+        if (btn) btn.disabled = true;
+        try {
+          // Clean up only a legacy browser analyzer. stopMusicMode() is
+          // intentionally local and cannot disable the new server director.
+          if (musicModeRunning || audioReactiveRunning) stopMusicMode();
+          const data = await postJson('/api/music-director', {enabled: true});
+          if (!data || data.ok === false) throw new Error(data?.error || 'Music Director could not start.');
+          await loadMusicDirectorState();
+          if (btn) btn.textContent = 'Music Director Running';
+          setMusicModeUi(true, 'Song changes');
+          setText('micPipelineState', 'Music Director');
+          setText('songSourceState', 'Media metadata / ambient ID');
+          if (st) st.textContent = 'AI follows identified songs; WLED handles local audio reactivity.';
+        } catch (err) {
+          stopAudioReactive();
+          if (st) st.textContent = 'Music mode error: ' + err.message;
+        } finally {
+          if (btn) btn.disabled = false;
+        }
+        return;
+      }
       if (musicModeRunning) return;
       const btn = document.getElementById('musicModeBtn');
       const st = document.getElementById('autoStatus');
@@ -1537,23 +3539,40 @@ HTML_TEMPLATE = """<!doctype html>
       try {
         await startAudioReactive();
         if (!audioReactiveRunning) return;
+        musicModeRunning = true;
+        musicModeGeneration++;
+        musicMetadataKey = '';
+        musicMetadataActive = false;
+        // Server-side MoodSession.sample() drops chunks unless the session is
+        // running — start it before the recorder uploads the first sample.
+        await setMoodSessionRunning(true);
         await startMoodRecorder();
         setText('songSourceState', 'Webcam mic');
-        musicModeRunning = true;
         if (btn) btn.textContent = 'Music Mode Running';
         setMusicModeUi(true, 'Checking now');
-        if (st) st.textContent = 'Beat matching live audio; checking media metadata every 30 seconds.';
-        await runMusicRecognitionCycle(true);
+        if (st) st.textContent = 'Beat matching live audio; checking media metadata and browser mic.';
         musicRecognitionTimer = setInterval(() => runMusicRecognitionCycle(false), MUSIC_RECOGNITION_INTERVAL_MS);
+        await runMusicRecognitionCycle(false);
       } catch (err) {
+        musicModeRunning = false;
+        setMoodSessionRunning(false);
+        stopAudioReactive();  // close the mic and cancel the analyser rAF
         if (st) st.textContent = 'Music mode error: ' + err.message;
       } finally {
         if (btn) btn.disabled = false;
       }
     }
 
+    function startBrowserMusicMode() {
+      return startMusicMode({browserMic: true});
+    }
+
     function stopMusicMode() {
+      musicModeGeneration++;
       musicModeRunning = false;
+      musicMetadataActive = false;
+      musicMetadataKey = '';
+      setMoodSessionRunning(false);
       stopMoodRecorder();
       if (musicRecognitionTimer) clearInterval(musicRecognitionTimer);
       musicRecognitionTimer = null;
@@ -1565,28 +3584,79 @@ HTML_TEMPLATE = """<!doctype html>
       if (st) st.textContent = 'Music mode stopped.';
     }
 
+    let playbackClock = null;
+    let playbackClockReceivedAt = 0;
+    let playbackClockBusy = false;
+
+    function renderPlaybackClock() {
+      if (!playbackClock) return;
+      const age = Math.max(0, (performance.now() - playbackClockReceivedAt) / 1000);
+      const stamp = (seconds) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
+      if (Number.isFinite(playbackClock.position_s)) {
+        let position = playbackClock.position_s + (playbackClock.playing ? age : 0);
+        if (Number.isFinite(playbackClock.duration_s)) position = Math.min(position, playbackClock.duration_s);
+        setText('songClockState', `${stamp(position)}${playbackClock.duration_s ? ' / ' + stamp(playbackClock.duration_s) : ''} · external clock${playbackClock.playing ? '' : ' · paused'}`);
+      } else {
+        const observed = Number(playbackClock.observed_for_s) || 0;
+        setText('songClockState', `Position unknown${observed > 0 ? ' · observed for ' + stamp(observed + age) : ''}`);
+      }
+    }
+
+    async function refreshPlaybackClock() {
+      if (document.hidden || playbackClockBusy) return;
+      playbackClockBusy = true;
+      try {
+        const data = await fetchJsonWithTimeout('/api/playback-clock', {}, 6000);
+        if (data.ok && data.clock) {
+          playbackClock = data.clock;
+          playbackClockReceivedAt = performance.now();
+          renderPlaybackClock();
+        }
+      } catch (err) {
+        playbackClock = null;
+        setText('songClockState', 'Clock unavailable');
+      } finally { playbackClockBusy = false; }
+    }
+
     async function runMusicRecognitionCycle(force = false) {
       if ((!musicModeRunning && !force) || musicRecognitionBusy) return;
+      const generation = musicModeGeneration;
       musicRecognitionBusy = true;
       try {
-        status.textContent = 'Checking media metadata...';
-        setText('nextMatchState', 'Checking now');
-        const result = await matchLightsFromNowPlaying();
+        const song = await refreshNowPlaying();
+        if (generation !== musicModeGeneration || (!force && !musicModeRunning)) return;
         const st = document.getElementById('autoStatus');
-        if (result && result.ok && result.now_playing) {
-          if (st) st.textContent = `Matched ${result.now_playing.title || 'song'}; beat mode continues.`;
+        musicMetadataActive = !!(song && (song.title || song.artist));
+        if (musicMetadataActive) {
+          const key = JSON.stringify([song.source || '', song.artist || '', song.title || '', song.album || '']);
+          if (force || key !== musicMetadataKey) {
+            const result = await matchLightsFromRecognizedSong(song);
+            if (result && result.ok) musicMetadataKey = key;
+          }
+          if (st) st.textContent = `Following ${song.title || 'song'}; beat mode continues.`;
+        } else if (force) {
+          // Only explicit Identify calls use this path. Automatic microphone
+          // identification has one owner: the server's local change detector.
+          const song = await recognizeSongOnce();
+          if (song && generation === musicModeGeneration) await matchLightsFromRecognizedSong(song);
         } else {
-          if (st) st.textContent = 'No media metadata detected; beat matching live audio.';
-          if (status.textContent === 'Checking media metadata...') status.textContent = 'No media metadata detected; beat matching live audio.';
+          musicMetadataKey = '';
+          if (st) st.textContent = 'Listening locally for a song change; no scheduled Shazam calls.';
         }
       } finally {
-        if (musicModeRunning) setText('nextMatchState', 'Every 30s');
+        if (musicModeRunning) setText('nextMatchState', 'On song change');
         musicRecognitionBusy = false;
       }
     }
 
     async function startAudioReactive() {
       if (audioReactiveRunning) return;
+      const tapped = await ensurePlayerAnalyser();
+      if (tapped) {
+        status.textContent = 'Listening to the player...';
+        setText('micPipelineState', 'Player tap');
+        return;
+      }
       try {
         await ensureMicSession();
       } catch (err) {
@@ -1602,6 +3672,10 @@ HTML_TEMPLATE = """<!doctype html>
     function stopAudioReactive() {
       if (!audioReactiveRunning) return;
       musicModeRunning = false;
+      musicMetadataActive = false;
+      musicMetadataKey = '';
+      setMoodSessionRunning(false);
+      stopMoodRecorder();
       if (musicRecognitionTimer) clearInterval(musicRecognitionTimer);
       musicRecognitionTimer = null;
       audioReactiveRunning = false;
@@ -1619,6 +3693,7 @@ HTML_TEMPLATE = """<!doctype html>
       if (audioContext && audioContext.state !== 'closed') audioContext.close();
       micStream = null;
       micSource = null;
+      playerMediaSource = null;
       analyser = null;
       audioContext = null;
       frequencyData = null;
@@ -1626,6 +3701,13 @@ HTML_TEMPLATE = """<!doctype html>
     }
 
     function getActiveColors() {
+      if (controllerVizActive()) {
+        const pixels = controllerPreviewColors().filter(rgb => rgb.some(value => value > 0));
+        const palette = controllerVizStatus.intelligence?.colors || [];
+        const c1 = pixels[0] || palette[0] || [45,180,210];
+        const c2 = pixels[Math.floor(pixels.length/2)] || palette[1] || [150,80,210];
+        return {c1:`rgb(${c1.join(',')})`, c2:`rgb(${c2.join(',')})`, c3:`rgb(${c1.join(',')})`, raw1:c1,raw2:c2,raw3:c1,on:true,bri:255};
+      }
       if (typeof currentStripState !== 'undefined' && currentStripState && currentStripState.on && currentStripState.colors && currentStripState.colors[0]) {
         const c1 = currentStripState.colors[0];
         const c2 = currentStripState.colors[1] || c1;
@@ -1653,8 +3735,8 @@ HTML_TEMPLATE = """<!doctype html>
       };
     }
 
-    function updateVu(energy, beat) {
-      const level = Math.max(0, Math.min(100, Math.round(energy * 1.35)));
+    function updateVu(energy, beat, normalized = false) {
+      const level = Math.max(0, Math.min(100, Math.round(energy * (normalized ? 100 : 1.35))));
       peakLevel = Math.max(level, peakLevel * 0.94);
       if (peakLevel < 0.5) peakLevel = 0;
       const vuF = document.getElementById('vuFill');
@@ -1725,6 +3807,8 @@ HTML_TEMPLATE = """<!doctype html>
     }
 
     function analyzeMicFrame() {
+      musicAnalysis.source = 'browser';
+      musicAnalysis.spectrum = frequencyData;
       analyser.getByteFrequencyData(frequencyData);
       analyser.getByteTimeDomainData(waveformData);
 
@@ -1773,7 +3857,7 @@ HTML_TEMPLATE = """<!doctype html>
     }
 
     function renderAnalyzerFrame(analysis) {
-      updateVu(analysis.energy, analysis.beat);
+      updateVu(analysis.energy, analysis.beat, analysis.source === 'controller');
       const pct = (value) => `${Math.max(0, Math.min(100, Math.round(value * 100)))}%`;
       // Safe updates for elements that may have moved to hero or been removed
       const setW = (id, val) => { const e = document.getElementById(id); if (e) e.style.width = val; };
@@ -1794,21 +3878,24 @@ HTML_TEMPLATE = """<!doctype html>
       const bp = document.getElementById('bpmReadout');
       if (bp) bp.textContent = analysis.bpm ? String(analysis.bpm) : '--';
 
-      drawWaveform(analysis.waveform, analysis.beat);
+      if (analysis.source === 'controller') drawControllerLevelHistory(analysis.levelHistory || [], analysis.beat);
+      else drawWaveform(analysis.waveform, analysis.beat);
       drawSpectrum(analysis);
     }
 
     function drawSpectrum(analysis) {
       const canvas = document.getElementById('spectrumCanvas');
-      if (!canvas || !frequencyData || !frequencyData.length) return;
+      const spectrum = analysis.spectrum || frequencyData;
+      if (!canvas || !spectrum || !spectrum.length) return;
       const ctx = canvas.getContext('2d');
       const w = canvas.width;
       const h = canvas.height;
       ctx.clearRect(0, 0, w, h);
 
-      const bins = 24;
+      const bins = Math.min(24, spectrum.length);
+      canvas._latestAnalysis = analysis;
       const binW = w / bins;
-      const step = Math.floor(frequencyData.length / bins);
+      const step = Math.max(1, Math.floor(spectrum.length / bins));
       
       const colors = getActiveColors();
       const isOn = colors.on && colors.bri > 0;
@@ -1816,7 +3903,7 @@ HTML_TEMPLATE = """<!doctype html>
       for (let i = 0; i < bins; i++) {
         let sum = 0;
         const start = i * step;
-        for (let k = 0; k < step; k++) sum += frequencyData[Math.min(frequencyData.length-1, start + k)] || 0;
+        for (let k = 0; k < step; k++) sum += spectrum[Math.min(spectrum.length-1, start + k)] || 0;
         const val = sum / (step * 255);
         const barH = Math.max(3, val * h * 0.98);
         const x = i * binW + 1;
@@ -1840,11 +3927,26 @@ HTML_TEMPLATE = """<!doctype html>
         canvas._creativeClickBound = true;
         canvas.addEventListener('click', (ev) => {
           const rect = canvas.getBoundingClientRect();
-          const clickBin = Math.floor(((ev.clientX - rect.left) / rect.width) * bins);
-          creativeBoostBin(clickBin, analysis);
+          const clickBin = Math.max(0, Math.min(15, Math.floor(((ev.clientX - rect.left) / rect.width) * 16)));
+          creativeBoostBin(clickBin, canvas._latestAnalysis);
         });
         canvas.title = 'Click a frequency bar to creatively influence the lights';
       }
+    }
+
+    function drawControllerLevelHistory(samples, beat) {
+      const canvas = document.getElementById('waveformCanvas');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d'), width = canvas.width, height = canvas.height;
+      ctx.clearRect(0,0,width,height); ctx.fillStyle='#05070f'; ctx.fillRect(0,0,width,height);
+      ctx.strokeStyle=beat ? '#e0f2fe' : '#22d3ee'; ctx.lineWidth=2;
+      ctx.beginPath();
+      const values = samples.length > 1 ? samples : [samples[0] || 0, samples[0] || 0];
+      values.forEach((value,i) => {
+        const x=i*width/(values.length-1), y=height-3-Math.max(0,Math.min(1,value))*(height-6);
+        if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      });
+      ctx.stroke();
     }
 
     function drawWaveform(samples, beat) {
@@ -1886,7 +3988,25 @@ HTML_TEMPLATE = """<!doctype html>
     }
 
     // --- Creative + Capable Visualizer-driven features ---
-    function creativeBoostBin(binIndex, analysis) {
+    function steerControllerShow(updates) {
+      if (!controllerVizActive() || controllerVizStatus.mode !== 'music' || !controllerVizStatus.renderer?.running) return false;
+      for (const [key, value] of Object.entries(updates)) queueLiveShowControl(key, value);
+      return true;
+    }
+
+    async function creativeBoostBin(binIndex, analysis) {
+      if (controllerVizActive() && controllerVizStatus.mode === 'music' && controllerVizStatus.renderer?.running) {
+        const band = Math.max(0, Math.min(15, Math.floor(Number(binIndex) || 0)));
+        setText('liveShowMessage', `Accenting band ${band + 1}…`);
+        try {
+          const data = await postJson('/api/music-show', {action:'accent',band,strength:1});
+          if (!data || data.ok === false) throw new Error(data?.error || 'Accent failed.');
+          if (data.status) renderSmartDirectorStatus(data.status);
+          setText('liveShowMessage', `Band ${band + 1} accented`);
+          flashOrb(.25);
+        } catch (err) { setText('liveShowMessage', 'Accent failed: ' + err.message); }
+        return;
+      }
       // Click spectrum bar → creatively map that frequency energy to color/effect
       const energy = (analysis && analysis.energy) || 0.6;
       const r = Math.round(60 + binIndex * 7 + energy * 80);
@@ -1894,12 +4014,15 @@ HTML_TEMPLATE = """<!doctype html>
       const b = Math.round(160 - binIndex * 4 + energy * 60);
       const w = Math.round(energy * 90);
       const spd = Math.round(80 + energy * 130);
-      // Send a beat-ish color + safe effect with intensity tied to the bin
-      send('beat', { red: r, green: g, blue: b, white: w, brightness: Math.round(120 + energy*90), effect: (binIndex % 5 === 0 ? 9 : 8), speed: spd });
+      // Send a beat-ish color + safe effect with intensity tied to the bin.
+      // Goes through sendBeatUpdate (not send) so a click during reactive
+      // mode doesn't stop the music-mode beat loop.
+      sendBeatUpdate({ red: r, green: g, blue: b, white: w, brightness: Math.round(120 + energy*90), effect: (binIndex % 5 === 0 ? 9 : 8), speed: spd });
       flashOrb(energy);
     }
 
     function creativeSpectrumMap() {
+      if (steerControllerShow({music_motion: 'auto', music_colorfulness: 1, music_intensity: .9})) return;
       // Take current spectrum energy distribution and turn it into a beautiful multi-color scene
       const a = musicAnalysis;
       const bri = Math.max(140, Math.round((a.energy || 0.5) * 200));
@@ -1913,16 +4036,17 @@ HTML_TEMPLATE = """<!doctype html>
         effect: 67, // Colorwaves - very creative & smooth
         speed: Math.round(70 + (a.drive || 0.5) * 140)
       };
-      send('color', payload); // will use merge internally in some paths
-      // also nudge a nice effect
-      setTimeout(() => send('fx', {effect: 67, speed: payload.speed}), 80);
+      // Beat-shaped payload (color + effect + speed in one call) via
+      // sendBeatUpdate so a click during reactive mode keeps the loop alive.
+      sendBeatUpdate(payload);
     }
 
     function creativeEnergyPulse() {
+      if (steerControllerShow({music_motion: 'punch', music_intensity: 1})) { flashOrb(.3); return; }
       const a = musicAnalysis;
       const strength = Math.max(0.4, a.energy || 0.5);
       const fx = (a.bass > 0.6) ? 2 : (a.treble > 0.55 ? 8 : 12);
-      send('beat', {
+      sendBeatUpdate({
         red: Math.round(200 * strength), green: Math.round(80 + 90 * a.mid),
         blue: Math.round(255 * a.treble), white: Math.round(60 * strength),
         brightness: Math.round(160 + strength * 70),
@@ -1933,6 +4057,8 @@ HTML_TEMPLATE = """<!doctype html>
     }
 
     function creativeEvolve() {
+      if (steerControllerShow({music_motion: controllerVizStatus?.renderer?.motion === 'chase' ? 'flow' : 'chase',
+                               music_colorfulness: 1, music_speed: 1.25})) return;
       // "Evolve" the current scene in a creative direction using analysis + a prompt to AI
       const a = musicAnalysis;
       const hint = `Current energy ${(a.energy||0).toFixed(2)}, bass ${(a.bass||0).toFixed(2)}, drive ${(a.drive||0).toFixed(2)}. Evolve the lighting into something more surprising but still tasteful and beat-reactive.`;
@@ -1960,11 +4086,11 @@ HTML_TEMPLATE = """<!doctype html>
       const effect = beatEffects[effectIndex++ % beatEffects.length];
       const brightness = Math.max(90, Math.min(255, Math.round(80 + analysis.drive * 175)));
       const speed = Math.max(96, Math.min(255, Math.round(90 + analysis.beatConfidence * 110 + analysis.treble * 55)));
-      send('beat', {red: color[0], green: color[1], blue: color[2], white: color[3], brightness, effect, speed});
+      sendBeatUpdate({red: color[0], green: color[1], blue: color[2], white: color[3], brightness, effect, speed});
     }
 
     function resetAnalysisDisplay() {
-      Object.assign(musicAnalysis, {energy: 0, rms: 0, bass: 0, mid: 0, treble: 0, beatConfidence: 0, beat: false, bpm: 0, drive: 0, waveform: [], beatTimes: []});
+      Object.assign(musicAnalysis, {source:'browser', spectrum:Array(16).fill(0), energy: 0, rms: 0, bass: 0, mid: 0, treble: 0, beatConfidence: 0, beat: false, bpm: 0, drive: 0, waveform: [], beatTimes: []});
       renderAnalyzerFrame(musicAnalysis);
     }
 
@@ -2024,6 +4150,7 @@ HTML_TEMPLATE = """<!doctype html>
     }
 
     function updateAutonomousStatus(auto) {
+      if (controllerVizActive()) return;
       const autoSt = document.getElementById('autoStatus');
       const running = !!(auto && auto.running);
       if (!running) {
@@ -2040,25 +4167,34 @@ HTML_TEMPLATE = """<!doctype html>
         text = `🎵 ${auto.song.title} — ${auto.song.artist || ''}${genre}`;
         color = 'var(--success)';
       }
-      if (autoSt) { autoSt.textContent = text; }
+      if (autoSt) { autoSt.textContent = text; autoSt.style.color = color; }
     }
 
     function updateMoodStatus(mood) {
+      if (controllerVizActive()) return;
       if (!mood || !mood.running) return;
       const st = document.getElementById('autoStatus');
       const songSource = document.getElementById('songSourceState');
       const nextMatch = document.getElementById('nextMatchState');
       if (songSource) songSource.textContent = 'Webcam mic';
-      if (nextMatch) nextMatch.textContent = 'Continuous';
+      if (nextMatch) nextMatch.textContent = 'On song change';
       if (!st) return;
+      const details = [];
+      if (mood.last_error) details.push(`Error: ${mood.last_error}`);
+      if (mood.last_cache_hit === true) details.push('cached mood');
+      if (mood.last_cache_hit === false) details.push('fresh mood');
+      if ((!mood.recognition || mood.recognition.mode !== 'on_change') && typeof mood.next_recognition_in === 'number' && mood.next_recognition_in > 0) {
+        details.push(`next check ${Math.ceil(mood.next_recognition_in)}s`);
+      }
+      const suffix = details.length ? ` (${details.join(' · ')})` : '';
       if (mood.state === 'ambient') {
-        st.textContent = 'No music detected — ambient fallback active.';
+        st.textContent = `No music detected — ambient fallback active.${suffix}`;
       } else if (mood.state === 'recognized' && mood.song) {
         const t = mood.song.title || 'song';
         const a = mood.song.artist || 'unknown artist';
-        st.textContent = `Matched: ${t} by ${a}`;
+        st.textContent = `Matched: ${t} by ${a}${suffix}`;
       } else {
-        st.textContent = 'Listening for music…';
+        st.textContent = `Listening for music…${suffix}`;
       }
     }
 
@@ -2071,6 +4207,44 @@ HTML_TEMPLATE = """<!doctype html>
     }
 
     const effectNameMap = __EFFECT_NAME_MAP__;
+    const EFFECT_PICKER_IDS = ['fx', 'wallFx', 'wallFxL', 'wallFxR'];
+
+    // The picks above are rendered from the curated offline allowlist; the live
+    // device catalog replaces them (and the name map) once it is available, so
+    // every installed effect is selectable — including blink/strobe/fireworks.
+    async function refreshEffectCatalog() {
+      let entries;
+      try {
+        const data = await fetchJsonWithTimeout('/api/effects', {}, 6000);
+        entries = (data && data.effects) || [];
+      } catch (err) {
+        return;
+      }
+      if (!entries.length) return;
+      const names = {};
+      for (const entry of entries) {
+        const id = Number(entry.id);
+        if (!Number.isInteger(id) || id < 0 || id > 255) continue;
+        names[String(id)] = String(entry.name == null ? '' : entry.name);
+      }
+      // The live catalog replaces the curated map rather than merging into it,
+      // so a stale offline name can never shadow the device's real one.
+      for (const key of Object.keys(effectNameMap)) delete effectNameMap[key];
+      Object.assign(effectNameMap, names);
+      for (const selectId of EFFECT_PICKER_IDS) {
+        const select = document.getElementById(selectId);
+        if (!select) continue;
+        const previous = select.value;
+        select.textContent = '';
+        for (const [id, name] of Object.entries(names)) {
+          const option = document.createElement('option');
+          option.value = id;
+          option.textContent = id + ': ' + name;
+          select.append(option);
+        }
+        if (previous && names[previous] !== undefined) select.value = previous;
+      }
+    }
     const STRIP_SEGMENTS = 120;
     let currentStripState = null;
     let stripRafId = null;
@@ -2219,6 +4393,18 @@ HTML_TEMPLATE = """<!doctype html>
     }
 
     function updateStripFrame(timestamp) {
+      const pixels = controllerPreviewColors();
+      if (pixels.length) {
+        ledStrip.classList.remove('off');
+        Array.from(ledStrip.children).forEach((child,i) => {
+          const rgb = pixels[Math.min(pixels.length-1, Math.floor(i*pixels.length/ledStrip.children.length))];
+          const css = `rgb(${rgb.join(',')})`;
+          child.style.backgroundColor=css; child.style.boxShadow=`0 0 6px ${css}`;
+        });
+        const message = 'Live DDP preview · controller mic · actual rendered colors';
+        if (lightInfo.textContent !== message) lightInfo.textContent=message;
+        stripRafId=requestAnimationFrame(updateStripFrame); return;
+      }
       if (!currentStripState || !currentStripState.on) {
         ledStrip.classList.add('off');
         stripRafId = requestAnimationFrame(updateStripFrame);
@@ -2238,11 +4424,31 @@ HTML_TEMPLATE = """<!doctype html>
       stripRafId = requestAnimationFrame(updateStripFrame);
     }
 
-    function updateLightPreview(st, ledInfo) {
-      const seg = st.seg && st.seg[0] ? st.seg[0] : {};
+    // Device state arrives as raw WLED JSON, so every field is untrusted: a
+    // compromised or impersonated controller could put markup in bri/fx/grp or
+    // in an effect name. Coerce numbers and escape text before any innerHTML.
+    function safeNum(value, fallback = 0) {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : fallback;
+    }
+
+    function escapeHtmlText(value) {
+      return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function updateLightPreview(st, ledInfo, segId = 0) {
+      // Channel targets map to a specific segment; fall back to the first.
+      const segs = Array.isArray(st.seg) ? st.seg : [];
+      const seg = segs[segId] || segs[0] || {};
       function normCol(c) {
         if (!c) return [0, 0, 0, 0];
-        const out = c.slice ? c.slice(0, 4) : [c[0] || 0, c[1] || 0, c[2] || 0, c[3] || 0];
+        const src = c.slice ? c.slice(0, 4) : [c[0], c[1], c[2], c[3]];
+        const out = src.map((value) => safeNum(value, 0));
         while (out.length < 4) out.push(0);
         return out;
       }
@@ -2259,14 +4465,14 @@ HTML_TEMPLATE = """<!doctype html>
       }
       currentStripState = {
         on: !!st.on,
-        bri: st.bri ?? 0,
-        fx: seg.fx ?? 0,
-        sx: seg.sx ?? 128,
-        ix: seg.ix ?? 128,
+        bri: safeNum(st.bri, 0),
+        fx: safeNum(seg.fx, 0),
+        sx: safeNum(seg.sx, 128),
+        ix: safeNum(seg.ix, 128),
         seg: seg,
         colors: colors,
         segments: STRIP_SEGMENTS,
-        ledInfo: ledInfo || currentStripState.ledInfo || null,
+        ledInfo: ledInfo || (currentStripState && currentStripState.ledInfo) || null,
       };
 
       const on = currentStripState.on;
@@ -2284,16 +4490,16 @@ HTML_TEMPLATE = """<!doctype html>
       }
 
       let extra = '';
-      if (seg.grp != null || seg.spc != null) extra += ` Grp:${seg.grp||1} Spc:${seg.spc||0}`;
-      if (seg.cct != null) extra += ` CCT:${seg.cct}`;
-      if (seg.on !== undefined) extra += ` SegOn:${seg.on}`;
+      if (seg.grp != null || seg.spc != null) extra += ` Grp:${safeNum(seg.grp, 1)} Spc:${safeNum(seg.spc, 0)}`;
+      if (seg.cct != null) extra += ` CCT:${safeNum(seg.cct, 0)}`;
+      if (seg.on !== undefined) extra += ` SegOn:${seg.on ? 'true' : 'false'}`;
 
       lightInfo.innerHTML =
         `<span class="label">${on ? 'ON' : 'OFF'}</span>` +
         `<span class="label">Bri ${bri}</span>` +
-        `<span class="label">${fx === 0 ? 'Solid' : effectName}</span>` +
+        `<span class="label">${fx === 0 ? 'Solid' : escapeHtmlText(effectName)}</span>` +
         (fx !== 0 ? `<span class="label">Spd ${sx}</span>` : '') +
-        `<br><span style="color:#666;font-size:11px;">${colorInfo}${extra}</span>`;
+        `<br><span style="color:#666;font-size:11px;">${escapeHtmlText(colorInfo)}${escapeHtmlText(extra)}</span>`;
     }
 
     // SSE state updates — polls the device every 2 seconds
@@ -2306,12 +4512,16 @@ HTML_TEMPLATE = """<!doctype html>
           updateMoodStatus(payload.mood);
         }
         if (payload.state) {
-          const st = payload.state;
+          applyFleetInfo(payload);
+          const health = updateConnectionStatusFromState(payload.state);
+          const picked = displayState(payload.state);
+          const st = picked.state;
           const onOff = st.on ? 'ON' : 'OFF';
           const bri = st.bri ?? '?';
           const seg = st.seg && st.seg[0] ? st.seg[0] : {};
           const col = seg.col && seg.col[0] ? seg.col[0] : [0,0,0,0];
           let display = `Power: ${onOff}\\nBrightness: ${bri}\\nColor: RGBW(${col.join(',')})\\nEffect: ${seg.fx ?? '-'} Speed: ${seg.sx ?? '-'}`;
+          if (picked.name) display = `Controller: ${picked.name}\\n` + display;
           if (payload.intel && Object.keys(payload.intel).length > 0) {
             const i = payload.intel;
             if (i.leds) ledCapabilities = i.leds;
@@ -2326,10 +4536,11 @@ HTML_TEMPLATE = """<!doctype html>
             if (i.uptime) display += ` Uptime:${Math.floor(i.uptime/60)}m`;
           }
           stateDisplay.textContent = display;
-          stateSummary.textContent = `${onOff} | Bri ${bri} | Fx ${seg.fx ?? '-'} @ ${seg.sx ?? '-'}`;
-          updateLightPreview(st, ledCapabilities);
-          connIndicator.textContent = '🟢';
-          connText.textContent = 'Connected';
+          const controllerSummary = health.fleet
+            ? ` | ${health.connected.length}/${health.total} controllers`
+            : '';
+          stateSummary.textContent = `${onOff} | Bri ${bri} | Fx ${seg.fx ?? '-'} @ ${seg.sx ?? '-'}${controllerSummary}`;
+          updateLightPreview(st, ledCapabilities, picked.segId);
         } else if (payload.error) {
           stateDisplay.textContent = 'Device offline — reconnecting...';
           stateSummary.textContent = '--';
@@ -2351,13 +4562,394 @@ HTML_TEMPLATE = """<!doctype html>
       connText.textContent = 'Disconnected';
     };
 
+    // ---------- Settings tab ----------
+    const AI_PROVIDER_PRESETS = {
+      openai: 'https://api.openai.com/v1',
+      openrouter: 'https://openrouter.ai/api/v1',
+      ollama: 'http://localhost:11434/v1',
+      custom: ''
+    };
+
+    function setMsg(el, text, kind) {
+      if (!el) return;
+      el.textContent = text || '';
+      el.classList.remove('ok', 'err', 'info');
+      if (text) el.classList.add(kind || 'info');
+    }
+
+    async function postJson(url, body) {
+      return fetchJsonWithTimeout(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body || {})
+      });
+    }
+
+    function aiProviderChanged() {
+      const preset = AI_PROVIDER_PRESETS[document.getElementById('setAiProvider').value];
+      if (preset) document.getElementById('setAiBaseUrl').value = preset;
+    }
+
+    async function loadSettings() {
+      const aiMsg = document.getElementById('aiSettingsMsg');
+      try {
+        const data = await fetchJsonWithTimeout('/api/settings');
+        const s = (data && data.settings) || {};
+        const ai = s.ai || {};
+        const knownProviders = ['openai', 'openrouter', 'ollama', 'custom'];
+        document.getElementById('setAiProvider').value = knownProviders.includes(ai.provider) ? ai.provider : 'custom';
+        document.getElementById('setAiBaseUrl').value = ai.base_url || '';
+        document.getElementById('setAiModel').value = ai.model || '';
+        document.getElementById('setAiVisionModel').value = ai.vision_model || '';
+        document.getElementById('setAiKeyEnv').value = ai.api_key_env || '';
+        const agents = ai.agents || {};
+        const colorist = agents.colorist || {};
+        const motion = agents.motion || {};
+        const critic = agents.critic || {};
+        const librarian = agents.librarian || {};
+        document.getElementById('agentColoristEnabled').checked = !!colorist.enabled;
+        document.getElementById('agentColoristModel').value = colorist.model || '';
+        document.getElementById('agentColoristProvider').value = colorist.provider || '';
+        document.getElementById('agentColoristBaseUrl').value = colorist.base_url || '';
+        document.getElementById('agentMotionEnabled').checked = !!motion.enabled;
+        document.getElementById('agentMotionModel').value = motion.model || '';
+        document.getElementById('agentMotionProvider').value = motion.provider || '';
+        document.getElementById('agentMotionBaseUrl').value = motion.base_url || '';
+        document.getElementById('agentCriticEnabled').checked = !!critic.enabled;
+        document.getElementById('agentCriticModel').value = critic.model || '';
+        document.getElementById('agentCriticProvider').value = critic.provider || '';
+        document.getElementById('agentCriticBaseUrl').value = critic.base_url || '';
+        document.getElementById('agentLibrarianEnabled').checked = !!librarian.enabled;
+        document.getElementById('agentLibrarianModel').value = librarian.model || '';
+        document.getElementById('agentLibrarianProvider').value = librarian.provider || '';
+        document.getElementById('agentLibrarianBaseUrl').value = librarian.base_url || '';
+        document.getElementById('agentLibrarianKeyEnv').value = librarian.api_key_env || '';
+        const badge = document.getElementById('setAiKeyBadge');
+        badge.textContent = ai.api_key_set ? 'API key: set ✓' : 'API key: not set';
+        badge.classList.toggle('set', !!ai.api_key_set);
+        const rows = document.getElementById('controllerRows');
+        rows.innerHTML = '';
+        (Array.isArray(s.controllers) ? s.controllers : []).forEach(c => addControllerRow(c));
+        if (!rows.children.length) addControllerRow();
+        const knownSources = ['monitor', 'mic', 'custom', 'wled_mic'];
+        document.getElementById('setAudioSource').value = knownSources.includes(s.audio_source) ? s.audio_source : 'custom';
+        document.getElementById('setMicDevice').value = s.mic_device || '';
+        audioSourceChanged();
+        const player = s.audio_player || {};
+        const enabledBox = document.getElementById('setPlayerEnabled');
+        if (enabledBox) enabledBox.checked = player.enabled !== false;
+        applyPlayerEnabled(player.enabled);
+        const ytHost = document.getElementById('setYoutubeHost');
+        if (ytHost) ytHost.value = player.youtube_host || '';
+        const appleBadge = document.getElementById('setAppleTokenBadge');
+        if (appleBadge) {
+          appleBadge.textContent = player.apple_developer_token_set ? (player.apple_authorized ? 'Apple: token + signed in' : 'Apple token: set') : 'Apple token: not set';
+          appleBadge.classList.toggle('set', !!player.apple_developer_token_set);
+        }
+        await loadSystemPrompt();
+        setMsg(aiMsg, '', 'info');
+      } catch (e) {
+        setMsg(aiMsg, 'Failed to load settings: ' + e.message, 'err');
+      }
+    }
+
+    async function saveAiSettings(btn) {
+      const msg = document.getElementById('aiSettingsMsg');
+      const ai = {
+        provider: document.getElementById('setAiProvider').value,
+        base_url: document.getElementById('setAiBaseUrl').value.trim(),
+        model: document.getElementById('setAiModel').value.trim(),
+        vision_model: document.getElementById('setAiVisionModel').value.trim(),
+        api_key_env: document.getElementById('setAiKeyEnv').value.trim(),
+        agents: {
+          colorist: {
+            enabled: document.getElementById('agentColoristEnabled').checked,
+            model: document.getElementById('agentColoristModel').value.trim(),
+            provider: document.getElementById('agentColoristProvider').value.trim(),
+            base_url: document.getElementById('agentColoristBaseUrl').value.trim()
+          },
+          motion: {
+            enabled: document.getElementById('agentMotionEnabled').checked,
+            model: document.getElementById('agentMotionModel').value.trim(),
+            provider: document.getElementById('agentMotionProvider').value.trim(),
+            base_url: document.getElementById('agentMotionBaseUrl').value.trim()
+          },
+          critic: {
+            enabled: document.getElementById('agentCriticEnabled').checked,
+            model: document.getElementById('agentCriticModel').value.trim(),
+            provider: document.getElementById('agentCriticProvider').value.trim(),
+            base_url: document.getElementById('agentCriticBaseUrl').value.trim()
+          },
+          librarian: {
+            enabled: document.getElementById('agentLibrarianEnabled').checked,
+            model: document.getElementById('agentLibrarianModel').value.trim(),
+            provider: document.getElementById('agentLibrarianProvider').value.trim(),
+            base_url: document.getElementById('agentLibrarianBaseUrl').value.trim(),
+            api_key_env: document.getElementById('agentLibrarianKeyEnv').value.trim()
+          }
+        }
+      };
+      btn.disabled = true;
+      setMsg(msg, 'Saving...', 'info');
+      try {
+        const data = await postJson('/api/settings', {ai: ai});
+        setMsg(msg, data.ok ? 'AI settings saved.' : (data.error || 'Save failed.'), data.ok ? 'ok' : 'err');
+      } catch (e) {
+        setMsg(msg, 'Error: ' + e.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function testAiConnection(btn) {
+      const msg = document.getElementById('aiSettingsMsg');
+      btn.disabled = true;
+      setMsg(msg, 'Testing connection...', 'info');
+      try {
+        const data = await postJson('/api/ai/test', {});
+        setMsg(msg, data.message || (data.ok ? 'Connection OK.' : 'Connection failed.'), data.ok ? 'ok' : 'err');
+      } catch (e) {
+        setMsg(msg, 'Error: ' + e.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function loadSystemPrompt() {
+      const data = await fetchJsonWithTimeout('/api/system-prompt');
+      if (data && data.ok) {
+        document.getElementById('setSysPrompt').value = data.current || '';
+        document.getElementById('setSysDefault').textContent = data.default || '';
+      }
+    }
+
+    async function saveSystemPrompt(btn) {
+      const msg = document.getElementById('sysPromptMsg');
+      btn.disabled = true;
+      setMsg(msg, 'Saving...', 'info');
+      try {
+        const data = await postJson('/api/system-prompt', {prompt: document.getElementById('setSysPrompt').value});
+        setMsg(msg, data.ok ? 'Custom prompt saved.' : (data.error || 'Save failed.'), data.ok ? 'ok' : 'err');
+      } catch (e) {
+        setMsg(msg, 'Error: ' + e.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function resetSystemPrompt(btn) {
+      const msg = document.getElementById('sysPromptMsg');
+      btn.disabled = true;
+      setMsg(msg, 'Resetting...', 'info');
+      try {
+        const data = await postJson('/api/system-prompt', {prompt: null});
+        if (data.ok) {
+          await loadSystemPrompt();
+          setMsg(msg, 'Reset to default.', 'ok');
+        } else {
+          setMsg(msg, data.error || 'Reset failed.', 'err');
+        }
+      } catch (e) {
+        setMsg(msg, 'Error: ' + e.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function addControllerRow(c) {
+      const rows = document.getElementById('controllerRows');
+      const row = document.createElement('div');
+      row.className = 'controller-row';
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+      dot.title = 'Not verified yet';
+      const name = document.createElement('input');
+      name.type = 'text';
+      name.className = 'ctl-name';
+      name.placeholder = 'name';
+      name.value = c && c.name ? c.name : '';
+      const host = document.createElement('input');
+      host.type = 'text';
+      host.className = 'ctl-host';
+      host.placeholder = '192.168.1.50';
+      host.value = c && c.host ? c.host : '';
+      const segs = document.createElement('input');
+      segs.type = 'text';
+      segs.className = 'ctl-segments';
+      segs.placeholder = 'segments JSON';
+      segs.value = c && c.segments != null ? JSON.stringify(c.segments) : '';
+      const info = document.createElement('span');
+      info.className = 'ctl-info';
+      const rm = document.createElement('button');
+      rm.className = 'danger ctl-remove';
+      rm.textContent = '✕';
+      rm.title = 'Remove this controller';
+      rm.onclick = () => row.remove();
+      row.append(dot, name, host, segs, info, rm);
+      rows.appendChild(row);
+    }
+
+    async function verifyControllers(btn) {
+      const msg = document.getElementById('controllersMsg');
+      btn.disabled = true;
+      setMsg(msg, 'Verifying connections...', 'info');
+      try {
+        const data = await postJson('/api/controllers/verify', {});
+        const results = (data && data.results) || {};
+        document.querySelectorAll('#controllerRows .controller-row').forEach(row => {
+          const name = row.querySelector('.ctl-name').value.trim();
+          const dot = row.querySelector('.dot');
+          const info = row.querySelector('.ctl-info');
+          const r = results[name];
+          dot.classList.remove('ok', 'fail');
+          if (!r) {
+            info.textContent = '';
+            dot.title = 'Not in saved config';
+            return;
+          }
+          const topology = r.topology || [];
+          if (r.ok) {
+            dot.classList.add('ok');
+            dot.title = 'OK';
+            info.textContent = 'WLED ' + (r.version || '?') + (r.effects != null ? ' · ' + r.effects + ' effects' : '');
+            if (topology.length) {
+              // Reachable but wired differently than configured: per-channel
+              // commands would land on the wrong column.
+              dot.classList.remove('ok');
+              dot.classList.add('fail');
+              dot.title = topology.join('\\n');
+              info.textContent = 'TOPOLOGY MISMATCH — ' + topology[0];
+            }
+          } else {
+            dot.classList.add('fail');
+            dot.title = r.error || 'failed';
+            info.textContent = r.error || 'unreachable';
+          }
+        });
+        const topoCount = Object.values(results).reduce((n, r) => n + ((r && r.topology) || []).length, 0);
+        const summary = topoCount
+          ? 'Controllers reachable, but ' + topoCount + ' topology mismatch(es) — per-channel control would hit the wrong column.'
+          : 'Verification complete.';
+        setMsg(msg, data.ok ? summary : (data.error || 'Verification failed.'), topoCount ? 'err' : (data.ok ? 'ok' : 'err'));
+      } catch (e) {
+        setMsg(msg, 'Error: ' + e.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function saveControllers(btn) {
+      const msg = document.getElementById('controllersMsg');
+      const controllers = [];
+      const rows = document.querySelectorAll('#controllerRows .controller-row');
+      for (const row of rows) {
+        const name = row.querySelector('.ctl-name').value.trim();
+        const host = row.querySelector('.ctl-host').value.trim();
+        const segsRaw = row.querySelector('.ctl-segments').value.trim();
+        if (!name && !host) continue;
+        let segments = null;
+        if (segsRaw) {
+          try {
+            segments = JSON.parse(segsRaw);
+          } catch (e) {
+            setMsg(msg, 'Invalid segments JSON for "' + (name || host) + '".', 'err');
+            return;
+          }
+        }
+        controllers.push({name: name, host: host, segments: segments});
+      }
+      btn.disabled = true;
+      setMsg(msg, 'Saving...', 'info');
+      try {
+        const saved = await postJson('/api/settings', {controllers: controllers});
+        if (!saved.ok) {
+          setMsg(msg, saved.error || 'Save failed.', 'err');
+          return;
+        }
+        setMsg(msg, 'Saved. Reloading fleet...', 'info');
+        const reloaded = await postJson('/api/settings/reload', {});
+        if (reloaded.ok) {
+          const names = (reloaded.controllers || []).join(', ') || 'none';
+          setMsg(msg, 'Saved & reloaded: ' + names, 'ok');
+        } else {
+          setMsg(msg, reloaded.error || 'Reload failed.', 'err');
+        }
+      } catch (e) {
+        setMsg(msg, 'Error: ' + e.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function audioSourceChanged() {
+      const v = document.getElementById('setAudioSource').value;
+      document.getElementById('micDeviceRow').style.display = (v === 'monitor' || v === 'wled_mic') ? 'none' : '';
+    }
+
+    async function savePlayerSettings(btn) {
+      const msg = document.getElementById('playerSettingsMsg');
+      const audio_player = {
+        enabled: (document.getElementById('setPlayerEnabled') || {}).checked !== false
+      };
+      // Minimal card (player disabled) has no host/token inputs — only send what's there.
+      const youtubeHost = (document.getElementById('setYoutubeHost') || {}).value;
+      if (typeof youtubeHost === 'string') audio_player.youtube_host = youtubeHost.trim();
+      const token = ((document.getElementById('setAppleDevToken') || {}).value || '').trim();
+      if (token) audio_player.apple_developer_token = token;
+      btn.disabled = true;
+      setMsg(msg, 'Saving...', 'info');
+      try {
+        const data = await postJson('/api/settings', {audio_player});
+        setMsg(msg, data.ok ? 'Player settings saved.' : (data.error || 'Save failed.'), data.ok ? 'ok' : 'err');
+        if (data.ok) {
+          const tokenInput = document.getElementById('setAppleDevToken');
+          if (tokenInput) tokenInput.value = '';
+          await loadSettings();
+        }
+      } catch (e) {
+        setMsg(msg, 'Error: ' + e.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function saveAudioSettings(btn) {
+      const msg = document.getElementById('audioMsg');
+      const body = {
+        audio_source: document.getElementById('setAudioSource').value,
+        mic_device: document.getElementById('setMicDevice').value.trim() || null
+      };
+      btn.disabled = true;
+      setMsg(msg, 'Saving...', 'info');
+      try {
+        const data = await postJson('/api/settings', body);
+        setMsg(msg, data.ok ? 'Audio settings saved.' : (data.error || 'Save failed.'), data.ok ? 'ok' : 'err');
+      } catch (e) {
+        setMsg(msg, 'Error: ' + e.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
     // Init
     initLedStrip();
     stripRafId = requestAnimationFrame(updateStripFrame);
     loadChatHistory();
+    loadModelResponses();
     refreshSmartSuggestions();
     setInterval(refreshSmartSuggestions, 30000);
+    refreshPlaybackClock();
+    setInterval(refreshPlaybackClock, 5000);
+    setInterval(renderPlaybackClock, 1000);
     listSchedule();
+    loadFiretvState();
+    refreshTvObservation();
+    setInterval(refreshTvObservation, 15000);
+    refreshNowPlaying();
+    setInterval(refreshNowPlaying, 5000);
+    setInterval(expireControllerVisualization, 500);
+    startControllerAudioStream();
+    loadMusicDirectorState();
 
     // Extra wiring for top visualizers + creative features
     const orbEl2 = document.getElementById('energyOrb');
@@ -2373,10 +4965,1124 @@ HTML_TEMPLATE = """<!doctype html>
     const vz = document.getElementById('vizStatus');
     if (vz) {
       setInterval(() => {
+        if (controllerVizActive() || controllerAudioActive()) return;
         if (audioReactiveRunning) vz.textContent = '🎵 live reactive';
         else vz.textContent = audioReactiveRunning || musicModeRunning ? 'active' : 'idle';
       }, 900);
     }
+    const sourceParam = new URLSearchParams(location.search).get('source');
+    if (sourceParam && document.getElementById('playerSource')) {
+      document.getElementById('playerSource').value = sourceParam;
+    }
+    document.getElementById('calibrationDialog').addEventListener('close', stopCalibrationCamera);
+    document.getElementById('calibrationDialog').addEventListener('cancel', stopCalibrationCamera);
+    window.addEventListener('beforeunload', stopCalibrationCamera);
+    // Player bootstrap: respect the enabled flag before polling.
+    (async () => {
+      refreshEffectCatalog();
+      try {
+        const data = await fetchJsonWithTimeout('/api/settings', {}, 5000);
+        const playerCfg = ((data || {}).settings || {}).audio_player || {};
+        applyPlayerEnabled(playerCfg.enabled);
+      } catch (err) { /* player stays enabled by default */ }
+      if (!playerEnabled) return;
+      const status = await refreshPlayerStatus();
+      loadPlayerPlaylists();
+      loadLocalLibrary();
+      // applyPlayerEnabled() already owns playerPollTimer; creating a second
+      // interval here leaked a poller that could never be cleared.
+      if (!playerPollTimer) playerPollTimer = setInterval(refreshPlayerStatus, 4000);
+      if (currentPlayerSource() === 'apple_music' && !status?.desktop) ensureApplePairing();
+    })();
+  </script>
+</body>
+</html>
+"""
+
+PLAYER_STAGE_ENABLED = """    <section class="visualizer-hero player-stage" id="playerStage">
+      <div class="player-stage-main">
+        <div class="player-art" id="playerArtWrap">
+          <div class="player-art-fallback" aria-hidden="true">♪</div>
+          <img class="album-art" id="albumArt" alt="Album art">
+        </div>
+        <div class="player-now">
+          <div class="player-kicker">Audio Player</div>
+          <h2 class="player-title" id="musicTitle">Nothing playing</h2>
+          <p class="player-artist" id="musicArtist"></p>
+          <span class="music-genre" id="musicGenre" style="display:none;"></span>
+          <div class="player-transport">
+            <select id="playerSource" onchange="onPlayerSourceChange()" title="Music source">
+              <option value="youtube_music">YouTube Music</option>
+              <option value="apple_music">Apple Music</option>
+            </select>
+            <button onclick="playerCommand('previous')" title="Previous track">⏮</button>
+            <button class="player-play" id="playerPlayBtn" onclick="playerCommand('playPause')" title="Play or pause">▶</button>
+            <button onclick="playerCommand('next')" title="Next track">⏭</button>
+            <label style="display:flex;align-items:center;gap:6px;">Seek <input id="playerSeek" type="range" min="0" max="0" step="1" value="0" disabled onchange="playerCommand('seek',{data:{position:Number(this.value)}})" aria-label="Track position"></label>
+            <label style="display:flex;align-items:center;gap:6px;">Volume <input id="playerVolume" type="range" min="0" max="1" step="0.01" value="0.7" onchange="playerCommand('volume',{data:{volume:Number(this.value)}})" aria-label="Set player volume"></label>
+            <button class="secondary" onclick="matchLightsFromNowPlaying()" title="Apply a song-aware light mood once">Apply Mood</button>
+          </div>
+          <div class="status-output" id="playerNowPlaying">Idle.</div>
+          <span class="now-playing" id="nowPlaying"></span>
+        </div>
+        <aside class="player-auth" id="appleAuthPanel" hidden>
+          <div id="appleSignedIn" hidden>
+            <p class="player-kicker">Apple ID</p>
+            <p style="margin:6px 0 10px;font-size:13px;">Signed in. Playback stays on this controller.</p>
+            <button class="secondary" onclick="signOutApple()" title="Forget the Apple Music user token">Sign out</button>
+          </div>
+          <div id="applePairing">
+            <p class="player-kicker" style="text-align:center;">Sign in with Apple</p>
+            <div id="appleQr" class="apple-qr" aria-label="Apple ID login QR code"></div>
+            <p class="player-code">Code <strong id="applePairCode">······</strong></p>
+            <p class="player-hint">Scan with your phone, then sign in with your Apple ID. The wall keeps this session.</p>
+            <a id="appleLoginLink" href="/apple-login" target="_blank" rel="noopener">Open sign-in on this device</a>
+          </div>
+        </aside>
+      </div>
+
+      <div class="full-bleed-preview" style="width:100%; margin:0; margin-left:0; margin-right:0; border:none; box-shadow:none; padding:3px 0 1px; background:transparent;">
+        <div class="strip-wrapper">
+          <div class="led-strip off" id="ledStrip" style="height: clamp(24px, 3.5vw, 45px);"></div>
+        </div>
+        <div class="preview-meta" style="margin-top:1px;">
+          <div class="light-info" id="lightInfo">Waiting for state...</div>
+        </div>
+      </div>
+
+      <!-- Audio Visualizers row: Waveform + Spectrum + Energy/Beat orb -->
+      <div class="viz-row">
+        <div class="viz-panel">
+          <div class="viz-label" id="waveformLabel">WAVEFORM + BEAT</div>
+          <canvas class="waveform-canvas" id="waveformCanvas" width="680" height="50" style="height:50px;"></canvas>
+          <div style="display:flex; gap:8px; align-items:center; margin-top:4px;" id="vuMeter">
+            <div class="meter" style="flex:1;height:14px;">
+              <div class="meter-fill" id="vuFill"></div>
+              <div class="meter-peak" id="vuPeak"></div>
+            </div>
+            <div class="beat-lamp" id="beatLamp" title="Beat detected"></div>
+          </div>
+          <!-- legacy ids for tests / compatibility (visuals are in the spectrum + readouts above) -->
+          <div style="display:none">
+            <div class="band-fill" id="bassFill"></div>
+            <div class="band-fill" id="midFill"></div>
+            <div class="band-fill" id="trebleFill"></div>
+            <div class="confidence-fill" id="beatConfidenceFill"></div>
+            <span id="beatMixReadout"></span>
+            <span id="bpmReadout"></span>
+          </div>
+        </div>
+
+        <div class="viz-panel">
+          <div class="viz-label">FREQUENCY SPECTRUM (click bars to boost lights creatively)</div>
+          <canvas class="spectrum-canvas" id="spectrumCanvas" width="720" height="40"></canvas>
+
+          <div style="display:grid; grid-template-columns: auto 1fr; gap:10px; align-items:center; margin-top:6px;">
+            <!-- Energy orb (pulses on beat, colored by current light) -->
+            <div>
+              <div class="viz-label" style="margin-bottom:4px;">ENERGY / BEAT</div>
+              <div class="energy-orb" id="energyOrb" title="Click to trigger a creative energy pulse">
+                <div class="inner"></div>
+              </div>
+            </div>
+
+            <div>
+              <div class="analysis-readouts" style="grid-template-columns: repeat(4,1fr); font-size:12px;">
+                <div class="readout" style="padding:6px 8px;">
+                  <span class="label">BASS</span>
+                  <span class="value" id="bassReadout" style="font-size:13px;">0%</span>
+                </div>
+                <div class="readout" style="padding:6px 8px;">
+                  <span class="label">MID</span>
+                  <span class="value" id="midReadout" style="font-size:13px;">0%</span>
+                </div>
+                <div class="readout" style="padding:6px 8px;">
+                  <span class="label">TREBLE</span>
+                  <span class="value" id="trebleReadout" style="font-size:13px;">0%</span>
+                </div>
+                <div class="readout" style="padding:6px 8px;">
+                  <span class="label">DRIVE</span>
+                  <span class="value" id="driveReadout" style="font-size:13px;">0%</span>
+                </div>
+              </div>
+              <div style="margin-top:6px; display:flex; gap:6px; flex-wrap:wrap;">
+                <button onclick="creativeSpectrumMap()" style="font-size:11px;padding:5px 10px;">Spectrum → Colors</button>
+                <button onclick="creativeEnergyPulse()" style="font-size:11px;padding:5px 10px;">Energy Pulse</button>
+                <button onclick="creativeEvolve()" style="font-size:11px;padding:5px 10px;">Evolve Scene</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>"""
+
+
+PLAYER_STAGE_DISABLED = """    <!-- VISUALIZERS AT THE TOP: Prominent, beautiful, always-visible live preview + audio reactive viz -->
+    <div class="visualizer-hero" id="visualizerHero">
+      <div class="visualizer-header">
+        <div><span class="title">🎨 LIVE VISUALIZERS</span> — LED Preview + Audio Reaction</div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <span id="vizStatus" style="font-size:11px;opacity:.7;">idle</span>
+          <button class="secondary" style="padding:4px 10px;font-size:12px;" onclick="startMusicMode()" title="Start controller-microphone smart music rendering">▶ Start Reactive</button>
+          <button class="secondary" style="padding:4px 10px;font-size:12px;background:rgba(255,100,100,.2);" onclick="stopSmartMusicMode()" title="Stop Smart Music">⏹ Stop</button>
+        </div>
+      </div>
+
+      <!-- LED Strip Preview (creative simulation of current effect + colors) -->
+      <div class="full-bleed-preview" style="width:100%; margin:0; margin-left:0; margin-right:0; border:none; box-shadow:none; padding:3px 0 1px; background:transparent;">
+        <div class="strip-wrapper">
+          <div class="led-strip off" id="ledStrip" style="height: clamp(24px, 3.5vw, 45px);"></div>
+        </div>
+        <div class="preview-meta" style="margin-top:1px;">
+          <div class="light-info" id="lightInfo">Waiting for state...</div>
+        </div>
+      </div>
+
+      <!-- Audio Visualizers row: Waveform + Spectrum + Energy/Beat orb -->
+      <div class="viz-row">
+        <div class="viz-panel">
+          <div class="viz-label" id="waveformLabel">WAVEFORM + BEAT</div>
+          <canvas class="waveform-canvas" id="waveformCanvas" width="680" height="50" style="height:50px;"></canvas>
+          <div style="display:flex; gap:8px; align-items:center; margin-top:4px;" id="vuMeter">
+            <div class="meter" style="flex:1;height:14px;">
+              <div class="meter-fill" id="vuFill"></div>
+              <div class="meter-peak" id="vuPeak"></div>
+            </div>
+            <div class="beat-lamp" id="beatLamp" title="Beat detected"></div>
+          </div>
+          <!-- legacy ids for tests / compatibility (visuals are in the spectrum + readouts above) -->
+          <div style="display:none">
+            <div class="band-fill" id="bassFill"></div>
+            <div class="band-fill" id="midFill"></div>
+            <div class="band-fill" id="trebleFill"></div>
+            <div class="confidence-fill" id="beatConfidenceFill"></div>
+            <span id="beatMixReadout"></span>
+            <span id="bpmReadout"></span>
+          </div>
+        </div>
+
+        <div class="viz-panel">
+          <div class="viz-label">FREQUENCY SPECTRUM (click bars to boost lights creatively)</div>
+          <canvas class="spectrum-canvas" id="spectrumCanvas" width="720" height="40"></canvas>
+
+          <div style="display:grid; grid-template-columns: auto 1fr; gap:10px; align-items:center; margin-top:6px;">
+            <!-- Energy orb (pulses on beat, colored by current light) -->
+            <div>
+              <div class="viz-label" style="margin-bottom:4px;">ENERGY / BEAT</div>
+              <div class="energy-orb" id="energyOrb" title="Click to trigger a creative energy pulse">
+                <div class="inner"></div>
+              </div>
+            </div>
+
+            <div>
+              <div class="analysis-readouts" style="grid-template-columns: repeat(4,1fr); font-size:12px;">
+                <div class="readout" style="padding:6px 8px;">
+                  <span class="label">BASS</span>
+                  <span class="value" id="bassReadout" style="font-size:13px;">0%</span>
+                </div>
+                <div class="readout" style="padding:6px 8px;">
+                  <span class="label">MID</span>
+                  <span class="value" id="midReadout" style="font-size:13px;">0%</span>
+                </div>
+                <div class="readout" style="padding:6px 8px;">
+                  <span class="label">TREBLE</span>
+                  <span class="value" id="trebleReadout" style="font-size:13px;">0%</span>
+                </div>
+                <div class="readout" style="padding:6px 8px;">
+                  <span class="label">DRIVE</span>
+                  <span class="value" id="driveReadout" style="font-size:13px;">0%</span>
+                </div>
+              </div>
+              <div style="margin-top:6px; display:flex; gap:6px; flex-wrap:wrap;">
+                <button onclick="creativeSpectrumMap()" style="font-size:11px;padding:5px 10px;">Spectrum → Colors</button>
+                <button onclick="creativeEnergyPulse()" style="font-size:11px;padding:5px 10px;">Energy Pulse</button>
+                <button onclick="creativeEvolve()" style="font-size:11px;padding:5px 10px;">Evolve Scene</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>"""
+
+
+PLAYER_DECK_ENABLED = """    <div class="player-deck">
+      <section class="player-library" id="playerLibrary">
+        <div class="library-search">
+          <input id="playerSearchInput" type="search" placeholder="Search tracks, artists, albums, playlists" onkeydown="if(event.key==='Enter')searchPlayerLibrary()">
+          <button onclick="searchPlayerLibrary()" title="Search this source">Search</button>
+        </div>
+        <div class="library-cols">
+          <div>
+            <h3>Playlists</h3>
+            <div id="playerPlaylists" class="library-list"><div class="library-empty">Playlists appear after the source is connected.</div></div>
+          </div>
+          <div>
+            <h3>Results</h3>
+            <div id="playerSearchResults" class="library-list"><div class="library-empty">Search this player to fill the queue pane.</div></div>
+          </div>
+        </div>
+        __LOCAL_LIBRARY__
+      </section>
+      <div>
+        <div class="player-follow auto-card" id="visualizerHero">
+          <div class="mode-header">
+            <div>
+              <h2>Lights follow the player</h2>
+              <p class="mode-subtitle">Desktop playback reports track identity and timing locally. Audio analysis uses the configured system output or room microphone.</p>
+            </div>
+            <span class="mode-pill" id="musicModeState">Idle</span>
+          </div>
+          <div class="mode-actions">
+            <button class="big-button" id="musicModeBtn" onclick="startMusicMode()">Start Music Director</button>
+            <button class="secondary stop-button" id="musicModeStopBtn" onclick="stopSmartMusicMode()">Stop</button>
+          </div>
+          <div class="visualizer-header" style="background:transparent;border:0;padding:8px 0 0;">
+            <span id="vizStatus" style="font-size:11px;opacity:.7;">idle</span>
+          </div>
+      <div class="mode-summary">
+        <div class="mode-summary-item">
+          <span>Mic Pipeline</span>
+          <strong id="micPipelineState">Idle</strong>
+        </div>
+        <div class="mode-summary-item">
+          <span>Song Source</span>
+          <strong id="songSourceState">Media metadata</strong>
+        </div>
+        <div class="mode-summary-item">
+          <span>Next Match</span>
+          <strong id="nextMatchState">Manual</strong>
+          <small id="songClockState">Position unknown</small>
+        </div>
+      </div>
+      <div class="auto-status" id="autoStatus"></div>
+      <div class="smart-grid" id="smartSuggestions" aria-live="polite"></div>
+        </div>
+        <div class="model-responses-pane" id="modelResponsesPane">
+          <div class="responses-header">
+            <span>Model Responses</span>
+            <button onclick="clearModelResponses()" title="Clear">clear</button>
+          </div>
+          <div id="modelResponses" class="responses-scroll" aria-live="polite"></div>
+        </div>
+      </div>
+    </div>"""
+
+
+PLAYER_DECK_DISABLED = """    <!-- Scrollable window for model responses between visualizers and Music Mode -->
+    <div class="model-responses-pane" id="modelResponsesPane">
+      <div class="responses-header">
+        <span>Model Responses</span>
+        <button onclick="clearModelResponses()" title="Clear">clear</button>
+      </div>
+      <div id="modelResponses" class="responses-scroll" aria-live="polite"></div>
+    </div>
+
+    <!-- Music / Beat Mode summary card (kept but smaller) -->
+    <div class="card auto-card">
+      <div class="mode-header">
+        <div>
+          <h2>Music Mode</h2>
+          <p class="mode-subtitle">Directs the lights from room audio or media metadata. Song identification also works with the player off.</p>
+        </div>
+        <span class="mode-pill" id="musicModeState">Idle</span>
+      </div>
+      <div class="mode-actions">
+        <button class="big-button" id="musicModeBtn" onclick="startMusicMode()">Start Music Director</button>
+        <button class="secondary stop-button" id="musicModeStopBtn" onclick="stopSmartMusicMode()">Stop</button>
+      </div>
+      <div class="mode-summary">
+        <div class="mode-summary-item">
+          <span>Mic Pipeline</span>
+          <strong id="micPipelineState">Idle</strong>
+        </div>
+        <div class="mode-summary-item">
+          <span>Song Source</span>
+          <strong id="songSourceState">Media metadata</strong>
+        </div>
+        <div class="mode-summary-item">
+          <span>Next Match</span>
+          <strong id="nextMatchState">Manual</strong>
+          <small id="songClockState">Position unknown</small>
+        </div>
+      </div>
+      <div class="auto-status" id="autoStatus"></div>
+      <div class="smart-grid" id="smartSuggestions" aria-live="polite"></div>
+    </div>"""
+
+
+NOW_PLAYING_CARD_DISABLED = """          <div class="card">
+            <h2>Now Playing</h2>
+            <div class="music-toolbar">
+              <button class="secondary" onclick="refreshNowPlaying()" title="Refresh media-player metadata">Refresh Song</button>
+              <button class="secondary" onclick="matchLightsFromNowPlaying()" title="Apply a song-aware light mood once">Apply Mood</button>
+            </div>
+            <div class="music-display">
+              <p class="music-title" id="musicTitle">No song detected yet.</p>
+              <p class="music-artist" id="musicArtist"></p>
+              <span class="music-genre" id="musicGenre" style="display:none;"></span>
+              <img class="album-art" id="albumArt" alt="Album art">
+            </div>
+            <span class="now-playing" id="nowPlaying"></span>
+          </div>"""
+
+
+PLAYER_SETTINGS_CARD_ENABLED = """      <div class="card">
+        <h2>Player connections</h2>
+        <p class="card-note">Desktop: sign in directly in each service tab. Browser-only legacy mode: optional companion connection or Apple MusicKit token below.</p>
+        <label><input type="checkbox" id="setPlayerEnabled" checked> Enable onboard audio player</label>
+        <label>Youtopia host
+          <input id="setYoutubeHost" type="text" placeholder="http://127.0.0.1:9863" style="width:100%;">
+        </label>
+        <label>Apple Music developer token
+          <input id="setAppleDevToken" type="password" placeholder="MusicKit JWT" style="width:100%;" autocomplete="off">
+        </label>
+        <div class="row" style="margin-top:10px;">
+          <button onclick="savePlayerSettings(this)" title="Save player connection settings">Save player settings</button>
+          <span class="settings-badge" id="setAppleTokenBadge">Apple token: unknown</span>
+        </div>
+        <div class="settings-msg" id="playerSettingsMsg"></div>
+      </div>"""
+
+
+PLAYER_SETTINGS_CARD_DISABLED = """      <div class="card">
+        <h2>Onboard audio player</h2>
+        <p class="card-note">Player UI is hidden while disabled.</p>
+        <label><input type="checkbox" id="setPlayerEnabled"> Enable onboard audio player</label>
+        <div class="row" style="margin-top:10px;">
+          <button onclick="savePlayerSettings(this)" title="Save player settings">Save</button>
+        </div>
+        <div class="settings-msg" id="playerSettingsMsg"></div>
+      </div>"""
+
+
+def render_main_html(player_enabled: bool = False) -> str:
+    """Return HTML_TEMPLATE with the player regions swapped per the toggle.
+
+    Enabled explicitly reproduces the player UI; disabled (default) restores the
+    pre-player layout (visualizer hero, model responses, Music Mode card,
+    Now Playing card) plus a minimal settings card to re-enable.
+    """
+    import desktop_ui
+    if player_enabled:
+        stage = PLAYER_STAGE_ENABLED
+        deck = PLAYER_DECK_ENABLED
+        now_playing_card = ""
+        settings_card = PLAYER_SETTINGS_CARD_ENABLED
+    else:
+        stage = PLAYER_STAGE_DISABLED
+        deck = PLAYER_DECK_DISABLED
+        now_playing_card = "\n" + NOW_PLAYING_CARD_DISABLED
+        settings_card = PLAYER_SETTINGS_CARD_DISABLED
+    return (
+        HTML_TEMPLATE.replace("__PLAYER_STAGE__", stage)
+        .replace("__PLAYER_DECK__", deck)
+        .replace("__NOW_PLAYING_CARD__", now_playing_card)
+        .replace("__PLAYER_SETTINGS_CARD__", settings_card)
+        .replace("__DESKTOP_DIALOGS__", desktop_ui.DIALOGS)
+        .replace("__DESKTOP_SCRIPT__", desktop_ui.SCRIPT)
+        .replace("__LOCAL_LIBRARY__", desktop_ui.LIBRARY)
+    )
+
+
+APPLE_LOGIN_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lightss — Sign in with Apple ID</title>
+  <script src="https://js-cdn.music.apple.com/musickit/v3/musickit.js" data-web-components></script>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: #070817; color: #f7fbff; padding: 24px;
+    }
+    main {
+      width: min(420px, 100%);
+      padding: 28px 24px;
+      border: 1px solid rgba(180,205,255,.16);
+      border-radius: 20px;
+      background: linear-gradient(145deg, rgba(18,22,42,.95), rgba(8,10,24,.92));
+    }
+    h1 { font-size: 22px; margin: 0 0 8px; }
+    p { color: #aab7d6; font-size: 14px; line-height: 1.45; }
+    button {
+      width: 100%; margin-top: 16px; border: 0; border-radius: 14px; padding: 14px 16px;
+      background: #fff; color: #111; font-weight: 800; font-size: 15px; cursor: pointer;
+    }
+    button:disabled { opacity: .6; }
+    .status { min-height: 20px; margin-top: 14px; font-size: 13px; color: #67e8f9; }
+    .status.err { color: #fb4666; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Sign in with Apple ID</h1>
+    <p>Authorize Apple Music on this phone. The Lightss controller keeps the session and plays on the wall.</p>
+    <button id="signInBtn" onclick="signIn()">Sign in with Apple ID</button>
+    <p class="status" id="status">Waiting for MusicKit…</p>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const session = params.get('session') || '';
+    async function configure() {
+      const cfg = await fetch('/api/player/apple/config').then((r) => r.json());
+      if (!cfg.developerToken) throw new Error('Set an Apple Music developer token in Lightss settings first.');
+      await MusicKit.configure({
+        developerToken: cfg.developerToken,
+        app: { name: cfg.appName || 'Lightss', build: cfg.appBuild || '0.1.0' }
+      });
+      document.getElementById('status').textContent = session ? 'Ready. Sign in to connect the controller.' : 'Missing session. Scan the QR from Lightss.';
+    }
+    async function signIn() {
+      const btn = document.getElementById('signInBtn');
+      const st = document.getElementById('status');
+      btn.disabled = true;
+      st.className = 'status';
+      st.textContent = 'Opening Apple ID…';
+      try {
+        const music = MusicKit.getInstance();
+        const token = await music.authorize();
+        const body = {session, musicUserToken: token || music.musicUserToken};
+        const res = await fetch('/api/player/apple/complete', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body)
+        }).then((r) => r.json());
+        if (!res.ok) throw new Error(res.message || 'Controller rejected the session.');
+        st.textContent = 'Connected. You can return to Lightss.';
+        btn.textContent = 'Signed in';
+      } catch (err) {
+        st.className = 'status err';
+        st.textContent = err.message || String(err);
+        btn.disabled = false;
+      }
+    }
+    configure().catch((err) => {
+      const st = document.getElementById('status');
+      st.className = 'status err';
+      st.textContent = err.message || String(err);
+    });
+  </script>
+</body>
+</html>
+"""
+
+
+TV_AMBIENT_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>WLED Wall Ambient</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #000;
+      overflow: hidden;
+      cursor: none;
+    }
+    #stage {
+      position: fixed;
+      inset: 0;
+      display: block;
+    }
+    #footer {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 2.2vh;
+      height: 1.6em;
+      overflow: hidden;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      font-size: clamp(11px, 1.5vh, 16px);
+      font-weight: 500;
+      letter-spacing: .22em;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, .34);
+      text-shadow: 0 0 8px rgba(0, 0, 0, .9);
+      white-space: nowrap;
+      pointer-events: none;
+    }
+    #marquee {
+      display: inline-block;
+      padding-left: 100vw;
+      will-change: transform;
+      animation: marquee 26s linear infinite;
+    }
+    #marquee.still {
+      padding-left: 0;
+      width: 100%;
+      text-align: center;
+      animation: none;
+    }
+    @keyframes marquee {
+      from { transform: translateX(0); }
+      to   { transform: translateX(-100%); }
+    }
+    #dot {
+      position: fixed;
+      top: 14px;
+      right: 16px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #2f6;
+      opacity: .35;
+      transition: background-color .5s, opacity .5s;
+      pointer-events: none;
+    }
+    #dot.bad {
+      background: #f44;
+      opacity: .8;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <div id="footer"><span id="marquee" class="still"></span></div>
+  <div id="dot"></div>
+  <script>
+  'use strict';
+  // Four luminous columns rise out of a dark room, mirroring the physical
+  // wall: far-left, middle-left, middle-right, far-right. /api/state is
+  // polled twice a second; the canvas eases toward each sample so motion
+  // stays liquid at ~60fps. Energy (brightness + color deltas between
+  // polls) drives pulse, shimmer and particles, so the page breathes with
+  // the audio-reactive wall.
+  const WALL_ORDER = ['far-left', 'middle-left', 'middle-right', 'far-right'];
+  const AUDIO_FX = new Set([68, 132, 135, 136, 137, 139, 143, 144, 145,
+    155, 156, 157, 158, 159, 175, 185]);
+  const POLL_MS = 500;
+  const MUSIC_MS = 10000;
+  const MAX_DPR = 1.5;
+
+  const canvas = document.getElementById('stage');
+  const ctx = canvas.getContext('2d');
+  const marquee = document.getElementById('marquee');
+  const dot = document.getElementById('dot');
+
+  let W = 0, H = 0, DPR = 1;
+  let vignette = null, grain = null, grainPat = null;
+
+  function clampByte(v) {
+    v = Math.round(Number(v) || 0);
+    return v < 0 ? 0 : (v > 255 ? 255 : v);
+  }
+
+  function mixColor(a, b, t) {
+    return [a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t];
+  }
+
+  function css(c, alpha) {
+    return 'rgba(' + Math.round(c[0]) + ',' + Math.round(c[1]) + ',' +
+      Math.round(c[2]) + ',' + alpha + ')';
+  }
+
+  // Per-column render state: current values ease toward targets each frame.
+  const cols = WALL_ORDER.map(function (name) {
+    return {
+      name: name,
+      cur: [[0, 0, 0], [0, 0, 0], [0, 0, 0]],
+      tgt: [[0, 0, 0], [0, 0, 0], [0, 0, 0]],
+      bri: 0, tgtBri: 0,
+      fx: 0, on: false, audio: false,
+      energy: 0,        // decaying pulse derived from poll deltas
+      phase: Math.random() * Math.PI * 2,
+      particles: []
+    };
+  });
+
+  function buildGrain() {
+    grain = document.createElement('canvas');
+    grain.width = 96;
+    grain.height = 96;
+    const g = grain.getContext('2d');
+    const img = g.createImageData(96, 96);
+    for (let i = 0; i < img.data.length; i += 4) {
+      const v = (Math.random() * 255) | 0;
+      img.data[i] = v;
+      img.data[i + 1] = v;
+      img.data[i + 2] = v;
+      img.data[i + 3] = 255;
+    }
+    g.putImageData(img, 0, 0);
+    grainPat = ctx.createPattern(grain, 'repeat');
+  }
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+    W = Math.round(window.innerWidth * DPR);
+    H = Math.round(window.innerHeight * DPR);
+    canvas.width = W;
+    canvas.height = H;
+    canvas.style.width = window.innerWidth + 'px';
+    canvas.style.height = window.innerHeight + 'px';
+    vignette = document.createElement('canvas');
+    vignette.width = W;
+    vignette.height = H;
+    const v = vignette.getContext('2d');
+    const rg = v.createRadialGradient(W / 2, H * 0.45, Math.min(W, H) * 0.35,
+      W / 2, H * 0.5, Math.max(W, H) * 0.75);
+    rg.addColorStop(0, 'rgba(0,0,0,0)');
+    rg.addColorStop(1, 'rgba(0,0,0,0.55)');
+    v.fillStyle = rg;
+    v.fillRect(0, 0, W, H);
+  }
+
+  function parseSegColors(seg, briScale) {
+    const out = [];
+    const raw = seg && Array.isArray(seg.col) ? seg.col : [];
+    for (let i = 0; i < 3; i++) {
+      const col = Array.isArray(raw[i]) ? raw[i] : (Array.isArray(raw[0]) ? raw[0] : [0, 0, 0]);
+      const w = clampByte(col[3] || 0);
+      out.push([
+        clampByte((col[0] || 0) + w) * briScale,
+        clampByte((col[1] || 0) + w) * briScale,
+        clampByte((col[2] || 0) + w) * briScale
+      ]);
+    }
+    return out;
+  }
+
+  function applyState(data) {
+    const state = (data && data.state) || {};
+    const channels = (data && data.channels) || {};
+    const single = 'seg' in state || 'on' in state;
+    for (const col of cols) {
+      let cst = null, segId = 0;
+      const mapping = channels[col.name];
+      if (!single && Array.isArray(mapping) && state[mapping[0]]) {
+        cst = state[mapping[0]];
+        segId = Number(mapping[1]) || 0;
+      } else if (single) {
+        cst = state;
+      }
+      const segs = (cst && Array.isArray(cst.seg)) ? cst.seg : [];
+      const seg = segs[segId] || segs[0] || null;
+      const on = cst ? cst.on !== false : false;
+      const bri = seg && seg.bri != null ? seg.bri
+        : (cst && cst.bri != null ? cst.bri : 255);
+      const scale = on ? Math.max(0, Math.min(1, bri / 255)) : 0;
+      const next = parseSegColors(seg, scale);
+      // Pulse energy: how far the sample jumped since the last target.
+      let delta = Math.abs(scale - col.tgtBri) * 255;
+      for (let i = 0; i < 3; i++) {
+        delta += Math.abs(next[i][0] - col.tgt[i][0]) +
+                 Math.abs(next[i][1] - col.tgt[i][1]) +
+                 Math.abs(next[i][2] - col.tgt[i][2]);
+      }
+      col.energy = Math.max(col.energy, Math.min(1, delta / 220));
+      col.tgt = next;
+      col.tgtBri = scale;
+      col.fx = seg && seg.fx != null ? Number(seg.fx) || 0 : 0;
+      col.on = !!on;
+      col.audio = AUDIO_FX.has(col.fx);
+    }
+    refreshIdleFooter();
+  }
+
+  function refreshIdleFooter() {
+    if (currentTrack) return;
+    const text = cols.map(function (c) {
+      return c.name + '  \u00b7  fx ' + c.fx;
+    }).join('      ');
+    setFooter(text, false);
+  }
+
+  let currentTrack = null;
+  let footerText = '';
+  function setFooter(text, scroll) {
+    if (text === footerText) return;
+    footerText = text;
+    marquee.textContent = text;
+    marquee.className = scroll ? '' : 'still';
+  }
+
+  // Rotating ticker: while a track plays the footer cycles through the
+  // now-playing line and the AI trivia items, one line per marquee pass.
+  const TRIVIA_MS = 30000;
+  let trivia = { artist: null, items: [] };
+  let nowLine = '';
+  let rotList = [];
+  let rotIdx = 0;
+
+  function showRotItem() {
+    if (!rotList.length) return;
+    footerText = rotList[rotIdx % rotList.length];
+    marquee.textContent = footerText;
+    // Restart the scroll so each line gets a full pass across the screen.
+    marquee.className = '';
+    marquee.style.animation = 'none';
+    void marquee.offsetWidth;
+    marquee.style.animation = '';
+  }
+
+  function rebuildRotation(reset) {
+    if (!currentTrack) return;
+    rotList = [nowLine].concat(trivia.items);
+    if (reset || rotIdx >= rotList.length) rotIdx = 0;
+    if (reset) showRotItem();
+  }
+
+  marquee.addEventListener('animationiteration', function () {
+    if (!rotList.length) return;
+    rotIdx = (rotIdx + 1) % rotList.length;
+    showRotItem();
+  });
+
+  async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 5000) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, Object.assign({}, options, { signal: controller.signal }));
+      return await res.json();
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async function pollTrivia() {
+    if (!currentTrack) return;   // no trivia fetches while idle
+    try {
+      const data = await fetchJsonWithTimeout('/api/tv-trivia');
+      if (data && data.ok && Array.isArray(data.items)) {
+        trivia = {
+          artist: data.artist || null,
+          items: data.items.filter(function (s) {
+            return typeof s === 'string' && s;
+          })
+        };
+        rebuildRotation(false);
+      }
+    } catch (err) {
+      /* trivia is best-effort */
+    }
+  }
+
+  async function pollState() {
+    try {
+      const data = await fetchJsonWithTimeout('/api/state');
+      if (data && data.ok !== false) {
+        dot.classList.remove('bad');
+        applyState(data);
+        if (data.state && typeof applyFleetInfo === 'function' && typeof displayState === 'function') {
+          applyFleetInfo(data);
+          const health = typeof updateConnectionStatusFromState === 'function'
+            ? updateConnectionStatusFromState(data.state)
+            : {fleet: false, connected: [], total: 0};
+          const picked = displayState(data.state);
+          const st = picked.state || {};
+          const seg = st.seg && st.seg[0] ? st.seg[0] : {};
+          const bri = st.bri ?? '?';
+          const onOff = st.on ? 'ON' : 'OFF';
+          const col = seg.col && seg.col[0] ? seg.col[0] : [0,0,0,0];
+          const stateDisplayEl = document.getElementById('stateDisplay');
+          const stateSummaryEl = document.getElementById('stateSummary');
+          if (stateDisplayEl) {
+            stateDisplayEl.textContent = `${picked.name ? 'Controller: ' + picked.name + '\n' : ''}Power: ${onOff}\nBrightness: ${bri}\nColor: RGBW(${col.join(',')})\nEffect: ${seg.fx ?? '-'} Speed: ${seg.sx ?? '-'}`;
+          }
+          if (stateSummaryEl) {
+            const controllerSummary = health.fleet ? ` | ${health.connected.length}/${health.total} controllers` : '';
+            stateSummaryEl.textContent = `${onOff} | Bri ${bri} | Fx ${seg.fx ?? '-'} @ ${seg.sx ?? '-'}${controllerSummary}`;
+          }
+          if (typeof updateLightPreview === 'function') updateLightPreview(st, ledCapabilities, picked.segId);
+        }
+      } else {
+        dot.classList.add('bad');
+      }
+    } catch (err) {
+      dot.classList.add('bad');
+    }
+  }
+
+  async function pollMusic() {
+    try {
+      const data = await fetchJsonWithTimeout('/api/music-director');
+      const st = (data && data.status) || {};
+      if (st.running && st.track) {
+        const isNew = st.track !== currentTrack;
+        currentTrack = st.track;
+        nowLine = '\u266a  ' + st.track + (st.mood ? '   \u00b7   ' + st.mood : '');
+        rebuildRotation(isNew);
+        if (isNew) pollTrivia();
+      } else {
+        currentTrack = null;
+        trivia = { artist: null, items: [] };
+        rotList = [];
+        rotIdx = 0;
+        refreshIdleFooter();
+      }
+    } catch (err) {
+      /* keep the last footer on failure */
+    }
+  }
+
+  function spawnParticles(col, cx, colW, floorY, topY, dt) {
+    if (!col.audio && col.energy < 0.25) return;
+    const rate = (col.audio ? 14 : 4) * (0.3 + col.energy) * dt;
+    if (Math.random() < rate && col.particles.length < 34) {
+      col.particles.push({
+        x: cx + (Math.random() - 0.5) * colW * 0.8,
+        y: floorY - Math.random() * (floorY - topY) * 0.25,
+        vy: -(20 + Math.random() * 55) * DPR,
+        life: 1,
+        decay: 0.35 + Math.random() * 0.5,
+        r: (0.8 + Math.random() * 1.8) * DPR
+      });
+    }
+  }
+
+  function drawColumn(col, idx, t, dt) {
+    const cx = W * (idx + 0.5) / 4;
+    const colW = Math.min(W * 0.085, 110 * DPR);
+    const floorY = H * 0.86;
+    const topY = H * 0.07;
+    const height = floorY - topY;
+    const glow = Math.max(0, Math.min(1, col.bri)) * (1 + col.energy * 0.55);
+    if (glow < 0.004) return;
+
+    // Plasma drift: the three sampled colors slide past each other so the
+    // gradient is never static even when the wall holds a steady look.
+    const drift = (Math.sin(t * 0.6 + col.phase) + 1) / 2;
+    const drift2 = (Math.sin(t * 0.9 + col.phase * 1.7) + 1) / 2;
+    const c0 = mixColor(col.cur[0], col.cur[1], drift * 0.35);
+    const c1 = mixColor(col.cur[1], col.cur[2], drift2 * 0.4);
+    const c2 = mixColor(col.cur[2], col.cur[0], drift * 0.3);
+    const a = Math.min(1, 0.28 + glow * 0.72);
+
+    // Column body: gradient rising from the floor, dissolving at the top.
+    const grad = ctx.createLinearGradient(0, floorY, 0, topY);
+    grad.addColorStop(0, css(c0, a));
+    grad.addColorStop(0.45, css(c1, a * 0.9));
+    grad.addColorStop(0.8, css(c2, a * 0.55));
+    grad.addColorStop(1, css(c2, 0));
+    ctx.fillStyle = grad;
+    const wobble = Math.sin(t * 1.3 + col.phase) * colW * 0.04;
+    ctx.beginPath();
+    ctx.moveTo(cx - colW / 2 + wobble, floorY);
+    ctx.lineTo(cx - colW / 2, topY);
+    ctx.lineTo(cx + colW / 2, topY);
+    ctx.lineTo(cx + colW / 2 + wobble, floorY);
+    ctx.closePath();
+    ctx.fill();
+
+    // Ceiling bend: a soft fan of light rolling back over the ceiling.
+    ctx.save();
+    ctx.translate(cx, topY + H * 0.005);
+    ctx.scale(2.6, 0.55);
+    const bend = ctx.createRadialGradient(0, 0, 0, 0, 0, colW * 1.15);
+    bend.addColorStop(0, css(c2, 0.30 * glow));
+    bend.addColorStop(1, css(c2, 0));
+    ctx.fillStyle = bend;
+    ctx.beginPath();
+    ctx.arc(0, 0, colW * 1.15, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // Floor pool: light spilling onto the ground beneath the column.
+    ctx.save();
+    ctx.translate(cx, floorY + H * 0.012);
+    ctx.scale(1.9, 0.28);
+    const pool = ctx.createRadialGradient(0, 0, 0, 0, 0, colW);
+    pool.addColorStop(0, css(c0, 0.35 * glow));
+    pool.addColorStop(1, css(c0, 0));
+    ctx.fillStyle = pool;
+    ctx.beginPath();
+    ctx.arc(0, 0, colW, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // Audio-reactive shimmer: bright beads racing up the column.
+    if (col.audio || col.energy > 0.2) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const streaks = col.audio ? 3 : 1;
+      for (let s = 0; s < streaks; s++) {
+        const sy = topY + height *
+          ((Math.sin(t * (2.1 + s * 0.7) + col.phase + s * 2.1) + 1) / 2);
+        const sa = (0.05 + col.energy * 0.22) * glow;
+        if (sa > 0.01) {
+          const sg = ctx.createLinearGradient(0, sy - colW, 0, sy + colW);
+          sg.addColorStop(0, css(c1, 0));
+          sg.addColorStop(0.5, css(mixColor(c1, [255, 255, 255], 0.35), sa));
+          sg.addColorStop(1, css(c1, 0));
+          ctx.fillStyle = sg;
+          ctx.fillRect(cx - colW / 2, sy - colW, colW, colW * 2);
+        }
+      }
+      // Particles: sparse rising sparks, additive, tightly capped.
+      spawnParticles(col, cx, colW, floorY, topY, dt);
+      for (let i = col.particles.length - 1; i >= 0; i--) {
+        const p = col.particles[i];
+        p.y += p.vy * dt;
+        p.life -= p.decay * dt;
+        if (p.life <= 0 || p.y < topY) {
+          col.particles.splice(i, 1);
+          continue;
+        }
+        ctx.fillStyle = css(mixColor(c1, [255, 255, 255], 0.4),
+          0.5 * p.life * glow);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    } else if (col.particles.length) {
+      col.particles.length = 0;
+    }
+  }
+
+  // Dynamic background: instead of clearing to flat black, the canvas is
+  // filled from the columns' own eased state. (1) An ambient wash mixes
+  // the average active color into a vertical gradient held near-black so
+  // the columns still pop. (2) Three aurora blobs drift on slow Lissajous
+  // paths, each tinted from a different column, blended additively. (3)
+  // Both breathe with the average column energy (beat pulse). An emphasis
+  // mode — wash / aurora / pulse dominant — rotates every ~45s with a
+  // ~5s smoothstep crossfade.
+  const BG_MODE_S = 45;
+  const BG_FADE_S = 5;
+  const blobs = [];
+  for (let i = 0; i < 3; i++) {
+    blobs.push({
+      fx: 0.045 + i * 0.013,   // Lissajous frequencies, cycles per second
+      fy: 0.060 + i * 0.011,
+      px: Math.random() * Math.PI * 2,
+      py: Math.random() * Math.PI * 2,
+      r: 0.30 + i * 0.07       // base radius as a fraction of min(W, H)
+    });
+  }
+
+  function bgWeights(t) {
+    const pos = (t % (BG_MODE_S * 3)) / BG_MODE_S;
+    const idx = Math.floor(pos) % 3;
+    const frac = pos - Math.floor(pos);
+    const fadeFrac = BG_FADE_S / BG_MODE_S;
+    let blend = 0;
+    if (frac > 1 - fadeFrac) {
+      blend = (frac - (1 - fadeFrac)) / fadeFrac;
+      blend = blend * blend * (3 - 2 * blend);   // smoothstep crossfade
+    }
+    const w = [0, 0, 0];
+    w[idx] = 1 - blend;
+    w[(idx + 1) % 3] = blend;
+    return w;
+  }
+
+  function drawBackground(t) {
+    // Average the eased colors and energy of every lit column.
+    let ar = 0, ag = 0, ab = 0, n = 0, energy = 0, lit = 0;
+    for (const col of cols) {
+      const glow = Math.max(0, Math.min(1, col.bri));
+      if (!col.on || glow < 0.004) continue;
+      lit++;
+      energy += col.energy;
+      for (let i = 0; i < 3; i++) {
+        ar += col.cur[i][0];
+        ag += col.cur[i][1];
+        ab += col.cur[i][2];
+        n++;
+      }
+    }
+    const avg = n ? [ar / n, ag / n, ab / n] : [0, 0, 0];
+    energy = lit ? energy / lit : 0;
+
+    const w = bgWeights(t);
+    const washBoost = 0.55 + 0.75 * w[0];
+    const auroraBoost = 0.5 + 0.9 * w[1];
+    const pulse = energy * (0.35 + 1.1 * w[2]);
+
+    // (1) Ambient wash: the average color scaled to ~8-14% brightness,
+    // slightly darker toward the floor. Black when nothing is lit.
+    const ws = Math.min(0.14, (0.08 + 0.05 * pulse) * washBoost);
+    const wash = ctx.createLinearGradient(0, 0, 0, H);
+    wash.addColorStop(0, css([avg[0] * ws, avg[1] * ws, avg[2] * ws], 1));
+    wash.addColorStop(1, css([avg[0] * ws * 0.5, avg[1] * ws * 0.5,
+      avg[2] * ws * 0.5], 1));
+    ctx.fillStyle = wash;
+    ctx.fillRect(0, 0, W, H);
+
+    // (2) Aurora blobs, (3) radii and alpha breathing with the pulse.
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < blobs.length; i++) {
+      const b = blobs[i];
+      const col = cols[i % cols.length];
+      const glow = Math.max(0, Math.min(1, col.bri));
+      if (!col.on || glow < 0.004) continue;
+      const tint = mixColor(mixColor(col.cur[0], col.cur[1], 0.5),
+        col.cur[2], 0.35);
+      const bx = W * (0.5 + 0.38 * Math.sin(t * b.fx * Math.PI * 2 + b.px));
+      const by = H * (0.48 + 0.34 * Math.sin(t * b.fy * Math.PI * 2 + b.py));
+      const rad = Math.min(W, H) * b.r * (0.6 + 0.4 * glow) *
+        (1 + 0.3 * pulse);
+      const alpha = (0.05 + 0.08 * pulse) * auroraBoost * glow;
+      if (alpha < 0.008) continue;
+      const g = ctx.createRadialGradient(bx, by, 0, bx, by, rad);
+      g.addColorStop(0, css(tint, alpha));
+      g.addColorStop(1, css(tint, 0));
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(bx, by, rad, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  let last = performance.now();
+  let frame = 0;
+  function tick(now) {
+    const dt = Math.min(0.1, (now - last) / 1000);
+    last = now;
+    const t = now / 1000;
+    frame++;
+
+    // Ease current colors/brightness toward the latest poll targets. The
+    // ~0.9s time constant turns mood switches into crossfades, never cuts.
+    const k = Math.min(1, dt * 3.2);
+    for (const col of cols) {
+      for (let i = 0; i < 3; i++) {
+        col.cur[i] = mixColor(col.cur[i], col.tgt[i], k);
+      }
+      col.bri += (col.tgtBri - col.bri) * k;
+      col.energy *= Math.pow(0.25, dt); // decay to a quarter per second
+    }
+
+    drawBackground(t);
+    for (let i = 0; i < cols.length; i++) {
+      drawColumn(cols[i], i, t, dt);
+    }
+
+    // Vignette every frame (single drawImage), grain every third frame.
+    if (vignette) ctx.drawImage(vignette, 0, 0);
+    if (grainPat && frame % 3 === 0) {
+      ctx.save();
+      ctx.globalAlpha = 0.045;
+      ctx.translate(-((Math.random() * 96) | 0), -((Math.random() * 96) | 0));
+      ctx.fillStyle = grainPat;
+      ctx.fillRect(0, 0, W + 96, H + 96);
+      ctx.restore();
+    }
+
+    requestAnimationFrame(tick);
+  }
+
+  window.addEventListener('resize', resize);
+  resize();
+  buildGrain();
+  pollState();
+  pollMusic();
+  setInterval(pollState, POLL_MS);
+  setInterval(pollMusic, MUSIC_MS);
+  setInterval(pollTrivia, TRIVIA_MS);
+  refreshIdleFooter();
+  requestAnimationFrame(tick);
   </script>
 </body>
 </html>

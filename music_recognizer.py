@@ -5,11 +5,19 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import logging
+import os
+import random
+import re
+import shutil
+import subprocess
 import threading
+import time
 from typing import Any
 
 import lightctl
+import song_tracking
 
 try:
     import numpy as np
@@ -40,6 +48,15 @@ try:
     from shazamio import Shazam as _Shazam
     Shazam = _Shazam
     _shazam_available = True
+
+    # shazamio 0.2.0.0's tag URL template carries a stray space
+    # ("sampling=true &connected=") that goes out literally (encoded '+') —
+    # ShazamIO issue #81. Sanitize it so requests are well-formed.
+    from shazamio.misc import ShazamUrl as _ShazamUrl
+
+    _ShazamUrl.SEARCH_FROM_FILE = _ShazamUrl.SEARCH_FROM_FILE.replace(
+        "sampling=true ", "sampling=true"
+    )
 except Exception as exc:  # pragma: no cover
     _try_import_errors.append(f"shazamio: {exc}")
 
@@ -52,6 +69,96 @@ if _try_import_errors:
 
 DEFAULT_DURATION = 5.0
 DEFAULT_SAMPLE_RATE = 0  # 0 = auto-detect from device at runtime
+DEFAULT_AUDIO_SOURCE = "monitor"
+# Ambient song ID records the physical mic, not the PC output monitor.
+# Live sets (festival mixes, crowd) need a longer window than a studio clip.
+AMBIENT_DURATION = 10.0
+AMBIENT_WINDOWS = 2
+
+# ShazamIO 0.2.0.0 busy-loops forever (without ever yielding to the event
+# loop) when the audio is too short to produce a signature, and its HTTP
+# request has no explicit timeout. Guard both before calling recognize_song.
+MIN_AUDIO_MS = 1000
+SHAZAM_TIMEOUT = 15.0
+# Extra slack for the sync wrappers when joining their worker thread.
+_SYNC_JOIN_MARGIN = 5.0
+
+# Shazam rate-limits (HTTP 429, surfaced by shazamio 0.2.0.0 as the misleading
+# "Check args, URL is invalid" — it really means "non-JSON error page"). All
+# recognition paths in the process share one pacer so the mood session, tray,
+# GUI, and MCP tools can't trip the limit together, plus backoff on failure.
+SHAZAM_MIN_INTERVAL_S = 8.0
+_shazam_pace_lock = threading.Lock()
+_last_shazam_call = 0.0
+
+
+class AmbientSongObserver:
+    """Background room song identity only: no player, AI or lighting actions."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._song: dict | None = None
+        self._identified_at = 0.0
+        self._last_attempt: float | None = None
+        self._worker: threading.Thread | None = None
+        self._tracker = song_tracking.ChangeAwareRecognizer(recognize_audio_bytes_sync)
+
+    def remember(self, song: dict | None) -> None:
+        with self._lock:
+            self._song = dict(song) if song else None
+            self._identified_at = time.monotonic()
+
+    def _identify(self) -> None:
+        try:
+            song = recognize_ambient_sync(duration=5.0, windows=1, change_tracker=self._tracker)
+            self.remember(song)
+        except Exception as exc:
+            logger.info("Room song observation unavailable: %s", exc)
+
+    def snapshot(self, *, refresh: bool = True) -> dict | None:
+        with self._lock:
+            now = time.monotonic()
+            song = dict(self._song) if self._song and now - self._identified_at < 180 else None
+            if (refresh and (self._worker is None or not self._worker.is_alive())
+                    and (self._last_attempt is None or now - self._last_attempt >= 30)
+                    and is_available()):
+                self._last_attempt = now
+                self._worker = threading.Thread(target=self._identify, name="room-song-observer", daemon=True)
+                self._worker.start()
+            return song
+
+
+def _is_shazam_error_page(exc: BaseException) -> bool:
+    """True for shazamio's misleading non-JSON-response error (429/block page)."""
+    message = str(exc)
+    return "URL is invalid" in message or "Check args" in message
+
+
+async def _recognize_with_backoff(shazam: Any, audio: bytes, attempts: int = 3) -> dict[str, Any]:
+    """Call recognize_song with process-wide pacing and error-page backoff."""
+    global _last_shazam_call
+    delay = 1.0
+    for attempt in range(attempts):
+        with _shazam_pace_lock:
+            wait = SHAZAM_MIN_INTERVAL_S - (time.monotonic() - _last_shazam_call)
+            if wait > 0:
+                _last_shazam_call = time.monotonic() + wait  # reserve the slot
+            else:
+                _last_shazam_call = time.monotonic()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        try:
+            return await asyncio.wait_for(shazam.recognize_song(audio), timeout=SHAZAM_TIMEOUT)
+        except Exception as exc:
+            if not _is_shazam_error_page(exc) or attempt == attempts - 1:
+                raise
+            logger.info(
+                "Shazam attempt %d/%d hit an error page (rate limit?); retrying in %.1fs",
+                attempt + 1, attempts, delay,
+            )
+            await asyncio.sleep(delay + random.uniform(0, 0.5))
+            delay *= 2
+    raise RuntimeError("unreachable")
 
 
 def _get_device_samplerate(device: str | int | None = None) -> int:
@@ -83,6 +190,141 @@ def _load_sounddevice() -> Any | None:
     return sd
 
 
+def _usb_ids_match(props: dict[str, Any], vendor: int, product: int) -> bool:
+    try:
+        return (
+            int(str(props.get("device.vendor.id", "0")), 16) == vendor
+            and int(str(props.get("device.product.id", "0")), 16) == product
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_monitor_source(source: dict[str, Any]) -> bool:
+    return (
+        source.get("monitor_of_sink") not in (None, "", 4294967295)
+        or str(source.get("name", "")).endswith(".monitor")
+    )
+
+
+def _is_digital_usb_source(source: dict[str, Any]) -> bool:
+    """True for the silent S/PDIF profile a webcam exposes beside its mic."""
+    name = str(source.get("name", "")).lower()
+    profile = str((source.get("properties") or {}).get("device.profile.name", "")).lower()
+    return "iec958" in name or "spdif" in name or "iec958" in profile or "spdif" in profile
+
+
+def _select_usb_source(
+    sources: list[dict[str, Any]], vendor: int, product: int
+) -> dict[str, Any] | None:
+    """Pick the analog mic when a USB id also exposes a digital input."""
+    matches = [
+        source for source in sources
+        if isinstance(source, dict)
+        and not _is_monitor_source(source)
+        and _usb_ids_match(source.get("properties") or {}, vendor, product)
+    ]
+    analog = [source for source in matches if not _is_digital_usb_source(source)]
+    if analog:
+        return analog[0]
+    return matches[0] if matches else None
+
+
+def _source_capture(source: dict[str, Any]) -> tuple[str, int]:
+    spec = str(source.get("sample_specification", ""))
+    rate = re.search(r"(\d+)Hz", spec)
+    return str(source["name"]), int(rate[1]) if rate else 32000
+
+
+def _pactl_json(kind: str) -> list[Any]:
+    result = subprocess.run(
+        ["pactl", "-f", "json", "list", kind],
+        capture_output=True, text=True, check=True, timeout=2,
+    )
+    parsed = json.loads(result.stdout or "[]")
+    return parsed if isinstance(parsed, list) else []
+
+
+def _switch_usb_card_to_analog(vendor: int, product: int) -> bool:
+    """Move a webcam card off its silent IEC958 input when an analog mic exists."""
+    try:
+        cards = _pactl_json("cards")
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        return False
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        if not _usb_ids_match(card.get("properties") or {}, vendor, product):
+            continue
+        profiles = card.get("profiles") or {}
+        if not isinstance(profiles, dict) or "input:analog-stereo" not in profiles:
+            continue
+        if card.get("active_profile") == "input:analog-stereo":
+            return False
+        name = str(card.get("name") or "")
+        if not name:
+            continue
+        try:
+            subprocess.run(
+                ["pactl", "set-card-profile", name, "input:analog-stereo"],
+                capture_output=True, text=True, check=True, timeout=2,
+            )
+        except (OSError, subprocess.SubprocessError):
+            logger.debug("Could not switch USB card %s to analog mic", name, exc_info=True)
+            return False
+        return True
+    return False
+
+
+def _pulse_usb_input(device: str | int | None) -> tuple[str, int] | None:
+    """Map a stable USB vendor:product ID to its shared physical audio input."""
+    match = re.fullmatch(r"([0-9a-fA-F]{4}):([0-9a-fA-F]{4})", str(device))
+    if not match or not shutil.which("pactl") or not shutil.which("ffmpeg"):
+        return None
+    vendor, product = int(match[1], 16), int(match[2], 16)
+    try:
+        chosen = _select_usb_source(_pactl_json("sources"), vendor, product)
+        if chosen is not None and _is_digital_usb_source(chosen):
+            if _switch_usb_card_to_analog(vendor, product):
+                chosen = _select_usb_source(_pactl_json("sources"), vendor, product)
+        if chosen is None:
+            return None
+        return _source_capture(chosen)
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError, KeyError):
+        logger.debug("Could not resolve configured USB input through audio server", exc_info=True)
+    return None
+
+
+def _prepare_capture(device: str | int | None, sample_rate: int) -> tuple[str | int | None, int]:
+    """Resolve the actual input before choosing its supported sample rate."""
+    pulse = _pulse_usb_input(device)
+    if pulse:
+        return pulse[0], int(sample_rate) or pulse[1]
+    sounddevice = _load_sounddevice()
+    if sounddevice is None:
+        raise RuntimeError("sounddevice is not available")
+    try:
+        info = sounddevice.query_devices(device=device, kind="input")
+        if info.get("max_input_channels", 0) <= 0:
+            raise ValueError("Device has no input channels")
+    except Exception:
+        preferred = lightctl.get_mic_device()
+        logger.warning("Selected mic device %r unavailable; using physical input %r", device, preferred)
+        device = preferred
+        info = sounddevice.query_devices(device=device, kind="input")
+    native_rate = int(info.get("default_samplerate") or 44100)
+    rate = int(sample_rate) or native_rate
+    try:
+        sounddevice.check_input_settings(device=device, samplerate=rate, channels=1, dtype="float32")
+    except Exception:
+        if rate == native_rate:
+            raise
+        logger.info("Input %r does not support %d Hz; using native %d Hz", device, rate, native_rate)
+        rate = native_rate
+        sounddevice.check_input_settings(device=device, samplerate=rate, channels=1, dtype="float32")
+    return device, rate
+
+
 def _record_audio(duration: float, sample_rate: int, device: str | int | None = None) -> Any:
     """Record audio from the preferred input device.
 
@@ -91,6 +333,21 @@ def _record_audio(duration: float, sample_rate: int, device: str | int | None = 
     """
     if np is None:
         raise RuntimeError("numpy is not available")
+    if isinstance(device, str) and device.startswith("alsa_input.") and shutil.which("ffmpeg"):
+        # Pulse/PipeWire shares the room microphone instead of opening the
+        # webcam's exclusive ALSA node. ffmpeg resamples to the declared rate.
+        rate = int(sample_rate) or 32000
+        if duration <= 0 or rate <= 0:
+            raise ValueError("Recording duration and sample rate must be positive")
+        result = subprocess.run([
+            "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+            "-f", "pulse", "-i", device, "-t", str(duration),
+            "-ar", str(rate), "-ac", "1", "-f", "s16le", "pipe:1",
+        ], capture_output=True, check=True, timeout=duration + 5)
+        audio = np.frombuffer(result.stdout, dtype="<i2").copy().reshape(-1, 1)
+        if len(audio) < int(duration * rate * .9):
+            raise RuntimeError("Microphone returned an incomplete audio window")
+        return audio
     sounddevice = _load_sounddevice()
     if sounddevice is None:
         raise RuntimeError("sounddevice is not available")
@@ -112,10 +369,28 @@ def _record_audio(duration: float, sample_rate: int, device: str | int | None = 
         sample_rate = _get_device_samplerate(device)
     logger.info("Recording %.1fs from microphone @ %d Hz (device=%r)...", duration, sample_rate, device)
     frames = int(duration * sample_rate)
+    if frames <= 0:
+        raise ValueError("Recording duration must be positive")
+    recording = np.empty((frames, 1), dtype=np.float32)
+    finished = threading.Event()
+    offset = 0
+
+    def capture(indata: Any, frame_count: int, timing: Any, status: Any) -> None:
+        nonlocal offset
+        count = min(frame_count, frames - offset)
+        recording[offset:offset + count] = indata[:count]
+        offset += count
+        if offset >= frames:
+            finished.set()
+            raise sounddevice.CallbackStop
+
     try:
-        # Record as float32, then convert to int16
-        recording = sounddevice.rec(frames, samplerate=sample_rate, channels=1, dtype=np.float32, device=device)
-        sounddevice.wait()
+        # Own this stream; convenience rec()/wait() is global and wait() has
+        # no timeout argument. This deadline closes a stalled input stream.
+        with sounddevice.InputStream(samplerate=sample_rate, channels=1,
+                dtype="float32", device=device, callback=capture):
+            if not finished.wait(timeout=duration + 2.0):
+                raise TimeoutError("Microphone did not deliver the requested audio window")
     except Exception as exc:
         # Let upper layers turn this into "no match" instead of crashing the process
         raise RuntimeError(f"Failed to open/record from audio device: {exc}") from exc
@@ -137,14 +412,48 @@ def _make_audio_segment(audio_data: Any, sample_rate: int) -> Any:
     )
 
 
+def _youtube_url_from_track(track: dict[str, Any]) -> str | None:
+    """Pull a YouTube URL from Shazam hub providers or VIDEO sections."""
+    hub = track.get("hub") if isinstance(track.get("hub"), dict) else {}
+    for provider in hub.get("providers") or []:
+        if not isinstance(provider, dict):
+            continue
+        if str(provider.get("type") or "").upper() != "YOUTUBE":
+            continue
+        for action in provider.get("actions") or []:
+            if isinstance(action, dict) and action.get("uri"):
+                return str(action["uri"])
+    for section in track.get("sections") or []:
+        if not isinstance(section, dict):
+            continue
+        if str(section.get("type") or "").upper() != "VIDEO":
+            continue
+        yt = section.get("youtubeurl") or section.get("youtubeUrl")
+        if isinstance(yt, str) and yt.strip():
+            return yt.strip()
+        if isinstance(yt, dict):
+            for action in yt.get("actions") or []:
+                if isinstance(action, dict) and action.get("uri"):
+                    return str(action["uri"])
+    return None
+
+
 def _parse_shazam_result(result: dict[str, Any]) -> dict[str, Any] | None:
     """Extract normalized fields from a ShazamIO response dict."""
+    # A real Shazam match includes at least one entry in the matches list.
+    # Shazam sometimes returns a track object for unrelated/fuzzy guesses with
+    # an empty matches list; reject those to avoid getting stuck on a false
+    # positive (e.g. repeatedly showing a popular song for silence/noise).
+    matches = result.get("matches")
+    if not isinstance(matches, list) or len(matches) == 0:
+        return None
     track = result.get("track")
     if not track:
         return None
     # ShazamIO 0.2.0.0 returns plain dicts, not dataclasses
-    title = track.get("title") or track.get("heading", {}).get("title")
-    artist = track.get("subtitle") or track.get("heading", {}).get("subtitle")
+    heading = track.get("heading") or {}
+    title = track.get("title") or heading.get("title")
+    artist = track.get("subtitle") or heading.get("subtitle")
     album = None
     genre = None
     # Try genres.primary first
@@ -152,28 +461,32 @@ def _parse_shazam_result(result: dict[str, Any]) -> dict[str, Any] | None:
     if isinstance(genres_data, dict):
         genre = genres_data.get("primary")
     # Fallback to sections metadata
-    sections = track.get("sections", [])
+    sections = track.get("sections") or []
     for section in sections:
+        if not isinstance(section, dict):
+            continue
         if section.get("type") == "SONG":
-            for meta in section.get("metadata", []):
+            for meta in section.get("metadata") or []:
                 label = meta.get("title", "").lower()
                 if label in ("album", "album:"):
                     album = meta.get("text")
                 elif label in ("genre", "genre:") and not genre:
                     genre = meta.get("text")
+    share = track.get("share") or {}
+    hub = track.get("hub") or {}
+    actions = hub.get("actions") or [{}]
+    first_action = actions[0] if isinstance(actions[0], dict) else {}
+    images = track.get("images") or {}
     # Build normalized result
     parsed: dict[str, Any] = {
         "title": str(title).strip() if title else None,
         "artist": str(artist).strip() if artist else None,
         "album": str(album).strip() if album else None,
         "genre": str(genre).strip() if genre else None,
-        "shazam_url": track.get("url") or track.get("share", {}).get("href"),
-        "spotify_url": track.get("hub", {}).get("actions", [{}])[0].get("uri")
-        if track.get("hub")
-        else None,
-        "youtube_url": None,
-        "cover_url": track.get("images", {}).get("coverarthq")
-        or track.get("images", {}).get("coverart"),
+        "shazam_url": track.get("url") or share.get("href"),
+        "spotify_url": first_action.get("uri"),
+        "youtube_url": _youtube_url_from_track(track),
+        "cover_url": images.get("coverarthq") or images.get("coverart"),
         "source": "shazam",
     }
     # Clean None values
@@ -183,10 +496,297 @@ def _parse_shazam_result(result: dict[str, Any]) -> dict[str, Any] | None:
     return parsed
 
 
+# ---------------------------------------------------------------------------
+# MPRIS now-playing via playerctl (stdlib subprocess, no D-Bus bindings)
+# ---------------------------------------------------------------------------
+
+_PREFERRED_MPRIS_PLAYERS = ("chrome", "chromium", "firefox")
+_PLAYERCTL_TIMEOUT = 3.0
+
+
+def _run_playerctl(args: list[str]) -> str | None:
+    """Run a playerctl command, returning stdout or None on any failure."""
+    if shutil.which("playerctl") is None:
+        return None
+    try:
+        proc = subprocess.run(
+            ["playerctl", *args],
+            capture_output=True,
+            text=True,
+            timeout=_PLAYERCTL_TIMEOUT,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
+
+
+def _list_mpris_players() -> list[str]:
+    """Return playerctl player names, browser players (chrome/chromium/firefox) first."""
+    output = _run_playerctl(["--list-all"])
+    if not output:
+        return []
+    players = [line.strip() for line in output.splitlines() if line.strip()]
+    preferred = [p for p in players if any(tok in p.lower() for tok in _PREFERRED_MPRIS_PLAYERS)]
+    rest = [p for p in players if p not in preferred]
+    return preferred + rest
+
+
+def _run_gdbus(args: list[str]) -> str | None:
+    """Run a gdbus command, returning stdout or None on any failure."""
+    if shutil.which("gdbus") is None:
+        return None
+    try:
+        proc = subprocess.run(
+            ["gdbus", *args],
+            capture_output=True,
+            text=True,
+            timeout=_PLAYERCTL_TIMEOUT,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
+
+
+def _mpris_players_gdbus() -> list[str]:
+    """MPRIS bus names via gdbus ListNames, browser players first."""
+    output = _run_gdbus([
+        "call", "--session",
+        "--dest", "org.freedesktop.DBus",
+        "--object-path", "/org/freedesktop/DBus",
+        "--method", "org.freedesktop.DBus.ListNames",
+    ])
+    if not output:
+        return []
+    players = re.findall(r"org\.mpris\.MediaPlayer2\.[\w.-]+", output)
+    preferred = [p for p in players if any(tok in p.lower() for tok in _PREFERRED_MPRIS_PLAYERS)]
+    rest = [p for p in players if p not in preferred]
+    return preferred + rest
+
+
+def _gdbus_player_prop(player: str, prop: str) -> str | None:
+    return _run_gdbus([
+        "call", "--session",
+        "--dest", player,
+        "--object-path", "/org/mpris/MediaPlayer2",
+        "--method", "org.freedesktop.DBus.Properties.Get",
+        "org.mpris.MediaPlayer2.Player", prop,
+    ])
+
+
+def _now_playing_gdbus(*, include_paused: bool = False, include_timing: bool = False) -> dict[str, Any] | None:
+    """Now-playing metadata straight off the session bus (no playerctl needed)."""
+    for player in _mpris_players_gdbus():
+        status_out = _gdbus_player_prop(player, "PlaybackStatus") or ""
+        status_match = re.search(r"<\'(\w+)\'>", status_out) or re.search(r"'(\w+)'", status_out)
+        if not status_match or status_match.group(1).lower() not in (("playing", "paused") if include_paused else ("playing",)):
+            continue
+        metadata = _gdbus_player_prop(player, "Metadata") or ""
+
+        def field(name: str) -> str:
+            m = re.search(rf"'{re.escape(name)}':\s*<\[?'?\"?([^'\",\]>]+)", metadata)
+            return m.group(1).strip() if m else ""
+
+        title, artist, album, art_url = (
+            field("xesam:title"), field("xesam:artist"), field("xesam:album"), field("mpris:artUrl"),
+        )
+        if not title and not artist:
+            continue
+        result: dict[str, Any] = {"source": "mpris", "player": player}
+        if title:
+            result["title"] = title
+        if artist:
+            result["artist"] = artist
+        if album:
+            result["album"] = album
+        if art_url:
+            result["cover_url"] = art_url
+        if include_timing:
+            result['status'] = status_match.group(1)
+            pos = _gdbus_player_prop(player, 'Position') or ''
+            position_match = re.search(r'int64\s+(\d+)', pos)
+            length_match = re.search(r"'mpris:length':\s*<int64\s+(\d+)", metadata)
+            if position_match:
+                result['position_s'] = int(position_match.group(1)) / 1_000_000
+            if length_match:
+                result['duration_s'] = int(length_match.group(1)) / 1_000_000
+        logger.info("MPRIS now playing via gdbus (%s): %s — %s", player, artist, title)
+        return result
+    return None
+
+
+def now_playing() -> dict[str, Any] | None:
+    """Exact local track identity, including application-owned music players."""
+    from desktop_bridge import registry
+
+    if registry.active():
+        observations = [registry.snapshot(source) for source in ("youtube_music", "apple_music")]
+        playing = [
+            item for item in observations
+            if item.get("connected") and not item.get("stale") and item.get("playing")
+            and (item.get("title") or item.get("artist"))
+        ]
+        if playing:
+            item = max(playing, key=lambda value: value.get("observed_at") or 0)
+            return {
+                "source": item["source"], "player": item["source"],
+                "title": item.get("title") or "", "artist": item.get("artist") or "",
+                "album": item.get("album") or "", "status": "Playing",
+                "position_s": item.get("position"), "duration_s": item.get("duration"),
+            }
+    return now_playing_mpris()
+
+
+def now_playing_mpris(*, include_paused: bool = False, include_timing: bool = False) -> dict[str, Any] | None:
+    """Return now-playing track metadata from MPRIS.
+
+    Returns a normalized dict (title/artist/album/cover_url/player,
+    source="mpris") matching the shape of :func:`_parse_shazam_result`, or
+    None when no player is playing or metadata is empty. Uses playerctl when
+    available, falling back to gdbus on the session bus. Browser players
+    (chrome/chromium/firefox) are preferred when several players are present.
+    """
+    fmt = "{{title}}\t{{artist}}\t{{album}}\t{{status}}\t{{mpris:artUrl}}"
+    if include_timing:
+        fmt += "\t{{mpris:length}}"
+    for player in _list_mpris_players():
+        output = _run_playerctl(["--player", player, "metadata", "--format", fmt])
+        if not output:
+            continue
+        parts = output.rstrip("\n").split("\t")
+        parts += [""] * (5 - len(parts))
+        title, artist, album, status, art_url = (p.strip() for p in parts[:5])
+        if status.lower() not in (("playing", "paused") if include_paused else ("playing",)):
+            continue
+        if not title and not artist:
+            continue
+        result: dict[str, Any] = {"source": "mpris", "player": player}
+        if title:
+            result["title"] = title
+        if artist:
+            result["artist"] = artist
+        if album:
+            result["album"] = album
+        if art_url:
+            result["cover_url"] = art_url
+        if include_timing:
+            result['status'] = status
+            position = song_tracking.PlaybackClock._seconds(_run_playerctl(['--player', player, 'position']))
+            length = song_tracking.PlaybackClock._seconds(parts[5] if len(parts) > 5 else None)
+            if position is not None:
+                result['position_s'] = position
+            if length is not None:
+                result['duration_s'] = length / 1_000_000
+        logger.info("MPRIS now playing (%s): %s — %s", player, artist, title)
+        return result
+    if include_paused or include_timing:
+        return _now_playing_gdbus(include_paused=include_paused, include_timing=include_timing)
+    return _now_playing_gdbus()
+
+
+# ---------------------------------------------------------------------------
+# Audio source selection (monitor vs mic) for the capture path
+# ---------------------------------------------------------------------------
+
+
+def _pactl_monitor_source() -> str | None:
+    """Return the PulseAudio/PipeWire monitor source for the default sink."""
+    if shutil.which("pactl") is None:
+        return None
+    try:
+        proc = subprocess.run(
+            ["pactl", "list", "short", "sources"],
+            capture_output=True,
+            text=True,
+            timeout=_PLAYERCTL_TIMEOUT,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    names = []
+    for line in proc.stdout.splitlines():
+        fields = line.split("\t")
+        if len(fields) >= 2:
+            names.append(fields[1].strip())
+    if "@DEFAULT_MONITOR@" in names:
+        return "@DEFAULT_MONITOR@"
+    default_monitor = ""
+    try:
+        sink = subprocess.run(
+            ["pactl", "get-default-sink"],
+            capture_output=True,
+            text=True,
+            timeout=_PLAYERCTL_TIMEOUT,
+        )
+        if sink.returncode == 0 and sink.stdout.strip():
+            default_monitor = sink.stdout.strip() + ".monitor"
+    except (subprocess.SubprocessError, OSError):
+        pass
+    if default_monitor and default_monitor in names:
+        return default_monitor
+    for name in names:
+        if name.endswith(".monitor"):
+            return name
+    return None
+
+
+def resolve_audio_source(cfg: dict | None = None) -> str:
+    """Resolve which audio source the capture path should record from.
+
+    Priority: ``LIGHT_AUDIO_SOURCE`` env override → ``cfg["audio_source"]``
+    (default ``"monitor"``). ``"monitor"`` selects the PulseAudio/PipeWire
+    monitor source of the default sink (falls back to ``"default"`` when
+    pactl is unavailable or exposes no monitor); ``"mic"`` selects the
+    configured ``mic_device`` (existing behavior); any other value is treated
+    as an explicit device name and returned unchanged.
+    """
+    if cfg is None:
+        cfg = lightctl.load_config()
+    mode = os.environ.get("LIGHT_AUDIO_SOURCE", "").strip()
+    if not mode:
+        mode = str(cfg.get("audio_source", DEFAULT_AUDIO_SOURCE) or "").strip() or DEFAULT_AUDIO_SOURCE
+    if mode == "monitor":
+        source = _pactl_monitor_source()
+        if source is None:
+            logger.warning("No PulseAudio/PipeWire monitor source found; using default input")
+            return "default"
+        return source
+    if mode == "mic":
+        mic = cfg.get("mic_device", "")
+        return str(mic) if mic else "default"
+    return mode
+
+
+def resolve_identify_device(cfg: dict | None = None) -> str | int:
+    """Physical input for ambient song ID. Never the system output monitor.
+
+    Identification has to hear the room (TV, phone, speakers) even when this
+    machine is silent, so this ignores ``audio_source`` / ``LIGHT_AUDIO_SOURCE``.
+    Priority: ``LIGHT_MIC_DEVICE`` → ``cfg["mic_device"]`` → ``"default"``
+    (the sounddevice default input).
+    """
+    env = os.environ.get("LIGHT_MIC_DEVICE", "").strip()
+    if env:
+        return int(env) if env.isdigit() else env
+    if cfg is None:
+        cfg = lightctl.load_config()
+    mic = cfg.get("mic_device", "")
+    if mic not in (None, ""):
+        text = str(mic).strip()
+        if text:
+            return int(text) if text.isdigit() else text
+    return "default"
+
+
 async def recognize_microphone(
     duration: float = DEFAULT_DURATION,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     device: str | int | None = None,
+    *, change_tracker: Any = None,
 ) -> dict[str, Any] | None:
     """Record audio from the microphone and recognize the song via Shazam.
 
@@ -198,24 +798,27 @@ async def recognize_microphone(
         raise RuntimeError("shazamio is not available")
     if np is None:
         raise RuntimeError("numpy is not available")
-    if _load_sounddevice() is None:
-        raise RuntimeError("sounddevice is not available")
     if AudioSegment is None:
         raise RuntimeError("pydub is not available")
 
     try:
         if device is None:
-            device = lightctl.get_mic_device()
-        if sample_rate == 0:
-            sample_rate = _get_device_samplerate(device)
+            device = resolve_audio_source()
+        device, sample_rate = await asyncio.to_thread(_prepare_capture, device, sample_rate)
         audio_data = await asyncio.to_thread(_record_audio, duration, sample_rate, device)
         segment = _make_audio_segment(audio_data, sample_rate)
+        if len(segment) < MIN_AUDIO_MS:
+            logger.info("Recorded audio too short for recognition (%d ms)", len(segment))
+            return None
 
         audio_buf = io.BytesIO()
         segment.export(audio_buf, format="wav")
 
+        if change_tracker is not None:
+            return await asyncio.to_thread(change_tracker.recognize, audio_buf.getvalue())
+
         shazam = Shazam()
-        result = await shazam.recognize_song(audio_buf.getvalue())
+        result = await _recognize_with_backoff(shazam, audio_buf.getvalue())
         parsed = _parse_shazam_result(result)
         if parsed:
             logger.info("Recognized: %s — %s", parsed.get("artist"), parsed.get("title"))
@@ -226,6 +829,54 @@ async def recognize_microphone(
         # Device unavailable, no mic, permission issues, PortAudio errors, etc.
         # Treat as "could not identify" rather than hard failure.
         logger.info("Microphone recording/identification failed: %s", exc)
+        return None
+
+
+async def recognize_ambient(
+    duration: float = AMBIENT_DURATION,
+    sample_rate: int = DEFAULT_SAMPLE_RATE,
+    device: str | int | None = None,
+    windows: int = AMBIENT_WINDOWS,
+    *, change_tracker: Any = None,
+) -> dict[str, Any] | None:
+    """Identify song/artist from room audio. Does not need local playback.
+
+    Always records the physical microphone (never the PulseAudio/PipeWire
+    output monitor) and never consults MPRIS. If the first window has no
+    Shazam match, records one more window — live sets often have talking
+    or crowd between songs.
+    """
+    if device is None:
+        device = resolve_identify_device()
+    windows = max(1, int(windows))
+    last: dict[str, Any] | None = None
+    for _ in range(windows):
+        if change_tracker is not None:
+            return await recognize_microphone(duration, sample_rate, device=device, change_tracker=change_tracker)
+        last = await recognize_microphone(duration, sample_rate, device=device)
+        if last:
+            return last
+    return last
+
+
+async def recognize(
+    duration: float = DEFAULT_DURATION,
+    sample_rate: int = DEFAULT_SAMPLE_RATE,
+    device: str | int | None = None,
+) -> dict[str, Any] | None:
+    """Identify the current track: integrated player/MPRIS, then Shazam.
+
+    When music plays on this machine in a browser, the track metadata is
+    already available over MPRIS and no audio capture is needed. Falls back
+    to microphone recording + Shazam when MPRIS yields nothing.
+    """
+    mpris = await asyncio.to_thread(now_playing)
+    if mpris:
+        return mpris
+    try:
+        return await recognize_microphone(duration, sample_rate, device)
+    except RuntimeError as exc:
+        logger.info("MPRIS yielded nothing and Shazam fallback is unavailable: %s", exc)
         return None
 
 
@@ -241,8 +892,12 @@ async def recognize_audio_bytes(audio_bytes: bytes) -> dict[str, Any] | None:
         raise RuntimeError("pydub is not available")
 
     try:
+        segment = AudioSegment.from_file(io.BytesIO(audio_bytes))
+        if len(segment) < MIN_AUDIO_MS:
+            logger.info("Audio too short for recognition (%d ms)", len(segment))
+            return None
         shazam = Shazam()
-        result = await shazam.recognize_song(audio_bytes)
+        result = await _recognize_with_backoff(shazam, audio_bytes)
         parsed = _parse_shazam_result(result)
         if parsed:
             logger.info("Recognized: %s — %s", parsed.get("artist"), parsed.get("title"))
@@ -277,7 +932,53 @@ def recognize_sync(
 
     thread = threading.Thread(target=run_in_thread, daemon=True)
     thread.start()
-    thread.join()
+    timeout = duration + SHAZAM_TIMEOUT + _SYNC_JOIN_MARGIN
+    thread.join(timeout=timeout)
+    if thread.is_alive():
+        logger.warning("recognize_sync timed out after %.1fs; returning None", timeout)
+        return None
+    if error is not None:
+        raise error
+    return result
+
+
+def recognize_ambient_sync(
+    duration: float = AMBIENT_DURATION,
+    sample_rate: int = DEFAULT_SAMPLE_RATE,
+    device: str | int | None = None,
+    windows: int = AMBIENT_WINDOWS,
+    *, change_tracker: Any = None,
+) -> dict[str, Any] | None:
+    """Synchronous wrapper around :func:`recognize_ambient`."""
+    windows = max(1, int(windows))
+
+    async def _run() -> dict[str, Any] | None:
+        if change_tracker is not None:
+            return await recognize_ambient(duration, sample_rate, device, windows, change_tracker=change_tracker)
+        return await recognize_ambient(duration, sample_rate, device, windows)
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_run())
+
+    result: dict[str, Any] | None = None
+    error: BaseException | None = None
+
+    def run_in_thread() -> None:
+        nonlocal result, error
+        try:
+            result = asyncio.run(_run())
+        except BaseException as exc:
+            error = exc
+
+    thread = threading.Thread(target=run_in_thread, daemon=True)
+    thread.start()
+    timeout = windows * (duration + SHAZAM_TIMEOUT) + _SYNC_JOIN_MARGIN
+    thread.join(timeout=timeout)
+    if thread.is_alive():
+        logger.warning("recognize_ambient_sync timed out after %.1fs; returning None", timeout)
+        return None
     if error is not None:
         raise error
     return result
@@ -302,7 +1003,11 @@ def recognize_audio_bytes_sync(audio_bytes: bytes) -> dict[str, Any] | None:
 
     thread = threading.Thread(target=run_in_thread, daemon=True)
     thread.start()
-    thread.join()
+    timeout = SHAZAM_TIMEOUT + _SYNC_JOIN_MARGIN
+    thread.join(timeout=timeout)
+    if thread.is_alive():
+        logger.warning("recognize_audio_bytes_sync timed out after %.1fs; returning None", timeout)
+        return None
     if error is not None:
         raise error
     return result

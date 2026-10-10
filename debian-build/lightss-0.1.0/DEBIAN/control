@@ -1,0 +1,11 @@
+Package: lightss
+Version: 0.1.0
+Section: utils
+Priority: optional
+Architecture: amd64
+Depends: python3.14, libportaudio2
+Maintainer: Lightss Team <lightss@example.com>
+Description: Agentic AI WLED light controller
+ Browser-based GUI and CLI tools for controlling WLED LED strips,
+ with AI scene generation, music recognition, beat-reactive effects,
+ and MCP server integration.

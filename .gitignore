@@ -5,3 +5,12 @@ __pycache__/
 dist/
 *.egg-info/
 .worktrees/
+
+.env
+
+# Generated release staging (not source)
+build/
+debian-build/
+
+# Runtime logs (never source)
+*.log

@@ -5,6 +5,8 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import lightctl
 import light_gui
 import mcp_light
@@ -67,7 +69,38 @@ class MergePayloadsTests(unittest.TestCase):
 
     def test_transition_included_when_nonzero(self):
         payload = lightctl.on_payload(True, transition_ms=500)
-        self.assertEqual(payload["transition"], 500)
+        self.assertEqual(payload["tt"], 5)
+
+    def test_merges_per_segment_id(self):
+        merged = lightctl.merge_payloads(
+            lightctl.effect_payload(9, seg_id=0),
+            lightctl.color_payload(1, 2, 3, 4, seg_id=0),
+        )
+        self.assertEqual(
+            merged,
+            {"seg": [{"id": 0, "fx": 9, "sx": 128, "col": [[1, 2, 3, 4]]}]},
+        )
+
+    def test_different_segment_ids_stay_separate(self):
+        merged = lightctl.merge_payloads(
+            lightctl.effect_payload(9, seg_id=0),
+            lightctl.effect_payload(28, seg_id=1),
+        )
+        self.assertEqual(len(merged["seg"]), 2)
+        by_id = {seg["id"]: seg for seg in merged["seg"]}
+        self.assertEqual(by_id[0]["fx"], 9)
+        self.assertEqual(by_id[1]["fx"], 28)
+
+    def test_id_less_entries_merge_into_first_segment(self):
+        merged = lightctl.merge_payloads(
+            lightctl.segment_payload([{"id": 0, "fx": 9}, {"id": 1, "fx": 28}]),
+            lightctl.color_payload(5, 5, 5, 0),
+        )
+        self.assertEqual(len(merged["seg"]), 2)
+        by_id = {seg["id"]: seg for seg in merged["seg"]}
+        self.assertEqual(by_id[0]["col"], [[5, 5, 5, 0]])
+        self.assertEqual(by_id[0]["fx"], 9)
+        self.assertNotIn("col", by_id[1])
 
 
 class ReactiveThreadTests(unittest.TestCase):
@@ -143,9 +176,13 @@ class KelvinTests(unittest.TestCase):
         self.assertGreater(b, 200)
         self.assertEqual(w, 0)
 
-    def test_clamps_out_of_range(self):
-        self.assertEqual(lightctl.kelvin_to_rgbw(1000), lightctl.kelvin_to_rgbw(2000))
-        self.assertEqual(lightctl.kelvin_to_rgbw(10000), lightctl.kelvin_to_rgbw(6500))
+    def test_rejects_out_of_range(self):
+        """The accepted range is 1000-20000 K and is enforced, not clamped."""
+        for bad in (0, 999, 20001, -100):
+            with self.assertRaises(ValueError, msg=f"kelvin {bad} should be rejected"):
+                lightctl.kelvin_to_rgbw(bad)
+        self.assertNotEqual(lightctl.kelvin_to_rgbw(1000), lightctl.kelvin_to_rgbw(2000))
+        self.assertNotEqual(lightctl.kelvin_to_rgbw(6500), lightctl.kelvin_to_rgbw(10000))
 
     def test_all_channels_are_bytes(self):
         for k in (2000, 2700, 4000, 5000, 6500):
@@ -219,19 +256,19 @@ class TransitionTests(unittest.TestCase):
     def test_brightness_payload_includes_transition(self):
         p = lightctl.brightness_payload(200, transition_ms=500)
         self.assertEqual(p["bri"], 200)
-        self.assertEqual(p["transition"], 500)
+        self.assertEqual(p["tt"], 5)  # WLED transition key, 100 ms units
 
     def test_color_payload_includes_transition(self):
         p = lightctl.color_payload(255, 0, 0, 0, transition_ms=300)
-        self.assertEqual(p["transition"], 300)
+        self.assertEqual(p["tt"], 3)
 
     def test_effect_payload_includes_transition(self):
         p = lightctl.effect_payload(28, 128, transition_ms=100)
-        self.assertEqual(p["transition"], 100)
+        self.assertEqual(p["tt"], 1)
 
     def test_scene_payload_includes_transition(self):
         p = lightctl.scene_payload("warm", transition_ms=250)
-        self.assertEqual(p["transition"], 250)
+        self.assertEqual(p["tt"], 2)
 
 
 class GuiPayloadTests(unittest.TestCase):
@@ -248,7 +285,7 @@ class GuiPayloadTests(unittest.TestCase):
 
     def test_transition_passed_through(self):
         payload = light_gui.payload_for_action("bri", {"value": 200, "transition": 500})
-        self.assertEqual(payload["transition"], 500)
+        self.assertEqual(payload["tt"], 5)
 
     def test_hex_action_builds_color_payload(self):
         payload = light_gui.payload_for_action("hex", {"color": "#ff6600"})
@@ -340,6 +377,28 @@ class HexColorTests(unittest.TestCase):
             lightctl.hex_to_rgbw("ggg")
 
 
+def test_verified_column_geometry_is_per_column():
+    """The wall columns are not uniform (34/47/47/40), so zone math must be
+    given the real length instead of assuming one default."""
+    assert lightctl.CHANNEL_LENGTHS == {
+        "far-left": 34,
+        "middle-left": 47,
+        "middle-right": 47,
+        "far-right": 40,
+    }
+    assert lightctl.COLUMN_LENGTH_M == 2.0
+    assert lightctl.zone_bounds("bottom half", channel="far-right") == (0, 20)
+    assert lightctl.zone_bounds("top half", channel="far-right") == (20, 40)
+    assert lightctl.zone_bounds("all", channel="far-left") == (0, 34)
+    with pytest.raises(ValueError):
+        lightctl.zone_bounds("top half")  # no length and no channel is ambiguous
+
+
+def test_downward_orientation_flips_top_and_bottom():
+    assert lightctl.zone_bounds("top half", length=40, orientation="down") == (0, 20)
+    assert lightctl.zone_bounds("bottom half", length=40, orientation="down") == (20, 40)
+
+
 class RandomSceneTests(unittest.TestCase):
     def test_random_scene_is_builtin(self):
         payload = lightctl.random_scene_payload()
@@ -388,7 +447,28 @@ class PresetTests(unittest.TestCase):
 
     def test_preset_payload_includes_transition(self):
         p = lightctl.preset_payload(10, transition_ms=300)
-        self.assertEqual(p["transition"], 300)
+        self.assertEqual(p["tt"], 3)
+
+    def test_playlist_payload_sets_pl(self):
+        self.assertEqual(lightctl.playlist_payload(3), {"pl": 3})
+
+
+class ValidateEffectLiveSetTests(unittest.TestCase):
+    def test_validate_effect_offline_falls_back_to_safe_effects(self):
+        self.assertEqual(lightctl.validate_effect(9), 9)
+        with self.assertRaises(ValueError):
+            lightctl.validate_effect(200)
+
+    def test_validate_effect_with_live_set_per_firmware(self):
+        right_live = set(range(187))  # WLED 0.15.4
+        left_live = set(range(220))   # WLED 16.0.1
+        with self.assertRaises(ValueError):
+            lightctl.validate_effect(200, allowed=right_live)
+        self.assertEqual(lightctl.validate_effect(200, allowed=left_live), 200)
+
+    def test_validate_effect_rejects_id_outside_live_set(self):
+        with self.assertRaises(ValueError):
+            lightctl.validate_effect(5, allowed={9, 28})
 
 
 class WledInfoTests(unittest.TestCase):
@@ -458,7 +538,7 @@ class CycleThreadTests(unittest.TestCase):
 
     def test_start_stop_lifecycle(self):
         client = FakeClient()
-        cycle = lightctl.CycleThread(client, items=["warm", "night"], interval_seconds=0.2)
+        cycle = lightctl.CycleThread(client, items=["warm", "night"], interval_seconds=1.0)
         self.assertFalse(cycle.is_alive())
         msg = cycle.start()
         self.assertIn("started", msg.lower())
@@ -552,17 +632,20 @@ class GuiStateOfflineTrackingTests(unittest.TestCase):
         client.get_info.side_effect = RuntimeError("info endpoint unreachable")
         state = self._make_state(client)
 
-        self.assertEqual(state.get_state_throttled(), {"on": True})
-        self.assertFalse(state.is_offline)
+        # The 0.6 s read cache is intentional; pin it to 0 so this test is
+        # about the independent offline flags, not about cache freshness.
+        with patch.object(light_gui, "STATE_CACHE_TTL_S", 0.0):
+            self.assertEqual(state.get_state_throttled(), {"on": True})
+            self.assertFalse(state.is_offline)
 
-        with self.assertRaises(RuntimeError):
-            state.get_info_throttled()
+            with self.assertRaises(RuntimeError):
+                state.get_info_throttled()
 
-        # A fresh state fetch should still hit the device, not return the
-        # earlier cached value because of the (unrelated) info failure.
-        client.get_state.return_value = {"on": False}
-        self.assertEqual(state.get_state_throttled(), {"on": False})
-        self.assertFalse(state.is_offline)
+            # A fresh state fetch still hits the device instead of returning
+            # the earlier value because of the (unrelated) info failure.
+            client.get_state.return_value = {"on": False}
+            self.assertEqual(state.get_state_throttled(), {"on": False})
+            self.assertFalse(state.is_offline)
 
 
 class McpPresetTests(unittest.TestCase):
