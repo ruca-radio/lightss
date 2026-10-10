@@ -375,9 +375,12 @@ monitor of the default output (`audio_source: "monitor"` in `config.json`), so
 it reacts to music playing on this machine without a microphone. Set
 `audio_source` to `"mic"` (or a device name) to use a microphone instead, or
 `"wled_mic"` to listen to a WLED controller's GPIO mic over UDP (WLED-SR audio
-sync, port 11988); `LIGHT_AUDIO_SOURCE` overrides the config value. Track metadata comes from
-MPRIS (`playerctl`, filtered to browser players like Chrome/Chromium/Firefox),
-with Shazam as fallback when MPRIS yields nothing.
+sync, port 11988); `LIGHT_AUDIO_SOURCE` overrides the config value. Track metadata comes
+first from fresh observations of the integrated desktop player, then MPRIS
+(`playerctl`, filtered to browser players like Chrome/Chromium/Firefox), with
+room-microphone Shazam recognition as the fallback. Music Director uses this
+same source order. AI requests and Match Lights also reuse identified room
+songs, including their reported genre and album, when local metadata is absent.
 
 ## Browser GUI
 

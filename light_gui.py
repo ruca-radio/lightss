@@ -850,7 +850,7 @@ def get_now_playing_mpris() -> dict[str, str] | None:
 def get_now_playing() -> dict[str, str] | None:
     """Return normalized playing metadata from the shared recognizer first.
 
-    ``music_recognizer.now_playing_mpris`` is also used by Music Director, so this
+    ``music_recognizer.now_playing`` is also used by Music Director, so this
     keeps the GUI and director from disagreeing about the active player. Legacy
     playerctl/gdbus readers remain as a compatibility fallback.
     """
@@ -861,12 +861,13 @@ def get_now_playing() -> dict[str, str] | None:
                 "artist": desktop.get("artist") or "", "album": desktop.get("album") or "",
                 "status": "Playing", "position_s": desktop.get("position"),
                 "duration_s": desktop.get("duration")}
-    shared = getattr(music_recognizer, "now_playing_mpris", None)
+    shared = getattr(music_recognizer, "now_playing", None)
     if callable(shared):
         try:
             value = shared()
             if isinstance(value, Mapping):
                 result = {
+                    **dict(value),
                     "player": str(value.get("player") or value.get("source") or ""),
                     "artist": str(value.get("artist") or ""),
                     "title": str(value.get("title") or ""),
@@ -1419,6 +1420,12 @@ def build_openai_request(
     parts: list[str] = []
     if now_playing:
         parts.append(f"Background audio now playing: {now_playing_text(now_playing)}")
+        metadata = {
+            key: now_playing[key]
+            for key in ("title", "artist", "album", "genre", "source", "position_s", "duration_s")
+            if now_playing.get(key) is not None
+        }
+        parts.append("Reported song metadata: " + json.dumps(metadata))
     if device_snapshot:
         parts.append(device_snapshot_text(device_snapshot))
     parts.append(f"User request: {prompt}")
@@ -1879,6 +1886,12 @@ def ai_context_text(client: Any, now_playing: dict | None = None, *, playback_cl
     parts: list[str] = []
     if now_playing:
         parts.append(f"Background audio now playing: {now_playing_text(now_playing)}")
+        metadata = {
+            key: now_playing[key]
+            for key in ("title", "artist", "album", "genre", "source", "position_s", "duration_s")
+            if now_playing.get(key) is not None
+        }
+        parts.append("Reported song metadata: " + json.dumps(metadata))
     clock = playback_clock if playback_clock is not None else playback_clock_payload(refresh=False)["clock"]
     parts.append("Playback clock (observer only; null position means unknown; observed_for_s is NOT song position): " + json.dumps(clock))
     monitor = getattr(client, "_controller_audio_monitor", None)
@@ -5240,7 +5253,7 @@ def make_handler(state: GuiState):
                         # Respect explicit mic capture result (even if None = no song found)
                         now_playing_for_match = provided_np
                     else:
-                        now_playing_for_match = get_now_playing()
+                        now_playing_for_match = observed_now_playing(state)
                     result = match_lights_to_song(
                         state.client, now_playing=now_playing_for_match
                     )
@@ -5343,7 +5356,7 @@ def make_handler(state: GuiState):
                         return
                     now_playing = data.get("now_playing")
                     if not isinstance(now_playing, dict):
-                        now_playing = get_now_playing()
+                        now_playing = observed_now_playing(state)
 
                     def _execute_ai_request() -> dict[str, Any]:
                         import ai_chat

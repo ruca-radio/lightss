@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import http.client
 import json
 import logging
 import math
@@ -1981,6 +1982,15 @@ class LightClient:
                             f"WLED HTTP {exc.code} from {request.full_url}{suffix}"
                         ) from exc
                 except (urllib.error.URLError, OSError) as exc:
+                    last_exc = exc
+                except http.client.IncompleteRead as exc:
+                    # A controller can close a successful response mid-body.
+                    # Retry observations, but never repeat a possibly applied
+                    # state change merely because its acknowledgement was lost.
+                    if request.get_method() != "GET":
+                        raise RuntimeError(
+                            f"Incomplete WLED response from {request.full_url}"
+                        ) from exc
                     last_exc = exc
                 if attempt < self.retries - 1:
                     time.sleep(0.1 * (2**attempt))

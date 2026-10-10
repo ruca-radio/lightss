@@ -286,11 +286,11 @@ class MusicDirector(threading.Thread):
     # -- poll handling -----------------------------------------------------
 
     def _read_track(self) -> dict | None:
-        """MPRIS if this machine is playing, else room-mic Shazam."""
+        """Integrated player/MPRIS metadata first, else room-mic Shazam."""
         try:
-            mpris = music_recognizer.now_playing_mpris()
+            mpris = music_recognizer.now_playing()
         except Exception as exc:
-            logger.warning("Music director: MPRIS poll failed: %s", exc)
+            logger.warning("Music director: local metadata poll failed: %s", exc)
             mpris = None
         if isinstance(mpris, dict):
             self._ambient_sticky = None
@@ -412,7 +412,8 @@ class MusicDirector(threading.Thread):
 
             try:
                 context_text = light_gui.ai_context_text(
-                    self.fleet, {"artist": artist, "title": title, "status": "Playing"}
+                    self.fleet,
+                    {**(self.current_song or {}), "artist": artist, "title": title, "status": "Playing"},
                 )
             except Exception as exc:  # context must never kill the composer
                 logger.info("Music director: AI context unavailable for %r: %s", title, exc)

@@ -59,8 +59,12 @@ def test_send_returns_id_without_waiting_and_call_ignores_its_response():
     transport, command_r, reply_w = _transport_from_pipes()
 
     def peer():
-        sent = _read_frame(command_r)
-        called = _read_frame(command_r)
+        # Pipe reads can coalesce both commands. The single-frame helper
+        # discards trailing bytes, making this test depend on thread timing.
+        data = b""
+        while data.count(b"\0") < 2:
+            data += os.read(command_r, 65536)
+        sent, called = [json.loads(frame) for frame in data.split(b"\0")[:2]]
         os.write(reply_w, _frame({"id": sent["id"], "result": {"old": True}}))
         os.write(reply_w, _frame({"id": called["id"], "result": {"new": True}}))
 

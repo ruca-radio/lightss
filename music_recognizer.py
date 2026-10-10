@@ -618,6 +618,28 @@ def _now_playing_gdbus(*, include_paused: bool = False, include_timing: bool = F
     return None
 
 
+def now_playing() -> dict[str, Any] | None:
+    """Exact local track identity, including application-owned music players."""
+    from desktop_bridge import registry
+
+    if registry.active():
+        observations = [registry.snapshot(source) for source in ("youtube_music", "apple_music")]
+        playing = [
+            item for item in observations
+            if item.get("connected") and not item.get("stale") and item.get("playing")
+            and (item.get("title") or item.get("artist"))
+        ]
+        if playing:
+            item = max(playing, key=lambda value: value.get("observed_at") or 0)
+            return {
+                "source": item["source"], "player": item["source"],
+                "title": item.get("title") or "", "artist": item.get("artist") or "",
+                "album": item.get("album") or "", "status": "Playing",
+                "position_s": item.get("position"), "duration_s": item.get("duration"),
+            }
+    return now_playing_mpris()
+
+
 def now_playing_mpris(*, include_paused: bool = False, include_timing: bool = False) -> dict[str, Any] | None:
     """Return now-playing track metadata from MPRIS.
 
@@ -842,13 +864,13 @@ async def recognize(
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     device: str | int | None = None,
 ) -> dict[str, Any] | None:
-    """Identify the current track: MPRIS now-playing first, Shazam fallback.
+    """Identify the current track: integrated player/MPRIS, then Shazam.
 
     When music plays on this machine in a browser, the track metadata is
     already available over MPRIS and no audio capture is needed. Falls back
     to microphone recording + Shazam when MPRIS yields nothing.
     """
-    mpris = await asyncio.to_thread(now_playing_mpris)
+    mpris = await asyncio.to_thread(now_playing)
     if mpris:
         return mpris
     try:
