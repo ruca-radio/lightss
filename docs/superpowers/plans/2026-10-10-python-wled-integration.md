@@ -47,3 +47,14 @@ Verification recorded during implementation:
 - Live multicast membership, route and socket binding were correct; the left
   device reported active microphone/send mode, but no audio packets arrived
   at this computer during the probe. No router/firmware changes were made.
+
+Final merged-main checks: 1473 tests passed with the existing dependency
+deprecations; all 46 wheel modules match source and import outside the checkout;
+the pinned dependency is present. Independent review approved the final VU
+refinements. Desktop/mobile Chrome checks passed again on merged main.
+
+GUI restarted successfully under transient user unit `lightss-gui.service` on
+port 8123 with existing configuration, Music Director enabled and both devices
+connected. Repeated live audio checks remained inactive with no packets seen.
+UFW is active, but this session cannot authenticate sudo to inspect/apply rules.
+The scoped administrator follow-up is documented in `docs/controller-audio-firewall.md`.
