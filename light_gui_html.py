@@ -1437,6 +1437,7 @@ __PLAYER_SETTINGS_CARD__
   __DESKTOP_DIALOGS__
   <script>
     __DESKTOP_SCRIPT__
+    const status = document.getElementById('status');
     let audioContext, analyser, micStream, micSource, frequencyData, waveformData, rafId;
     let playerMediaSource = null;
     let musicKitReady = null;
@@ -1459,6 +1460,13 @@ __PLAYER_SETTINGS_CARD__
     let moodRecorder = null;
     let moodRecorderInterval = null;
     let beatRequestInFlight = false;
+    let showSessionId = null;
+    let showFrameBusy = false;
+    let showPendingBeat = false;
+    let showResponse = '';
+    let showRecorderInterval = null;
+    let musicStarting = false;
+    let musicStartCancelled = false;
     const MUSIC_RECOGNITION_INTERVAL_MS = 30000;
     let baseline = 18;
     let lastBeat = 0;
@@ -3574,7 +3582,21 @@ __PLAYER_SETTINGS_CARD__
 
     async function ensureMicSession() {
       if (!micStream) {
-        micStream = await getPreferredMicStream();
+        const source = document.getElementById('musicAudioSource');
+        if (source && source.value === 'tab') {
+          if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+            throw new Error('This browser cannot share tab audio.');
+          }
+          micStream = await navigator.mediaDevices.getDisplayMedia({video: true, audio: true});
+          if (!micStream.getAudioTracks().length) {
+            micStream.getTracks().forEach(track => track.stop());
+            micStream = null;
+            throw new Error('No shared audio. Choose the music tab and enable Share tab audio.');
+          }
+        } else {
+          micStream = await getPreferredMicStream();
+        }
+        micStream.getAudioTracks().forEach(track => track.addEventListener('ended', () => stopMusicMode()));
       }
       if (!audioContext || audioContext.state === 'closed') {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -3918,21 +3940,121 @@ __PLAYER_SETTINGS_CARD__
       return startMusicMode({browserMic: true});
     }
 
+    // --- AI music show (server-side theme engine + browser audio features) ----
+    async function startShowRecorder() {
+      if (showRecorderInterval) clearInterval(showRecorderInterval);
+      let busy = false;
+      const token = showSessionId;
+      async function record() {
+        if (busy || !musicModeRunning || token !== showSessionId) return;
+        busy = true;
+        try {
+          const audio = await captureMicWav(6);
+          if (!musicModeRunning || token !== showSessionId) return;
+          const res = await fetch('/api/show/sample', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({session_id: token, audio_b64: audio})
+          });
+          const data = await res.json();
+          if (!data.ok) throw new Error(data.error || 'Song recognition unavailable');
+        } catch (err) {
+          if (musicModeRunning) setText('songSourceState', 'Recognition: ' + err.message);
+        } finally {
+          busy = false;
+        }
+      }
+      record();
+      showRecorderInterval = setInterval(record, 30000);
+    }
+
+    function stopShowRecorder() {
+      if (showRecorderInterval) clearInterval(showRecorderInterval);
+      showRecorderInterval = null;
+    }
+
+    async function startAiMusicShow() {
+      if (musicStarting) return;
+      musicStarting = true;
+      const btn = document.getElementById('aiShowBtn');
+      if (btn) btn.disabled = true;
+      try {
+        if (musicModeRunning || audioReactiveRunning) stopMusicMode();
+        musicStartCancelled = false;
+        // The two music engines are mutually exclusive wall writers.
+        try {
+          await postJson('/api/music-director', {enabled: false});
+          await loadMusicDirectorState();
+        } catch (err) {
+          console.warn('Could not stop Music Director before the AI show:', err.message);
+        }
+        const res = await fetch('/api/show/control', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({command: 'start'})
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || 'Cannot start music show');
+        if (musicStartCancelled) {
+          fetch('/api/show/control', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, keepalive: true,
+            body: JSON.stringify({command: 'stop', session_id: data.session_id})
+          }).catch(() => {});
+          return;
+        }
+        showSessionId = data.session_id;
+        showPendingBeat = false;
+        showResponse = '';
+        lastWledBeatSent = 0;
+        musicModeRunning = true;
+        musicModeGeneration++;
+        // Browser audio always comes from the selected source, never the player tap:
+        // the AI show must measure the room/tab audio it is naming.
+        await ensureMicSession();
+        audioReactiveRunning = true;
+        setText('micPipelineState', 'Listening');
+        analyzeAudio();
+        await startShowRecorder();
+        if (btn) btn.textContent = 'AI Music Show Running';
+        setMusicModeUi(true, 'AI listens every 24s');
+        setText('micPipelineState', 'Listening');
+        setText('songSourceState', 'Live audio (song unknown)');
+        setText('autoStatus', 'Listening to live audio; AI is preparing the visual direction.');
+      } catch (err) {
+        stopMusicMode();
+        setText('autoStatus', 'Music show: ' + err.message);
+      } finally {
+        musicStarting = false;
+        if (btn) btn.disabled = false;
+      }
+    }
+
     function stopMusicMode() {
       musicModeGeneration++;
+      musicStartCancelled = true;
+      const token = showSessionId;
+      const wasShow = !!token;
+      showSessionId = null;
       musicModeRunning = false;
       musicMetadataActive = false;
       musicMetadataKey = '';
       setMoodSessionRunning(false);
       stopMoodRecorder();
+      stopShowRecorder();
       if (musicRecognitionTimer) clearInterval(musicRecognitionTimer);
       musicRecognitionTimer = null;
       stopAudioReactive();
+      if (token) fetch('/api/show/control', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, keepalive: true,
+        body: JSON.stringify({command: 'stop', session_id: token})
+      }).catch(err => setText('autoStatus', 'Stop request: ' + err.message));
       const btn = document.getElementById('musicModeBtn');
+      const aiBtn = document.getElementById('aiShowBtn');
       const st = document.getElementById('autoStatus');
-      if (btn) btn.textContent = 'Start Music Mode';
+      if (btn) btn.textContent = 'Start Music Director';
+      if (aiBtn) aiBtn.textContent = 'Start AI Music Show';
       setMusicModeUi(false);
-      if (st) st.textContent = 'Music mode stopped.';
+      if (st) st.textContent = wasShow ? 'Music show stopped.' : 'Music mode stopped.';
     }
 
     let playbackClock = null;
@@ -4451,7 +4573,35 @@ __PLAYER_SETTINGS_CARD__
       }, 280);
     }
 
-    function sendAnalysisBeat(analysis) {
+    async function sendAnalysisBeat(analysis) {
+      // In an AI music show every measured frame feeds the server-side engine.
+      if (musicModeRunning && showSessionId) {
+        showPendingBeat = showPendingBeat || analysis.beat;
+        const frameNow = performance.now();
+        if (showFrameBusy || frameNow - lastWledBeatSent < 100) return;
+        lastWledBeatSent = frameNow;
+        const token = showSessionId;
+        const beat = showPendingBeat;
+        showPendingBeat = false;
+        showFrameBusy = true;
+        try {
+          const res = await fetch('/api/show/features', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({session_id: token, rms: analysis.rms, drive: analysis.drive,
+              bass: analysis.bass, mid: analysis.mid, treble: analysis.treble,
+              beatConfidence: analysis.beatConfidence, beat, bpm: analysis.bpm})
+          });
+          const data = await res.json();
+          if (token !== showSessionId) return;
+          if (!data.ok) throw new Error(data.error || 'Audio feature delivery failed');
+          updateShowStatus(data);
+        } catch (err) {
+          if (token === showSessionId) setText('autoStatus', 'Music show: ' + err.message);
+        } finally {
+          showFrameBusy = false;
+        }
+        return;
+      }
       const now = performance.now();
       if (!analysis.beat || now - lastWledBeatSent < 170) return;
       lastWledBeatSent = now;
@@ -4460,6 +4610,25 @@ __PLAYER_SETTINGS_CARD__
       const brightness = Math.max(90, Math.min(255, Math.round(80 + analysis.drive * 175)));
       const speed = Math.max(96, Math.min(255, Math.round(90 + analysis.beatConfidence * 110 + analysis.treble * 55)));
       sendBeatUpdate({red: color[0], green: color[1], blue: color[2], white: color[3], brightness, effect, speed});
+    }
+
+    function updateShowStatus(show) {
+      if (!musicModeRunning || !show || show.session_id !== showSessionId) return;
+      if (!show.running) { stopMusicMode(); return; }
+      const song = show.song;
+      if (song) {
+        musicTitle.textContent = song.title || 'Unknown song';
+        musicArtist.textContent = song.artist || '';
+      }
+      setText('songSourceState', song ? 'Identified song' : 'Live audio (song unknown)');
+      setText('nextMatchState', show.ai_state === 'designing' ? 'AI designing…' : 'AI evolves every 24s');
+      const error = show.output_error || show.ai_error;
+      setText('autoStatus', error ? `${show.ai_state}: ${error}` :
+        `${show.audio_live ? 'Live audio' : 'Waiting for audio'} · AI ${show.ai_state} · ${show.sent_frames} light updates`);
+      if (show.response && show.response !== showResponse) {
+        showResponse = show.response;
+        showScrollingModelResponse(show.response);
+      }
     }
 
     function resetAnalysisDisplay() {
@@ -5077,6 +5246,7 @@ __PLAYER_SETTINGS_CARD__
           stateSummary.textContent = `${onOff} | Bri ${bri} | Fx ${seg.fx ?? '-'} @ ${seg.sx ?? '-'}${controllerSummary}`;
           rebuildChannelRanges(payload.state);
           updateLightPreview(st, ledCapabilities, picked.segId);
+          if (payload.show && musicModeRunning) updateShowStatus(payload.show);
         } else if (payload.error) {
           stateDisplay.textContent = 'Device offline — reconnecting...';
           stateSummary.textContent = '--';
@@ -5818,8 +5988,15 @@ PLAYER_DECK_ENABLED = """    <div class="player-deck">
             </div>
             <span class="mode-pill" id="musicModeState">Idle</span>
           </div>
+          <label>Audio source
+            <select id="musicAudioSource" onchange="if (audioReactiveRunning) stopMusicMode()">
+              <option value="mic">Microphone / audio input</option>
+              <option value="tab">Share music tab / system audio</option>
+            </select>
+          </label>
           <div class="mode-actions">
             <button class="big-button" id="musicModeBtn" onclick="startMusicMode()">Start Music Director</button>
+            <button class="secondary" id="aiShowBtn" onclick="startAiMusicShow()" title="AI directs a continuous show from this browser's audio">Start AI Music Show</button>
             <button class="secondary stop-button" id="musicModeStopBtn" onclick="stopSmartMusicMode()">Stop</button>
           </div>
           <div class="visualizer-header" style="background:transparent;border:0;padding:8px 0 0;">
@@ -5872,8 +6049,15 @@ PLAYER_DECK_DISABLED = """    <!-- Scrollable window for model responses between
         </div>
         <span class="mode-pill" id="musicModeState">Idle</span>
       </div>
+      <label>Audio source
+        <select id="musicAudioSource" onchange="if (audioReactiveRunning) stopMusicMode()">
+          <option value="mic">Microphone / audio input</option>
+          <option value="tab">Share music tab / system audio</option>
+        </select>
+      </label>
       <div class="mode-actions">
         <button class="big-button" id="musicModeBtn" onclick="startMusicMode()">Start Music Director</button>
+        <button class="secondary" id="aiShowBtn" onclick="startAiMusicShow()" title="AI directs a continuous show from this browser's audio">Start AI Music Show</button>
         <button class="secondary stop-button" id="musicModeStopBtn" onclick="stopSmartMusicMode()">Stop</button>
       </div>
       <div class="mode-summary">

@@ -33,6 +33,14 @@ def _make_wav_24bit(n: int = 100) -> bytes:
     return buf.getvalue()
 
 
+class FakeClient:
+    def get_state(self):
+        return {"on": True, "bri": 128, "seg": [{"id": 0}]}
+
+    def post_state(self, payload):
+        pass
+
+
 class TestTransitionSmoother:
     def test_adds_minimum_transition_for_mood_change(self):
         smoother = mood_orchestrator.TransitionSmoother()
@@ -239,7 +247,7 @@ class TestMoodSession:
         assert result["status"]["state"] == "idle"
 
     def test_start_stop_lifecycle(self):
-        client = lightctl.LightClient("http://example.com", dry_run=True)
+        client = FakeClient()
         session = mood_orchestrator.MoodSession(
             client=client,
             recognize_fn=lambda data: None,
@@ -251,7 +259,7 @@ class TestMoodSession:
         assert session.status()["state"] == "idle"
 
     def test_recognized_song_applies_mood(self):
-        client = lightctl.LightClient("http://example.com", dry_run=True)
+        client = FakeClient()
         session = mood_orchestrator.MoodSession(
             client=client,
             recognize_fn=lambda data: {"title": "Song", "artist": "Artist", "album": "Album"},
@@ -363,7 +371,7 @@ class TestMoodSession:
 
 class TestMoodSessionAmbient:
     def test_enters_ambient_after_silence(self):
-        client = lightctl.LightClient("http://example.com", dry_run=True)
+        client = FakeClient()
         session = mood_orchestrator.MoodSession(
             client=client,
             recognize_fn=lambda data: None,
@@ -380,7 +388,7 @@ class TestMoodSessionAmbient:
 
     def test_ambient_to_mood_source_decision_is_atomic(self):
         """After ambient, a new song should be applied with the ambient_to_mood source."""
-        client = lightctl.LightClient("http://example.com", dry_run=True)
+        client = FakeClient()
         sources = []
 
         class SpySmoother(mood_orchestrator.TransitionSmoother):

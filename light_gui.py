@@ -37,6 +37,7 @@ except ImportError:  # compatibility with the reworked standalone filename
 import mood_orchestrator
 import music_recognizer
 import music_director
+import music_show
 import song_tracking
 import look_memory
 from wled_audio import ControllerAudioMonitor
@@ -142,7 +143,7 @@ WALL_ACTIONS = {'realtime_start', 'wall_span', 'realtime_stop', 'realtime_status
 
 API_GET_PATHS = {'/api/lighting-observation', '/api/audio/events', '/api/audio', '/api/music-director', '/api/suggestions', '/api/events', '/api/ai/jobs', '/wled-logo.png', '/api/firetv', '/api/player/playlists', '/api/player/apple/config', '/api/system-prompt', '/api/tv-trivia', '/api/now-playing', '/', '/api/recognize', '/api/settings', '/apple-login', '/api/music-show', '/api/playback-clock', '/api/player', '/api/tv-observation', '/api/state', '/api/player/library', '/api/match-lights', '/api/player/search', '/api/player/apple/session', '/api/idle-curator', '/tv', '/api/smart-director', '/api/boot', '/api/effects', '/api/led-preview'}
 
-API_POST_PATHS = {'/api/model-response/summary', '/api/music-director', '/api/mood/control', '/api/firetv', '/api/system-prompt', '/api/smart-director', '/api/settings/reload', '/api/ai/test', '/api/recognize', '/api/controllers/verify', '/api/settings', '/api/ai_vision', '/api/calibration/vision', '/api/ai', '/api/calibration', '/api/music-show', '/api/player', '/api/tv-observation', '/api/player/apple/complete', '/api/player/library', '/api/match-lights', '/api/idle-curator', '/api/boot', '/api/player/apple/now', '/api/action', '/api/mood/sample', '/api/calibration/self-configure/light', '/api/calibration/self-configure/finish'}
+API_POST_PATHS = {'/api/model-response/summary', '/api/music-director', '/api/mood/control', '/api/firetv', '/api/system-prompt', '/api/smart-director', '/api/settings/reload', '/api/ai/test', '/api/recognize', '/api/controllers/verify', '/api/settings', '/api/ai_vision', '/api/calibration/vision', '/api/ai', '/api/calibration', '/api/music-show', '/api/show/control', '/api/show/features', '/api/show/sample', '/api/player', '/api/tv-observation', '/api/player/apple/complete', '/api/player/library', '/api/match-lights', '/api/idle-curator', '/api/boot', '/api/player/apple/now', '/api/action', '/api/mood/sample', '/api/calibration/self-configure/light', '/api/calibration/self-configure/finish'}
 
 API_HEAD_PATHS = {'/api/ai_vision', '/api/suggestions', '/api/mood/control', '/api/playback-clock', '/api/recognize', '/api/state', '/wled-logo.png', '/api/match-lights', '/api/now-playing', '/', '/api/mood/sample'}
 
@@ -1152,6 +1153,28 @@ def generate_mood_for_song(
         if payload:
             return payload
     raise ValueError("AI did not return a usable WLED payload for mood generation")
+
+
+def direct_music_show(song, audio, snapshot, previous):
+    prompt = (
+        "You are directing a CONTINUOUS music light show. Live measured audio (normalized bands, "
+        "drive and RMS; BPM is only an onset-based estimate): " + json.dumps(audio)
+        + ". Previous theme: " + json.dumps(previous)
+        + ". Create or evolve a coherent color story, effect, palette, brightness, speed and intensity "
+        "for this musical passage. Treat measured audio as authoritative; do not invent a song or "
+        "claim to hear its waveform. If song metadata is unavailable, use measured energy and spectrum. "
+        "The real-time renderer handles beat attacks/releases and phrase changes separately. "
+        "Hold a coherent style, no random effect switching on beats. Use only color, effect, palette, "
+        "and brightness actions; include three RGBW colors (channels <=210) and brightness <=210. "
+        "Use only effects actually present in the device snapshot. No presets, timers, schedules, "
+        "power changes, or audio mode actions. Response: a short explanation of the visual direction."
+    )
+    plan = call_openai_for_plan(prompt, song, snapshot)
+    payloads = [payload_for_ai_action(action) for action in plan.get("actions", [])
+                if action.get("action") in {"color", "effect", "palette", "brightness"}]
+    if not payloads:
+        raise ValueError("AI returned no usable music-show theme")
+    return lightctl.merge_payloads(*payloads), plan.get("response", "")
 
 
 # ---------------------------------------------------------------------------
@@ -2998,8 +3021,13 @@ _AI_MAX_PROMPT_LEN = 2000
 
 
 class ScheduleExecutor:
-    def __init__(self, client: Any) -> None:
+    def __init__(
+        self,
+        client: Any,
+        before_execute: Callable[[], None] | None = None,
+    ) -> None:
         self.client = client
+        self.before_execute = before_execute
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -3029,6 +3057,10 @@ class ScheduleExecutor:
                     continue
                 try:
                     action = entry.get("action")
+                    if not action:
+                        continue
+                    if self.before_execute:
+                        self.before_execute()
                     data = (
                         entry.get("data") if isinstance(entry.get("data"), dict) else {}
                     )
@@ -3109,7 +3141,13 @@ class GuiState:
         self.song_observer = music_recognizer.AmbientSongObserver()
         self.controller_audio = ControllerAudioMonitor(client, dry_run=dry_run)
         client._controller_audio_monitor = self.controller_audio
-        self.schedule = ScheduleExecutor(client)
+        self.music_show = music_show.MusicShow(
+            client,
+            direct_music_show,
+            music_recognizer.recognize_audio_bytes_sync,
+            get_now_playing,
+        )
+        self.schedule = ScheduleExecutor(client, before_execute=self.music_show.stop)
         self.mood_session = mood_orchestrator.MoodSession(
             client=client,
             recognize_fn=music_recognizer.recognize_audio_bytes_sync,
@@ -3233,7 +3271,26 @@ class GuiState:
     def start_mode1(self) -> str:
         if smart_director_owns_wall(self.client):
             raise ValueError("Smart Director owns the wall; switch it to Manual or disable it first.")
+        self.music_show.stop()
         return self.mode1.start()
+
+    def start_music_show(self) -> dict:
+        """Start the browser audio-driven show as the single wall writer."""
+        reject_conflicting_browser_writer(self.client, "show")
+        self.mode1.stop()
+        self.autonomous.stop()
+        self.mood_session.stop()
+        self.stop_cycle()
+        self.stop_sunrise()
+        if self.fade_timer:
+            self.fade_timer.stop()
+        try:
+            if music_director.director_status().get("running"):
+                music_director.stop_director()
+                set_music_director_enabled(False)
+        except Exception:
+            logger.exception("Could not stop Music Director before the AI music show")
+        return self.music_show.start()
 
     def stop_mode1(self) -> str:
         return self.mode1.stop()
@@ -3954,6 +4011,8 @@ def apply_music_director_request(state: Any, enabled: bool) -> dict:
     """
     if not enabled:
         return set_music_director(state.client, False)
+    if hasattr(state, "music_show"):
+        state.music_show.stop()
     if not smart_director_config().get("enabled"):
         return set_music_director(state.client, True)
     try:
@@ -4438,7 +4497,7 @@ def pause_smart_director_for_manual_output(client: Any) -> None:
 
 
 def reject_conflicting_browser_writer(client: Any, writer: str) -> None:
-    if writer in {"beat", "mood_sample", "mood_start"} and smart_director_owns_wall(client):
+    if writer in {"beat", "mood_sample", "mood_start", "show"} and smart_director_owns_wall(client):
         raise ValueError("Smart Director owns the wall; disable it or select Manual first.")
 
 
@@ -5020,6 +5079,11 @@ def make_handler(state: GuiState):
                                         if hasattr(state, "ai_jobs")
                                         else []
                                     ),
+                                    "show": (
+                                        state.music_show.status()
+                                        if hasattr(state, "music_show")
+                                        else {}
+                                    ),
                                     "intel": intel,
                                 }
                             )
@@ -5290,6 +5354,34 @@ def make_handler(state: GuiState):
                 return
             try:
                 data = self.read_json_body()
+                if path.startswith("/api/show/"):
+                    show = getattr(state, "music_show", None)
+                    if show is None:
+                        raise ValueError("Music show is unavailable.")
+                    if path == "/api/show/control":
+                        command = str(data.get("command") or "")
+                        if command == "start":
+                            starter = getattr(state, "start_music_show", None) or show.start
+                            result = starter()
+                        elif command == "stop":
+                            show.stop(str(data.get("session_id") or ""))
+                            result = show.status()
+                        elif command == "status":
+                            result = show.status()
+                        else:
+                            raise ValueError("command must be start, stop, or status")
+                    elif path == "/api/show/features":
+                        result = show.ingest(data)
+                    else:
+                        audio = _decode_base64_blob(
+                            data.get("audio_b64"),
+                            max_bytes=2_000_000,
+                            label="WAV recording",
+                        )
+                        show.sample(audio, str(data.get("session_id") or ""))
+                        result = show.status()
+                    self.respond_json({"ok": True, **result})
+                    return
                 if path == "/api/player":
                     import audio_player
 
@@ -5500,6 +5592,8 @@ def make_handler(state: GuiState):
                         self.respond_json({"ok": False, "error": msg})
                     return
                 if path == "/api/match-lights":
+                    if hasattr(state, "music_show"):
+                        state.music_show.stop()
                     # Prefer the same now-playing metadata shown in the browser. Audio remains
                     # available for explicit legacy callers, but the main UI does not need it.
                     provided_now_playing = data.get("now_playing")
@@ -5585,6 +5679,8 @@ def make_handler(state: GuiState):
                 if path == "/api/mood/control":
                     command = str(data.get("command", "")).strip().lower()
                     if command == "start":
+                        if hasattr(state, "music_show"):
+                            state.music_show.stop()
                         reject_conflicting_browser_writer(state.client, "mood_start")
                         state.mood_session.start()
                         message = "Mood session started."
@@ -5612,6 +5708,8 @@ def make_handler(state: GuiState):
                     if origin and not origin.startswith(("http://127.0.0.1", "http://localhost")):
                         self.respond_json({"ok": False, "error": "Forbidden origin"}, status=403)
                         return
+                    if hasattr(state, "music_show"):
+                        state.music_show.stop()
                     try:
                         import smart_director
 
@@ -5633,6 +5731,8 @@ def make_handler(state: GuiState):
                             status=400,
                         )
                         return
+                    if hasattr(state, "music_show"):
+                        state.music_show.stop()
                     now_playing = data.get("now_playing")
                     if not isinstance(now_playing, dict):
                         now_playing = observed_now_playing(state)
@@ -5713,6 +5813,15 @@ def make_handler(state: GuiState):
                     return
                 else:
                     action = str(data.get("action", ""))
+                    if action not in {"look_feedback", "look_memory_summary"} and (
+                        hasattr(state, "music_show")
+                        and state.music_show.status().get("running")
+                    ):
+                        if action == "beat":
+                            raise ValueError(
+                                "Music show owns beat output; use /api/show/features"
+                            )
+                        state.music_show.stop()
                     if action == "look_feedback":
                         feedback = look_memory.add_feedback(score=int(data.get("score", 0)),
                             notes=str(data.get("notes") or ""), tags=data.get("tags") or [])
