@@ -600,10 +600,16 @@ HTML_TEMPLATE = """<!doctype html>
       <div class="mode-header">
         <div>
           <h2>Music Mode</h2>
-          <p class="mode-subtitle">Browser-mic beat detection + now-playing AI mood matching. Visualizers above react live.</p>
+          <p class="mode-subtitle">AI directs the colors and motion. Live bass, energy and beats perform the show.</p>
         </div>
         <span class="mode-pill" id="musicModeState">Idle</span>
       </div>
+      <label>Audio source
+        <select id="musicAudioSource" onchange="if (audioReactiveRunning) stopMusicMode()">
+          <option value="mic">Microphone / audio input</option>
+          <option value="tab">Share music tab / system audio</option>
+        </select>
+      </label>
       <div class="mode-actions">
         <button class="big-button" id="musicModeBtn" onclick="startMusicMode()">Start Full Music Mode</button>
         <button class="secondary stop-button" id="musicModeStopBtn" onclick="stopMusicMode()">Stop</button>
@@ -829,6 +835,7 @@ HTML_TEMPLATE = """<!doctype html>
     <div class="last-action" id="status">Ready</div>
   </div>
   <script>
+    const status = document.getElementById('status');
     let audioContext, analyser, micStream, micSource, frequencyData, waveformData, rafId;
     let audioReactiveRunning = false;
     let musicModeRunning = false;
@@ -836,11 +843,19 @@ HTML_TEMPLATE = """<!doctype html>
     let musicRecognitionBusy = false;
     let moodRecorder = null;
     let moodRecorderInterval = null;
+    let showSessionId = null;
+    let showFrameBusy = false;
+    let showPendingBeat = false;
+    let audioTimer = null;
+    let showResponse = '';
+    let bassBaseline = 0;
+    let previousBass = 0;
+    let previousEnergy = 0;
+    let musicStarting = false;
+    let musicStartCancelled = false;
     const MUSIC_RECOGNITION_INTERVAL_MS = 30000;
     let baseline = 18;
     let lastBeat = 0;
-    let paletteIndex = 0;
-    let effectIndex = 0;
     let peakLevel = 0;
     let lastWledBeatSent = 0;
     let ledCapabilities = null;  // from device info.leds to know rgbw, cct, lc etc for accurate preview
@@ -857,70 +872,6 @@ HTML_TEMPLATE = """<!doctype html>
       waveform: [],
       beatTimes: []
     };
-    const palette = [
-      [255, 0, 0, 0],
-      [255, 90, 0, 0],
-      [255, 0, 180, 0],
-      [0, 80, 255, 0],
-      [0, 255, 120, 0],
-      [255, 120, 0, 180],
-      [0, 180, 255, 0],
-      [255, 255, 120, 80]
-    ];
-    const beatEffects = __BEAT_EFFECTS__;
-
-    function encodeWav(audioBuffer) {
-      const numOfChan = audioBuffer.numberOfChannels;
-      const length = audioBuffer.length * numOfChan * 2 + 44;
-      const buffer = new ArrayBuffer(length);
-      const view = new DataView(buffer);
-      const channels = [];
-      let sample = 0;
-      let offset = 0;
-      let pos = 0;
-
-      function setUint16(data) { view.setUint16(pos, data, true); pos += 2; }
-      function setUint32(data) { view.setUint32(pos, data, true); pos += 4; }
-
-      setUint32(0x46464952); // 'RIFF'
-      setUint32(length - 8);
-      setUint32(0x45564157); // 'WAVE'
-      setUint32(0x20746d66); // 'fmt '
-      setUint32(16);
-      setUint16(1);
-      setUint16(numOfChan);
-      setUint32(audioBuffer.sampleRate);
-      setUint32(audioBuffer.sampleRate * 2 * numOfChan);
-      setUint16(numOfChan * 2);
-      setUint16(16);
-      setUint32(0x61746164); // 'data'
-      setUint32(length - pos - 4);
-
-      for (let i = 0; i < audioBuffer.numberOfChannels; i++) {
-        channels.push(audioBuffer.getChannelData(i));
-      }
-
-      while (pos < length) {
-        for (let i = 0; i < numOfChan; i++) {
-          sample = Math.max(-1, Math.min(1, channels[i][offset]));
-          sample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
-          view.setInt16(pos, sample, true);
-          pos += 2;
-        }
-        offset++;
-      }
-      return new Blob([view], { type: 'audio/wav' });
-    }
-
-    async function blobToBase64(blob) {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result.split(',')[1]);
-        reader.onerror = reject;
-        reader.readAsDataURL(blob);
-      });
-    }
-
     function switchTab(tab) {
       document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
       document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
@@ -1106,8 +1057,8 @@ HTML_TEMPLATE = """<!doctype html>
         aiReply.textContent = data.response || '';
         aiConfirmations.textContent = (data.confirmations || []).join(' ');
         for (const action of data.client_actions || []) {
-          if (action === 'startAudioReactive') await startAudioReactive();
-          if (action === 'stopAudioReactive') stopAudioReactive();
+          if (action === 'startAudioReactive') await startMusicMode();
+          if (action === 'stopAudioReactive') stopMusicMode();
           if (typeof action === 'object' && action.action === 'fadeOff') await send('fade_off', {minutes: action.minutes || 30});
           if (typeof action === 'object' && action.action === 'startCycle') await send('cycle_start', {interval: action.interval || 60});
           if (typeof action === 'object' && action.action === 'stopCycle') await send('cycle_stop');
@@ -1297,9 +1248,20 @@ HTML_TEMPLATE = """<!doctype html>
     }
     async function ensureMicSession() {
       if (!micStream) {
-        micStream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
-        });
+        if (!navigator.mediaDevices) throw new Error('Open this page on localhost or HTTPS to capture audio.');
+        if (document.getElementById('musicAudioSource').value === 'tab') {
+          micStream = await navigator.mediaDevices.getDisplayMedia({video: true, audio: true});
+          if (!micStream.getAudioTracks().length) {
+            micStream.getTracks().forEach(track => track.stop());
+            micStream = null;
+            throw new Error('No shared audio. Choose the music tab and enable Share tab audio.');
+          }
+        } else {
+          micStream = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+          });
+        }
+        micStream.getAudioTracks().forEach(track => track.addEventListener('ended', () => stopMusicMode()));
       }
       if (!audioContext || audioContext.state === 'closed') {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -1309,7 +1271,7 @@ HTML_TEMPLATE = """<!doctype html>
       if (!analyser) {
         analyser = audioContext.createAnalyser();
         analyser.fftSize = 2048;
-        analyser.smoothingTimeConstant = 0.72;
+        analyser.smoothingTimeConstant = 0.15;
         frequencyData = new Uint8Array(analyser.frequencyBinCount);
         waveformData = new Uint8Array(analyser.fftSize);
         micSource.connect(analyser);
@@ -1468,58 +1430,28 @@ HTML_TEMPLATE = """<!doctype html>
     }
 
     async function startMoodRecorder() {
-      if (!micStream) return;
       if (moodRecorderInterval) clearInterval(moodRecorderInterval);
-
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
-      const source = audioCtx.createMediaStreamSource(micStream);
-      const processor = audioCtx.createScriptProcessor(4096, 1, 1);
-      const chunks = [];
-
-      processor.onaudioprocess = (e) => {
-        if (!musicModeRunning) return;
-        chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
-      };
-      source.connect(processor);
-      processor.connect(audioCtx.destination);
-
-      async function uploadChunk() {
-        if (!musicModeRunning || chunks.length === 0) return;
-        const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
-        const combined = new Float32Array(totalLength);
-        let idx = 0;
-        for (const c of chunks) { combined.set(c, idx); idx += c.length; }
-        chunks.length = 0;
-
-        const offline = new OfflineAudioContext(1, combined.length, 44100);
-        const buf = offline.createBuffer(1, combined.length, 44100);
-        buf.getChannelData(0).set(combined);
-        const offlineSource = offline.createBufferSource();
-        offlineSource.buffer = buf;
-        offlineSource.connect(offline.destination);
-        offlineSource.start();
-        const rendered = await offline.startRendering();
-        const wavBlob = encodeWav(rendered);
-        const b64 = await blobToBase64(wavBlob);
-
+      let busy = false;
+      const token = showSessionId;
+      async function record() {
+        if (busy || !musicModeRunning || token !== showSessionId) return;
+        busy = true;
         try {
-          await fetch('/api/mood/sample', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({audio_b64: b64})
+          const audio = await captureMicWav(6);
+          if (!musicModeRunning || token !== showSessionId) return;
+          const res = await fetch('/api/show/sample', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({session_id: token, audio_b64: audio})
           });
+          const data = await res.json();
+          if (!data.ok) throw new Error(data.error || 'Song recognition unavailable');
         } catch (err) {
-          console.warn('Mood sample upload failed:', err);
-        }
+          if (musicModeRunning) setText('songSourceState', 'Recognition: ' + err.message);
+        } finally { busy = false; }
       }
-
-      await uploadChunk();
-      moodRecorderInterval = setInterval(uploadChunk, 5000);
-      moodRecorder = { audioCtx, source, processor, stop: () => {
-        clearInterval(moodRecorderInterval);
-        moodRecorderInterval = null;
-        try { processor.disconnect(); source.disconnect(); audioCtx.close(); } catch(e){}
-      }};
+      record();
+      moodRecorderInterval = setInterval(record, 30000);
+      moodRecorder = {stop: () => { clearInterval(moodRecorderInterval); moodRecorderInterval = null; }};
     }
 
     function stopMoodRecorder() {
@@ -1530,59 +1462,59 @@ HTML_TEMPLATE = """<!doctype html>
     }
 
     async function startMusicMode() {
-      if (musicModeRunning) return;
+      if (musicModeRunning || musicStarting) return;
+      musicStarting = true;
+      musicStartCancelled = false;
       const btn = document.getElementById('musicModeBtn');
-      const st = document.getElementById('autoStatus');
       if (btn) btn.disabled = true;
       try {
-        await startAudioReactive();
-        if (!audioReactiveRunning) return;
-        await startMoodRecorder();
-        setText('songSourceState', 'Webcam mic');
+        await ensureMicSession();
+        if (musicStartCancelled) { closeMicSession(); return; }
+        const res = await fetch('/api/show/control', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({command: 'start'})
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || 'Cannot start music show');
+        showSessionId = data.session_id;
+        if (musicStartCancelled) { stopMusicMode(); return; }
+        showPendingBeat = false;
+        lastWledBeatSent = 0;
         musicModeRunning = true;
-        if (btn) btn.textContent = 'Music Mode Running';
-        setMusicModeUi(true, 'Checking now');
-        if (st) st.textContent = 'Beat matching live audio; checking media metadata every 30 seconds.';
-        await runMusicRecognitionCycle(true);
-        musicRecognitionTimer = setInterval(() => runMusicRecognitionCycle(false), MUSIC_RECOGNITION_INTERVAL_MS);
+        await startAudioReactive();
+        await startMoodRecorder();
+        if (btn) btn.textContent = 'AI Music Show Running';
+        setMusicModeUi(true, 'AI listens every 24s');
+        setText('micPipelineState', 'Listening');
+        setText('autoStatus', 'Listening to live audio; AI is preparing the visual direction.');
       } catch (err) {
-        if (st) st.textContent = 'Music mode error: ' + err.message;
+        stopMusicMode();
+        setText('autoStatus', 'Music show: ' + err.message);
       } finally {
+        musicStarting = false;
         if (btn) btn.disabled = false;
       }
     }
 
     function stopMusicMode() {
+      musicStartCancelled = true;
+      const token = showSessionId;
+      showSessionId = null;
       musicModeRunning = false;
       stopMoodRecorder();
-      if (musicRecognitionTimer) clearInterval(musicRecognitionTimer);
-      musicRecognitionTimer = null;
       stopAudioReactive();
+      if (token) fetch('/api/show/control', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, keepalive: true,
+        body: JSON.stringify({command: 'stop', session_id: token})
+      }).catch(err => setText('autoStatus', 'Stop request: ' + err.message));
       const btn = document.getElementById('musicModeBtn');
-      const st = document.getElementById('autoStatus');
-      if (btn) btn.textContent = 'Start Music Mode';
+      if (btn) btn.textContent = 'Start AI Music Show';
       setMusicModeUi(false);
-      if (st) st.textContent = 'Music mode stopped.';
+      setText('autoStatus', 'Music show stopped.');
     }
 
-    async function runMusicRecognitionCycle(force = false) {
-      if ((!musicModeRunning && !force) || musicRecognitionBusy) return;
-      musicRecognitionBusy = true;
-      try {
-        status.textContent = 'Checking media metadata...';
-        setText('nextMatchState', 'Checking now');
-        const result = await matchLightsFromNowPlaying();
-        const st = document.getElementById('autoStatus');
-        if (result && result.ok && result.now_playing) {
-          if (st) st.textContent = `Matched ${result.now_playing.title || 'song'}; beat mode continues.`;
-        } else {
-          if (st) st.textContent = 'No media metadata detected; beat matching live audio.';
-          if (status.textContent === 'Checking media metadata...') status.textContent = 'No media metadata detected; beat matching live audio.';
-        }
-      } finally {
-        if (musicModeRunning) setText('nextMatchState', 'Every 30s');
-        musicRecognitionBusy = false;
-      }
+    async function runMusicRecognitionCycle() {
+      if (musicModeRunning) setText('nextMatchState', 'Automatic song ID + live AI');
     }
 
     async function startAudioReactive() {
@@ -1590,7 +1522,7 @@ HTML_TEMPLATE = """<!doctype html>
       try {
         await ensureMicSession();
       } catch (err) {
-        status.textContent = 'Mic error: ' + err.name;
+        status.textContent = 'Audio input: ' + err.message;
         return;
       }
       audioReactiveRunning = true;
@@ -1606,7 +1538,10 @@ HTML_TEMPLATE = """<!doctype html>
       musicRecognitionTimer = null;
       audioReactiveRunning = false;
       if (rafId) cancelAnimationFrame(rafId);
+      if (audioTimer) clearTimeout(audioTimer);
       rafId = null;
+      audioTimer = null;
+      stopMoodRecorder();
       closeMicSession();
       peakLevel = 0;
       resetAnalysisDisplay();
@@ -1738,20 +1673,26 @@ HTML_TEMPLATE = """<!doctype html>
 
       const energy = total / frequencyData.length;
       const rms = Math.sqrt(squareSum / waveformData.length);
-      const bass = averageBand(frequencyData, 0.00, 0.10);
-      const mid = averageBand(frequencyData, 0.10, 0.42);
-      const treble = averageBand(frequencyData, 0.42, 1.00);
+      const nyquist = audioContext.sampleRate / 2;
+      const bass = averageBand(frequencyData, 40 / nyquist, 180 / nyquist);
+      const mid = averageBand(frequencyData, 180 / nyquist, 2500 / nyquist);
+      const treble = averageBand(frequencyData, 2500 / nyquist, Math.min(12000 / nyquist, 1));
       const bassRatio = bass / 255;
       const midRatio = mid / 255;
       const trebleRatio = treble / 255;
       const drive = Math.max(rms * 1.7, energy / 255, bassRatio * 0.9);
 
-      baseline = baseline * 0.93 + energy * 0.07;
       const now = performance.now();
-      const transient = Math.max(0, (energy - baseline) / Math.max(18, baseline));
-      const bassLift = Math.max(0, bass - Math.max(mid, treble) * 0.72) / 255;
-      const beatConfidence = Math.max(0, Math.min(1, transient * 0.82 + bassLift * 0.95 + rms * 0.55));
-      const beat = energy > 18 && beatConfidence > 0.52 && now - lastBeat > 145;
+      const bassRise = Math.max(0, bass - previousBass);
+      const energyRise = Math.max(0, energy - previousEnergy);
+      const bassOnset = bassRise / Math.max(8, bassBaseline * 0.22);
+      const wideOnset = energyRise / Math.max(6, baseline * 0.20);
+      const beatConfidence = Math.max(0, Math.min(1, bassOnset * 0.75 + wideOnset * 0.25));
+      const beat = rms > 0.003 && beatConfidence > 0.55 && now - lastBeat > 200;
+      baseline = baseline * 0.96 + energy * 0.04;
+      bassBaseline = bassBaseline * 0.96 + bass * 0.04;
+      previousBass = bass;
+      previousEnergy = energy;
 
       if (beat) {
         lastBeat = now;
@@ -1952,15 +1893,49 @@ HTML_TEMPLATE = """<!doctype html>
       }, 280);
     }
 
-    function sendAnalysisBeat(analysis) {
+    async function sendAnalysisBeat(analysis) {
+      if (!musicModeRunning || !showSessionId) return;
+      showPendingBeat = showPendingBeat || analysis.beat;
       const now = performance.now();
-      if (!analysis.beat || now - lastWledBeatSent < 170) return;
+      if (showFrameBusy || now - lastWledBeatSent < 100) return;
       lastWledBeatSent = now;
-      const color = palette[paletteIndex++ % palette.length];
-      const effect = beatEffects[effectIndex++ % beatEffects.length];
-      const brightness = Math.max(90, Math.min(255, Math.round(80 + analysis.drive * 175)));
-      const speed = Math.max(96, Math.min(255, Math.round(90 + analysis.beatConfidence * 110 + analysis.treble * 55)));
-      send('beat', {red: color[0], green: color[1], blue: color[2], white: color[3], brightness, effect, speed});
+      const token = showSessionId;
+      const beat = showPendingBeat;
+      showPendingBeat = false;
+      showFrameBusy = true;
+      try {
+        const res = await fetch('/api/show/features', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({session_id: token, rms: analysis.rms, drive: analysis.drive,
+            bass: analysis.bass, mid: analysis.mid, treble: analysis.treble,
+            beatConfidence: analysis.beatConfidence, beat, bpm: analysis.bpm})
+        });
+        const data = await res.json();
+        if (token !== showSessionId) return;
+        if (!data.ok) throw new Error(data.error || 'Audio feature delivery failed');
+        updateShowStatus(data);
+      } catch (err) {
+        if (token === showSessionId) setText('autoStatus', 'Music show: ' + err.message);
+      } finally { showFrameBusy = false; }
+    }
+
+    function updateShowStatus(show) {
+      if (!musicModeRunning || !show || show.session_id !== showSessionId) return;
+      if (!show.running) { stopMusicMode(); return; }
+      const song = show.song;
+      if (song) {
+        musicTitle.textContent = song.title || 'Unknown song';
+        musicArtist.textContent = song.artist || '';
+      }
+      setText('songSourceState', song ? 'Identified song' : 'Live audio (song unknown)');
+      setText('nextMatchState', show.ai_state === 'designing' ? 'AI designing…' : 'AI evolves every 24s');
+      const error = show.output_error || show.ai_error;
+      setText('autoStatus', error ? `${show.ai_state}: ${error}` :
+        `${show.audio_live ? 'Live audio' : 'Waiting for audio'} · AI ${show.ai_state} · ${show.sent_frames} light updates`);
+      if (show.response && show.response !== showResponse) {
+        showResponse = show.response;
+        showScrollingModelResponse(show.response);
+      }
     }
 
     function resetAnalysisDisplay() {
@@ -1971,21 +1946,12 @@ HTML_TEMPLATE = """<!doctype html>
     function analyzeAudio() {
       if (!audioReactiveRunning) return;
       const analysis = analyzeMicFrame();
-      renderAnalyzerFrame(analysis);
+      if (!document.hidden) renderAnalyzerFrame(analysis);
       sendAnalysisBeat(analysis);
-      rafId = requestAnimationFrame(analyzeAudio);
+      audioTimer = setTimeout(analyzeAudio, 25);
     }
 
-    document.addEventListener('visibilitychange', () => {
-      if (document.hidden && audioReactiveRunning) {
-        if (rafId) cancelAnimationFrame(rafId);
-        rafId = null;
-        if (audioContext && audioContext.state === 'running') audioContext.suspend();
-      } else if (!document.hidden && audioReactiveRunning && !rafId) {
-        if (audioContext && audioContext.state === 'suspended') audioContext.resume();
-        analyzeAudio();
-      }
-    });
+    window.addEventListener('pagehide', () => stopMusicMode());
 
     function setColor(red, green, blue, white) {
       r.value = red; g.value = green; b.value = blue; w.value = white;
@@ -2301,8 +2267,9 @@ HTML_TEMPLATE = """<!doctype html>
     evtSource.onmessage = (event) => {
       try {
         const payload = JSON.parse(event.data);
-        updateAutonomousStatus(payload.autonomous || null);
-        if (payload.mood) {
+        if (musicModeRunning) updateShowStatus(payload.show);
+        else updateAutonomousStatus(payload.autonomous || null);
+        if (payload.mood && !musicModeRunning) {
           updateMoodStatus(payload.mood);
         }
         if (payload.state) {

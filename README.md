@@ -125,6 +125,53 @@ The AI also reads desktop now-playing metadata when available through MPRIS
 media sessions, or `playerctl` if it is installed. Use **Detect Song** in the GUI
 to confirm what the AI can see before applying a prompt.
 
+### Continuous AI music shows (browser)
+
+Start `./light-gui`, open `http://localhost:8123`, choose an **Audio source**, and
+click **Start AI Music Show**. Set `OPENAI_API_KEY` in the server environment;
+`LIGHT_AI_MODEL` selects the model. The microphone is on the computer running
+the browser, so it also works when Python runs on a different machine.
+
+- **Microphone / audio input** listens to the room or your selected system input.
+- **Share music tab / system audio** opens the browser's sharing picker. Select
+  the music tab and enable sharing its audio. Audio availability depends on the
+  browser and OS; an empty audio stream produces an explicit error.
+- Browser capture needs localhost or HTTPS. Plain HTTP on a LAN IP cannot use
+  the browser microphone. A shared tab's video track is not uploaded or analyzed.
+
+The browser measures bass (40–180 Hz), mids (180–2500 Hz), treble (2500–12000 Hz),
+RMS, onsets and estimated tempo. Those features feed one server-side show engine.
+The AI receives aggregated measurements, song metadata when available, the live
+device capabilities and its previous theme. It chooses a coherent color family,
+effect, speed, intensity and brightness, then evolves that direction roughly
+every 24 seconds. Beat execution stays local and continues while the AI is busy.
+The AI receives measurements rather than raw audio; six-second WAV snippets are
+submitted separately to Shazam for optional song identification every 30 seconds.
+Recognition failure does not prevent an audio-driven show.
+
+The renderer retains the AI's theme, adds beat attacks and decays, varies motion
+with energy, and rotates the chosen colors on eight-beat phrases. It updates the
+existing segments reported by the configured WLED host without inventing strip
+lengths or controller topology. RGBW channels and master brightness are capped
+at 210. Short transitions use WLED's JSON decisecond units.
+
+The status line reports live input, AI generation/fallback, delivered frames and
+controller errors. Without an API key, the local fallback remains reactive and
+the UI explicitly reports that AI is unavailable. Losing the audio feed dims
+the show; Stop or a manual lighting command relinquishes show ownership. Keep
+the browser open while listening; browsers can throttle background tabs, and
+mobile devices can suspend capture when locked. Run one lighting controller
+application at a time so separate processes do not overwrite one another.
+
+This engine is currently connected to **browser Music Mode**. The desktop tray,
+CLI Mode 1 and MCP audio controls retain their existing basic reactive behavior.
+It controls one `--host`; it does not synchronize multiple WLED controllers or
+stream per-pixel DDP frames.
+
+Tests: `python -m pytest -q` (tray tests require PySide6). The local-only browser
+smoke test uses synthetic 120 BPM audio, a simulated WLED device, and a fake AI:
+`node tests/music_show_browser.cjs` (requires Playwright and its Chromium browser).
+
 ## MCP Server
 
 Run the MCP stdio server:

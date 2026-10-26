@@ -49,6 +49,9 @@ class LightCtlTests(unittest.TestCase):
             def get_networks(self):
                 return {"networks": []}
 
+            def get_presets(self):
+                return {}
+
         snapshot = SnapshotClient("10.27.27.110").get_device_snapshot()
 
         self.assertEqual(snapshot["state"]["bri"], 77)
