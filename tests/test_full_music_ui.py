@@ -1,10 +1,58 @@
 """Full music UI contracts exercised against the JavaScript shipped in render_html()."""
 import json
 import os
+import shutil
+import site
 import subprocess
+import sys
 import textwrap
 
+import pytest
+
 import light_gui
+
+CHROME_BINARY = "/usr/bin/google-chrome"
+
+
+def browser_probe():
+    """Return ``(python, env)`` for the Playwright browser probes.
+
+    The suite may run under a venv while Playwright/greenlet live in the user
+    site-packages, and a newer ``python3`` on PATH can have an incompatible
+    greenlet extension. Probe candidate interpreters rather than hard-coding
+    one, and skip the browser-only assertion when the tooling is absent.
+    """
+    if not os.path.exists(CHROME_BINARY):
+        pytest.skip("Google Chrome is not installed")
+    env = {**os.environ, "HOME": "/tmp/lightss-ui-test-home"}
+    paths = [p for p in (site.getusersitepackages(), os.environ.get("PYTHONPATH")) if p]
+    if paths:
+        env["PYTHONPATH"] = os.pathsep.join(paths)
+    candidates = [
+        os.environ.get("LIGHTSS_BROWSER_PYTHON"),
+        sys.executable,
+        shutil.which("python3.14"),
+        shutil.which("python3"),
+        "/home/linuxbrew/.linuxbrew/bin/python3.14",
+    ]
+    seen = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen or not os.path.exists(candidate):
+            continue
+        seen.add(candidate)
+        try:
+            probe = subprocess.run(
+                [candidate, "-c", "import playwright.sync_api, greenlet"],
+                text=True,
+                capture_output=True,
+                timeout=30,
+                env=env,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if probe.returncode == 0:
+            return candidate, env
+    pytest.skip("Playwright with greenlet is not installed for any available Python")
 
 
 def html():
@@ -213,10 +261,9 @@ def test_music_identity_css_contains_long_mobile_metadata():
             print(json.dumps(page.evaluate('({inner:innerWidth,scroll:document.documentElement.scrollWidth})')))
             browser.close()
     """)
-    env = {**os.environ, "HOME": "/tmp/lightss-ui-test-home",
-           "PYTHONPATH": "/home/rucaradio/.local/lib/python3.14/site-packages",
-           "SHIPPED_STYLE": css + "</style>"}
-    result = subprocess.run(["/home/linuxbrew/.linuxbrew/bin/python3", "-c", probe],
+    python, env = browser_probe()
+    env["SHIPPED_STYLE"] = css + "</style>"
+    result = subprocess.run([python, "-c", probe],
                             text=True, capture_output=True, timeout=30, env=env)
     assert result.returncode == 0, result.stderr
     measured = json.loads(result.stdout)
@@ -269,10 +316,9 @@ def test_google_chrome_executes_shipped_response_history_safely():
             print(json.dumps(result))
             browser.close()
     """)
-    env = {**os.environ, "HOME": "/tmp/lightss-ui-test-home",
-           "PYTHONPATH": "/home/rucaradio/.local/lib/python3.14/site-packages",
-           "SHIPPED_JS": code}
-    result = subprocess.run(["/home/linuxbrew/.linuxbrew/bin/python3", "-c", probe],
+    python, env = browser_probe()
+    env["SHIPPED_JS"] = code
+    result = subprocess.run([python, "-c", probe],
                             text=True, capture_output=True, timeout=30, env=env)
     assert result.returncode == 0, result.stderr
     actual = json.loads(result.stdout)

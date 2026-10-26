@@ -3468,6 +3468,7 @@ __PLAYER_SETTINGS_CARD__
           if (stateSummary) stateSummary.textContent = `${onOff} | Bri ${bri} | Fx ${seg.fx ?? '-'} @ ${seg.sx ?? '-'}`;
           
           if (typeof updateLightPreview === 'function') {
+            rebuildChannelRanges(data.state);
             updateLightPreview(st, ledCapabilities, picked.segId);
           }
         }
@@ -4765,8 +4766,187 @@ __PLAYER_SETTINGS_CARD__
       return scaleBrightness(c1, shimmer);
     }
 
+    // Device state arrives as raw WLED JSON, so every field is untrusted: a
+    // compromised or impersonated controller could put markup in bri/fx/grp or
+    // in an effect name. Coerce numbers and escape text before any innerHTML.
+    function safeNum(value, fallback = 0) {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : fallback;
+    }
+
+    function escapeHtmlText(value) {
+      return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    // --- Live LED pixel preview (controller Peek) -----------------------------
+    // Actual rendered RGB straight off each WLED controller's read-only Peek
+    // stream (/api/led-preview). With these pixels the strip shows the real
+    // current color AND pattern instead of a state-JSON approximation.
+    const PEEK_FRESH_MS = 1500;
+    const WALL_CHANNEL_ORDER = ['far-left', 'middle-left', 'middle-right', 'far-right'];
+    let ledPeek = null;      // {controllers: {name: {active, colors}}, channels, fleet, at}
+    let channelRanges = {};  // channel -> {controller, start?, stop?}
+
+    function sanitizePeekColor(color) {
+      if (!Array.isArray(color) || color.length < 3) return null;
+      const rgb = [];
+      for (let i = 0; i < 3; i++) {
+        const n = Number(color[i]);
+        if (!Number.isFinite(n)) return null;
+        rgb.push(Math.max(0, Math.min(255, Math.round(n))));
+      }
+      return rgb;
+    }
+
+    function applyLedPreview(data) {
+      if (!data || typeof data !== 'object' || data.ok === false) { ledPeek = null; return; }
+      const raw = (data.controllers && typeof data.controllers === 'object') ? data.controllers : {};
+      const controllers = {};
+      for (const [name, entry] of Object.entries(raw).slice(0, 16)) {
+        if (!entry || typeof entry !== 'object') continue;
+        const out = {active: entry.active === true, status: String(entry.status || '')};
+        if (entry.error) out.error = String(entry.error);
+        if (out.active && Array.isArray(entry.colors)) {
+          const colors = [];
+          for (const color of entry.colors.slice(0, 1024)) {
+            const rgb = sanitizePeekColor(color);
+            if (rgb) colors.push(rgb);
+          }
+          if (colors.length) out.colors = colors;
+        }
+        if (!out.colors) out.active = false;  // no usable pixels => not live
+        controllers[name] = out;
+      }
+      const channels = (data.channels && typeof data.channels === 'object') ? data.channels : {};
+      ledPeek = {controllers, channels, fleet: !!data.fleet, at: performance.now()};
+    }
+
+    async function pollLedPreview() {
+      if (document.hidden) return;
+      try {
+        const data = await fetchJsonWithTimeout('/api/led-preview', {}, 2500);
+        applyLedPreview(data);
+      } catch (_) {
+        ledPeek = null;  // a dead feed must never masquerade as live pixels
+      }
+    }
+
+    function rebuildChannelRanges(stateMap) {
+      const ranges = {};
+      if (!stateMap || typeof stateMap !== 'object' || Array.isArray(stateMap)) return;
+      const perController = {};
+      if (!('seg' in stateMap) && !('on' in stateMap)) {
+        // Full fleet map: {controller: state}. Remember each segment's bounds.
+        for (const [name, value] of Object.entries(stateMap)) {
+          if (value && typeof value === 'object' && Array.isArray(value.seg)) {
+            perController[name] = value.seg;
+          }
+        }
+      }
+      const mapping = (ledPeek && ledPeek.channels && Object.keys(ledPeek.channels).length)
+        ? ledPeek.channels
+        : (fleetInfo.channels || {});
+      for (const [channel, entry] of Object.entries(mapping)) {
+        if (!Array.isArray(entry) || !entry.length) continue;
+        const controller = String(entry[0]);
+        const segId = Number(entry[1]) || 0;
+        const segs = perController[controller];
+        if (!segs) { ranges[channel] = {controller}; continue; }  // whole-buffer fallback
+        const seg = segs.find(s => s && Number(s.id) === segId) || segs[0] || {};
+        const start = safeNum(seg.start, 0);
+        const stop = safeNum(seg.stop, 0);
+        ranges[channel] = (Number.isFinite(start) && stop > start)
+          ? {controller, start, stop}
+          : {controller};
+      }
+      channelRanges = ranges;
+    }
+
+    function peekControllerColors(name) {
+      if (!ledPeek || performance.now() - ledPeek.at > PEEK_FRESH_MS) return null;
+      const entry = (ledPeek.controllers || {})[name];
+      return (entry && Array.isArray(entry.colors) && entry.colors.length) ? entry.colors : null;
+    }
+
+    function channelPixels(channel) {
+      const range = channelRanges[channel];
+      if (!range) return null;
+      const buffer = peekControllerColors(range.controller);
+      if (!buffer) return null;
+      const start = Math.max(0, Math.min(range.start ?? 0, buffer.length));
+      const stop = Math.max(start, Math.min(range.stop ?? buffer.length, buffer.length));
+      const slice = buffer.slice(start, stop);
+      return slice.length ? slice : null;
+    }
+
+    function orderedChannelNames() {
+      const known = WALL_CHANNEL_ORDER.filter(name => channelRanges[name]);
+      const extra = Object.keys(channelRanges)
+        .filter(name => !WALL_CHANNEL_ORDER.includes(name)).sort();
+      return known.concat(extra);
+    }
+
+    function livePeekColors() {
+      if (!ledPeek || performance.now() - ledPeek.at > PEEK_FRESH_MS) return [];
+      const target = currentTarget || 'all';
+      let channels = null;
+      if (target === 'all') {
+        channels = orderedChannelNames();
+        if (!channels.length) {
+          // No channel topology (single controller): show every live buffer.
+          const buffers = Object.keys(ledPeek.controllers).sort()
+            .map(name => peekControllerColors(name)).filter(Boolean);
+          return buffers.length ? [].concat(...buffers) : [];
+        }
+      } else if (target === 'inner' || target === 'center') {
+        channels = orderedChannelNames().filter(name => name.startsWith('middle-'));
+      } else if (target === 'outer') {
+        channels = orderedChannelNames().filter(name => name.startsWith('far-'));
+      } else if (channelRanges[target]) {
+        channels = [target];
+      } else {
+        // Controller name: its channels in wall order, else its whole buffer.
+        channels = orderedChannelNames()
+          .filter(name => channelRanges[name] && channelRanges[name].controller === target);
+        if (!channels.length) {
+          const buffer = peekControllerColors(target);
+          return buffer ? buffer.slice() : [];
+        }
+      }
+      const picked = [];
+      const wholeShown = new Set();
+      for (const channel of channels) {
+        const range = channelRanges[channel];
+        const slice = channelPixels(channel);
+        if (!slice) continue;
+        if (range && range.start === undefined) {
+          // Unknown segment bounds: show this controller's whole buffer once,
+          // not once per channel.
+          if (wholeShown.has(range.controller)) continue;
+          wholeShown.add(range.controller);
+        }
+        picked.push(slice);
+      }
+      return picked.length ? [].concat(...picked) : [];
+    }
+
+    function peekPreviewFresh() {
+      // True when the strip shows actual pixels from either live source.
+      if (ledPeek && performance.now() - ledPeek.at <= PEEK_FRESH_MS) {
+        return Object.values(ledPeek.controllers || {})
+          .some(entry => entry && entry.active && Array.isArray(entry.colors) && entry.colors.length);
+      }
+      return typeof controllerPreviewColors === 'function' && controllerPreviewColors().length > 0;
+    }
+
     function updateStripFrame(timestamp) {
-      const pixels = controllerPreviewColors();
+      const ddpPixels = controllerPreviewColors();
+      const pixels = ddpPixels.length ? ddpPixels : livePeekColors();
       if (pixels.length) {
         ledStrip.classList.remove('off');
         Array.from(ledStrip.children).forEach((child,i) => {
@@ -4774,8 +4954,6 @@ __PLAYER_SETTINGS_CARD__
           const css = `rgb(${rgb.join(',')})`;
           child.style.backgroundColor=css; child.style.boxShadow=`0 0 6px ${css}`;
         });
-        const message = 'Live DDP preview · controller mic · actual rendered colors';
-        if (lightInfo.textContent !== message) lightInfo.textContent=message;
         stripRafId=requestAnimationFrame(updateStripFrame); return;
       }
       if (!currentStripState || !currentStripState.on) {
@@ -4795,23 +4973,6 @@ __PLAYER_SETTINGS_CARD__
         children[i].style.boxShadow = `0 0 6px ${css}`;
       }
       stripRafId = requestAnimationFrame(updateStripFrame);
-    }
-
-    // Device state arrives as raw WLED JSON, so every field is untrusted: a
-    // compromised or impersonated controller could put markup in bri/fx/grp or
-    // in an effect name. Coerce numbers and escape text before any innerHTML.
-    function safeNum(value, fallback = 0) {
-      const n = Number(value);
-      return Number.isFinite(n) ? n : fallback;
-    }
-
-    function escapeHtmlText(value) {
-      return String(value == null ? '' : value)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
     }
 
     function updateLightPreview(st, ledInfo, segId = 0) {
@@ -4872,6 +5033,7 @@ __PLAYER_SETTINGS_CARD__
         `<span class="label">Bri ${bri}</span>` +
         `<span class="label">${fx === 0 ? 'Solid' : escapeHtmlText(effectName)}</span>` +
         (fx !== 0 ? `<span class="label">Spd ${sx}</span>` : '') +
+        `<span class="label">${peekPreviewFresh() ? 'Live pixels' : 'Approx preview'}</span>` +
         `<br><span style="color:#666;font-size:11px;">${escapeHtmlText(colorInfo)}${escapeHtmlText(extra)}</span>`;
     }
 
@@ -4913,6 +5075,7 @@ __PLAYER_SETTINGS_CARD__
             ? ` | ${health.connected.length}/${health.total} controllers`
             : '';
           stateSummary.textContent = `${onOff} | Bri ${bri} | Fx ${seg.fx ?? '-'} @ ${seg.sx ?? '-'}${controllerSummary}`;
+          rebuildChannelRanges(payload.state);
           updateLightPreview(st, ledCapabilities, picked.segId);
         } else if (payload.error) {
           stateDisplay.textContent = 'Device offline — reconnecting...';
@@ -5367,6 +5530,7 @@ __PLAYER_SETTINGS_CARD__
     setInterval(expireControllerVisualization, 500);
     setInterval(expireControllerAudioTelemetry, 500);
     startControllerAudioStream();
+    setInterval(pollLedPreview, 300);
     loadMusicDirectorState();
     loadBootStatus();
     loadAiLighting();

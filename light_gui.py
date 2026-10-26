@@ -140,7 +140,7 @@ CLIENT_ACTIONS = actions.CLIENT_ACTIONS
 # Wall-wide composers + per-channel control; routed through columns.py (fleet mode only).
 WALL_ACTIONS = {'realtime_start', 'wall_span', 'realtime_stop', 'realtime_status', 'set_channel', 'wall_chase', 'dynamic_scene', 'wall_versus', 'atmosphere', 'wall_mirror', 'strips', 'design_look'}
 
-API_GET_PATHS = {'/api/lighting-observation', '/api/audio/events', '/api/audio', '/api/music-director', '/api/suggestions', '/api/events', '/api/ai/jobs', '/wled-logo.png', '/api/firetv', '/api/player/playlists', '/api/player/apple/config', '/api/system-prompt', '/api/tv-trivia', '/api/now-playing', '/', '/api/recognize', '/api/settings', '/apple-login', '/api/music-show', '/api/playback-clock', '/api/player', '/api/tv-observation', '/api/state', '/api/player/library', '/api/match-lights', '/api/player/search', '/api/player/apple/session', '/api/idle-curator', '/tv', '/api/smart-director', '/api/boot', '/api/effects'}
+API_GET_PATHS = {'/api/lighting-observation', '/api/audio/events', '/api/audio', '/api/music-director', '/api/suggestions', '/api/events', '/api/ai/jobs', '/wled-logo.png', '/api/firetv', '/api/player/playlists', '/api/player/apple/config', '/api/system-prompt', '/api/tv-trivia', '/api/now-playing', '/', '/api/recognize', '/api/settings', '/apple-login', '/api/music-show', '/api/playback-clock', '/api/player', '/api/tv-observation', '/api/state', '/api/player/library', '/api/match-lights', '/api/player/search', '/api/player/apple/session', '/api/idle-curator', '/tv', '/api/smart-director', '/api/boot', '/api/effects', '/api/led-preview'}
 
 API_POST_PATHS = {'/api/model-response/summary', '/api/music-director', '/api/mood/control', '/api/firetv', '/api/system-prompt', '/api/smart-director', '/api/settings/reload', '/api/ai/test', '/api/recognize', '/api/controllers/verify', '/api/settings', '/api/ai_vision', '/api/calibration/vision', '/api/ai', '/api/calibration', '/api/music-show', '/api/player', '/api/tv-observation', '/api/player/apple/complete', '/api/player/library', '/api/match-lights', '/api/idle-curator', '/api/boot', '/api/player/apple/now', '/api/action', '/api/mood/sample', '/api/calibration/self-configure/light', '/api/calibration/self-configure/finish'}
 
@@ -1865,6 +1865,78 @@ def primary_state(client: Any, state_map: dict | None = None) -> dict:
         if unwrapped:
             return unwrapped
     return {}
+
+
+def led_preview_payload(state: Any) -> dict:
+    """Bounded live-pixel feed for the GUI strip visualizer.
+
+    Reuses each persistent controller's read-only Peek subscriber
+    (``get_led_preview``); never opens a new subscription and never reports a
+    stale buffer as live. Pixels are sanitized RGB triplets because controller
+    data is untrusted.
+    """
+    client = getattr(state, "client", state)
+    clients: dict[str, Any] = {}
+    raw_clients = getattr(client, "clients", None)
+    if isinstance(raw_clients, dict) and raw_clients:
+        clients = raw_clients
+    elif hasattr(client, "get_led_preview"):
+        clients = {"controller": client}
+
+    controllers: dict[str, dict] = {}
+    for name, device in list(clients.items())[:16]:
+        getter = getattr(device, "get_led_preview", None)
+        if not callable(getter):
+            continue
+        try:
+            snapshot = getter()
+        except Exception as exc:
+            controllers[str(name)] = {
+                "active": False,
+                "status": "unavailable",
+                "error": type(exc).__name__,
+            }
+            continue
+        if not isinstance(snapshot, dict):
+            controllers[str(name)] = {"active": False, "status": "unavailable"}
+            continue
+        entry = {
+            "active": snapshot.get("active") is True,
+            "status": snapshot.get("status"),
+        }
+        if entry["active"]:
+            colors = snapshot.get("colors")
+            clean: list[list[int]] = []
+            if isinstance(colors, list):
+                for color in colors[:1024]:
+                    if (
+                        not isinstance(color, (list, tuple))
+                        or len(color) < 3
+                        or not all(
+                            type(value) is int and 0 <= value <= 255
+                            for value in color[:3]
+                        )
+                    ):
+                        continue
+                    clean.append([color[0], color[1], color[2]])
+            if clean:
+                entry["colors"] = clean
+            else:
+                # No usable pixels: never let an empty buffer masquerade as live.
+                entry["active"] = False
+                entry["status"] = "waiting_for_frames"
+        controllers[str(name)] = entry
+
+    channels: Any = {}
+    channel_map = getattr(state, "channel_map", None)
+    if callable(channel_map):
+        channels = channel_map()
+    return {
+        "ok": True,
+        "controllers": controllers,
+        "fleet": bool(getattr(state, "is_fleet", False)),
+        "channels": channels if isinstance(channels, dict) else {},
+    }
 
 
 def _device_snapshot(client: Any) -> dict | None:
@@ -4807,6 +4879,12 @@ def make_handler(state: GuiState):
                 self.respond_json(
                     {"ok": True, "effects": effect_catalog_for(state.client)}
                 )
+                return
+            if path == "/api/led-preview":
+                # Actual rendered pixels for the live strip visualizer; served
+                # from the persistent read-only Peek observers (never a new
+                # subscription, never stale buffers).
+                self.respond_json(led_preview_payload(state))
                 return
             if path == "/api/state":
                 try:
