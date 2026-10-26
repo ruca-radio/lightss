@@ -22,6 +22,7 @@ from typing import Any, Callable
 import lightctl
 import mood_orchestrator
 import music_recognizer
+import music_show
 
 logger = logging.getLogger("light_gui")
 
@@ -594,6 +595,28 @@ def generate_mood_for_song(
         if payload:
             return payload
     raise ValueError("AI did not return a usable WLED payload for mood generation")
+
+
+def direct_music_show(song, audio, snapshot, previous):
+    prompt = (
+        "You are directing a CONTINUOUS music light show. Live measured audio (normalized bands, "
+        "drive and RMS; BPM is only an onset-based estimate): " + json.dumps(audio)
+        + ". Previous theme: " + json.dumps(previous)
+        + ". Create or evolve a coherent color story, effect, palette, brightness, speed and intensity "
+        "for this musical passage. Treat measured audio as authoritative; do not invent a song or "
+        "claim to hear its waveform. If song metadata is unavailable, use measured energy and spectrum. "
+        "The real-time renderer handles beat attacks/releases and phrase changes separately. "
+        "Hold a coherent style, no random effect switching on beats. Use only color, effect, palette, "
+        "and brightness actions; include three RGBW colors (channels <=210) and brightness <=210. "
+        "Use only effects actually present in the device snapshot. No presets, timers, schedules, "
+        "power changes, or audio mode actions. Response: a short explanation of the visual direction."
+    )
+    plan = call_openai_for_plan(prompt, song, snapshot)
+    payloads = [payload_for_ai_action(action) for action in plan.get("actions", [])
+                if action.get("action") in {"color", "effect", "palette", "brightness"}]
+    if not payloads:
+        raise ValueError("AI returned no usable music-show theme")
+    return lightctl.merge_payloads(*payloads), plan.get("response", "")
 
 
 def build_openai_request(
@@ -1402,8 +1425,9 @@ _AI_MAX_PROMPT_LEN = 2000
 
 
 class ScheduleExecutor:
-    def __init__(self, client: lightctl.LightClient) -> None:
+    def __init__(self, client: lightctl.LightClient, before_execute: Callable[[], None] | None = None) -> None:
         self.client = client
+        self.before_execute = before_execute
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -1430,6 +1454,8 @@ class ScheduleExecutor:
                         action = entry.get("action")
                         if not action:
                             continue
+                        if self.before_execute:
+                            self.before_execute()
                         data = entry.get("data", {})
                         if action == "on":
                             self.client.post_state(lightctl.on_payload(True))
@@ -1453,7 +1479,10 @@ class GuiState:
         self.client = client
         self.mode1 = lightctl.ReactiveThread(client)
         self.autonomous = AutonomousMode(client)
-        self.schedule = ScheduleExecutor(client)
+        self.music_show = music_show.MusicShow(
+            client, direct_music_show, music_recognizer.recognize_audio_bytes_sync, get_now_playing,
+        )
+        self.schedule = ScheduleExecutor(client, before_execute=self.music_show.stop)
         self.mood_session = mood_orchestrator.MoodSession(
             client=client,
             recognize_fn=music_recognizer.recognize_audio_bytes_sync,
@@ -1510,7 +1539,21 @@ class GuiState:
         return self._fetch_throttled("cached_info", self.client.get_info)
 
     def start_mode1(self) -> str:
+        self.music_show.stop()
         return self.mode1.start()
+
+    def start_music_show(self) -> dict:
+        global _ai_sequence
+        with _ai_sequence_lock:
+            _ai_sequence += 1
+        self.mode1.stop()
+        self.autonomous.stop()
+        self.mood_session.stop()
+        self.stop_cycle()
+        self.stop_sunrise()
+        if self.fade_timer:
+            self.fade_timer.stop()
+        return self.music_show.start()
 
     def stop_mode1(self) -> str:
         return self.mode1.stop()
@@ -1610,6 +1653,8 @@ def make_handler(state: GuiState):
                 )
                 return
             if path == "/api/match-lights":
+                if hasattr(state, "music_show"):
+                    state.music_show.stop()
                 try:
                     result = match_lights_to_song(state.client, now_playing=get_now_playing())
                     self.respond_json(
@@ -1698,6 +1743,7 @@ def make_handler(state: GuiState):
                                 "state": st,
                                 "autonomous": auto_status,
                                 "mood": state.mood_session.status() if hasattr(state, "mood_session") else {},
+                                "show": state.music_show.status() if hasattr(state, "music_show") else {},
                                 "intel": intel,
                             })
                             self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
@@ -1808,13 +1854,39 @@ def make_handler(state: GuiState):
                     self.wfile.write(json.dumps({"error": str(exc)}).encode("utf-8"))
                 return
 
-            if path not in ("/api/action", "/api/ai", "/api/recognize", "/api/match-lights", "/api/mood/sample", "/api/mood/control"):
+            if path not in ("/api/action", "/api/ai", "/api/recognize", "/api/match-lights", "/api/mood/sample", "/api/mood/control", "/api/show/control", "/api/show/features", "/api/show/sample"):
                 self.send_error(404)
                 return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
+                if path.startswith("/api/show/") and not 0 <= length <= 3_000_000:
+                    raise ValueError("Music-show request exceeds 3 MB")
                 raw = self.rfile.read(length) or b"{}"
                 data = json.loads(raw)
+                if path.startswith("/api/show/"):
+                    show = state.music_show
+                    if path == "/api/show/control":
+                        command = data.get("command")
+                        if command == "start":
+                            result = state.start_music_show()
+                        elif command == "stop":
+                            show.stop(str(data.get("session_id", "")))
+                            result = show.status()
+                        elif command == "status":
+                            result = show.status()
+                        else:
+                            raise ValueError("command must be start, stop, or status")
+                    elif path == "/api/show/features":
+                        result = show.ingest(data)
+                    else:
+                        import base64
+                        audio = base64.b64decode(data.get("audio_b64", ""), validate=True)
+                        if not audio or len(audio) > 2_000_000:
+                            raise ValueError("Expected a WAV recording of at most 2 MB")
+                        show.sample(audio, str(data.get("session_id", "")))
+                        result = show.status()
+                    self.respond_json({"ok": True, **result})
+                    return
                 if path == "/api/recognize":
                     # Client-provided browser mic audio for song ID
                     audio_b64 = data.get("audio") or data.get("audio_b64")
@@ -1855,6 +1927,8 @@ def make_handler(state: GuiState):
                         self.respond_json({"ok": False, "error": msg})
                     return
                 if path == "/api/match-lights":
+                    if hasattr(state, "music_show"):
+                        state.music_show.stop()
                     # Prefer the same now-playing metadata shown in the browser. Audio remains
                     # available for explicit legacy callers, but the main UI does not need it.
                     provided_now_playing = data.get("now_playing")
@@ -1920,6 +1994,8 @@ def make_handler(state: GuiState):
                 if path == "/api/mood/control":
                     command = str(data.get("command", "")).strip().lower()
                     if command == "start":
+                        if hasattr(state, "music_show"):
+                            state.music_show.stop()
                         state.mood_session.start()
                         message = "Mood session started."
                     elif command == "stop":
@@ -1940,6 +2016,8 @@ def make_handler(state: GuiState):
                     if len(prompt) > _AI_MAX_PROMPT_LEN:
                         self.respond_json({"ok": False, "error": "Prompt too long (max 2000 chars)."}, status=400)
                         return
+                    if hasattr(state, "music_show"):
+                        state.music_show.stop()
                     with _ai_sequence_lock:
                         global _ai_sequence
                         _ai_sequence += 1
@@ -1968,6 +2046,10 @@ def make_handler(state: GuiState):
                     return
                 else:
                     action = str(data.get("action", ""))
+                    if hasattr(state, "music_show") and state.music_show.status()["running"]:
+                        if action == "beat":
+                            raise ValueError("Music show owns beat output; use /api/show/features")
+                        state.music_show.stop()
                     if action == "mode1_start":
                         message = state.start_mode1()
                     elif action == "mode1_stop":
