@@ -75,15 +75,59 @@ def test_music_after_sustained_silence_reidentifies():
     assert remote.call_count == 2
 
 
-def test_no_match_retries_are_bounded_until_another_change():
+def test_no_match_retries_are_slow_but_never_permanent():
+    """Two failed lookups park the gate briefly, not until a process restart.
+
+    Regression: a parked gate used to wait for a spectral change strong enough
+    to trip the novelty gate. Real room-mic song changes often never cross that
+    threshold, so the AI stopped receiving song changes until a restart.
+    """
     remote = Mock(return_value=None)
     gate = song_tracking.ChangeAwareRecognizer(remote)
     for now in range(100, 701, 5):
         gate.recognize(clip(), now=now)
-    assert remote.call_count == 2
+    # 60 s, 120 s, 240 s, then 300 s backoff — 8 lookups over 600 s, not 121.
+    assert remote.call_count == 8
+    # A real spectral change still takes precedence over the backoff timer.
     gate.recognize(clip(2400), now=710)
     gate.recognize(clip(2400), now=715)
-    assert remote.call_count == 3
+    assert remote.call_count == 9
+
+
+def test_parked_gate_recovers_when_lookup_starts_working_again():
+    """Without a spectral change, a parked gate must still re-identify itself."""
+    calls = {'n': 0}
+
+    def remote(_audio):
+        calls['n'] += 1
+        return None if calls['n'] <= 2 else SONG
+
+    gate = song_tracking.ChangeAwareRecognizer(remote)
+    assert gate.recognize(clip(), now=100) is None
+    assert gate.recognize(clip(), now=120) is None  # second failure parks it
+    assert gate.status()['state'] == 'waiting_for_change'
+    for now in range(125, 400, 5):
+        if gate.recognize(clip(), now=now) == SONG:
+            break
+    else:
+        raise AssertionError('parked gate never recovered without a spectral change')
+    assert gate.status()['failures'] == 0
+
+
+def test_known_song_failures_do_not_blind_retry():
+    """A known identity must still be held: no blind lookups while it is stable."""
+    calls = {'n': 0}
+
+    def remote(_audio):
+        calls['n'] += 1
+        return SONG if calls['n'] == 1 else None
+
+    gate = song_tracking.ChangeAwareRecognizer(remote)
+    assert gate.recognize(clip(), now=100) == SONG
+    for now in range(105, 701, 5):
+        assert gate.recognize(clip(), now=now) == SONG
+    assert calls['n'] == 1  # unchanged audio is never re-queried
+
 
 
 def test_pending_change_survives_cooldown():
@@ -108,7 +152,9 @@ def test_reset_allows_new_session_first_recognition():
 def test_failed_remote_is_bounded_and_reported():
     remote = Mock(side_effect=RuntimeError('offline'))
     gate = song_tracking.ChangeAwareRecognizer(remote)
-    for now in range(100, 200, 5):
+    # Two quick tries inside the retry window; the next try is the slow blind
+    # backoff (60 s), which is outside this 70 s sampling window.
+    for now in range(100, 171, 5):
         gate.recognize(clip(), now=now)
     assert remote.call_count == 2
     assert gate.status()['last_error'] == 'offline'

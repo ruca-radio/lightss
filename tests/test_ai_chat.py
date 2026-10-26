@@ -5,11 +5,13 @@ from __future__ import annotations
 import io
 import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import ai_chat
 import fleet
 import lightctl
+import smart_director
 
 
 class RecordingClient(lightctl.LightClient):
@@ -52,6 +54,10 @@ def text_round(text: str) -> dict:
 
 
 class ChatToolsTests(unittest.TestCase):
+    def test_music_show_provider_schema_has_no_root_combinators(self):
+        tool = next(t['function'] for t in ai_chat.chat_tools() if t['function']['name'] == 'music_show')
+        self.assertNotIn('allOf', tool['parameters'])
+
     def test_function_format_from_mcp_surface(self):
         tools = ai_chat.chat_tools()
         self.assertGreater(len(tools), 20)
@@ -200,6 +206,33 @@ class ChatRoundHttpTests(unittest.TestCase):
         self.assertIn("HTTP 400", str(ctx.exception))
         self.assertEqual(len(calls), 1, "unrelated 400s must not be retried")
 
+    def test_reasoning_compatibility_retry_runs_with_zero_transient_retries(self):
+        bodies = []
+
+        def fake_urlopen(request, timeout=0):
+            bodies.append(json.loads(request.data.decode("utf-8")))
+            if len(bodies) == 1:
+                raise self._http_400({"error": {"param": "reasoning_effort", "message": "Function tools require reasoning_effort none"}})
+            return FakeHttpResponse(b'{"choices": []}')
+
+        with patch.object(ai_chat.urllib.request, "urlopen", fake_urlopen):
+            data = ai_chat._chat_round("https://example.test/v1/chat/completions", {}, {"model": "m"}, 1.0, retries=0)
+        self.assertEqual(data, {"choices": []})
+        self.assertEqual(len(bodies), 2)
+        self.assertEqual(bodies[1]["reasoning_effort"], "none")
+
+    def test_reasoning_compatibility_retry_is_bounded(self):
+        calls = []
+
+        def fake_urlopen(request, timeout=0):
+            calls.append(json.loads(request.data.decode("utf-8")))
+            raise self._http_400({"error": {"param": "reasoning_effort", "message": "Function tools require reasoning_effort none"}})
+
+        with patch.object(ai_chat.urllib.request, "urlopen", fake_urlopen):
+            with self.assertRaises(ai_chat.ToolChatError):
+                ai_chat._chat_round("https://example.test/v1/chat/completions", {}, {"model": "m"}, 1.0, retries=0)
+        self.assertEqual(len(calls), 2)
+
 
 class FakeReactiveModes:
     instances: list = []
@@ -263,6 +296,64 @@ class RunChatSettingsAndModesTests(unittest.TestCase):
 
 
 class RunChatTests(unittest.TestCase):
+    def test_inactive_smart_director_exposes_only_music_show_status(self):
+        rounds = [tool_call_round("c1", "music_show", '{"action":"native","effect":155,"colors":[[20,150,80]]}'),
+                  text_round("Live music controls are unavailable.")]
+        with (patch.object(smart_director, "current", return_value=None),
+              patch.object(ai_chat, "_chat_round", side_effect=rounds) as provider,
+              patch.object(ai_chat.mcp_light, "call_tool") as execute):
+            result = ai_chat.run_chat(make_fleet(), "match the music", settings=SETTINGS)
+        tool = next(t["function"] for t in provider.call_args_list[0].args[2]["tools"]
+                    if t["function"]["name"] == "music_show")
+        self.assertEqual(tool["parameters"]["properties"]["action"]["enum"], ["status"])
+        self.assertFalse(result["events"][0]["ok"])
+        self.assertIn("invalid tool arguments", result["events"][0]["result"])
+        execute.assert_not_called()
+
+    def test_music_show_status_remains_callable_without_a_director(self):
+        rounds = [tool_call_round("c1", "music_show", '{}'), text_round("Smart Director is off.")]
+        with (patch.object(smart_director, "current", return_value=None),
+              patch.object(ai_chat, "_chat_round", side_effect=rounds)):
+            result = ai_chat.run_chat(make_fleet(), "music show status", settings=SETTINGS)
+        self.assertTrue(result["events"][0]["ok"])
+        self.assertFalse(json.loads(result["events"][0]["result"])["status"]["running"])
+
+    def test_smart_director_on_another_fleet_exposes_only_status(self):
+        owner = SimpleNamespace(fleet=make_fleet(), status=lambda: {"running": True, "mode": "music",
+                                                                    "renderer": {"running": True}})
+        with (patch.object(smart_director, "current", return_value=owner),
+              patch.object(ai_chat, "_chat_round", return_value=text_round("Status checked.")) as provider):
+            ai_chat.run_chat(make_fleet(), "music", settings=SETTINGS)
+        tool = next(t["function"] for t in provider.call_args.args[2]["tools"]
+                    if t["function"]["name"] == "music_show")
+        self.assertEqual(tool["parameters"]["properties"]["action"]["enum"], ["status"])
+
+    def test_native_music_show_requires_colors_before_execution(self):
+        client = make_fleet()
+        owner = SimpleNamespace(fleet=client, status=lambda: {"running": True, "mode": "music",
+                                                              "renderer": {"running": True}})
+        rounds = [tool_call_round("c1", "music_show", '{"action":"native","effect":155}'),
+                  text_round("A palette is required.")]
+        with (patch.object(smart_director, "current", return_value=owner),
+              patch.object(ai_chat, "_chat_round", side_effect=rounds),
+              patch.object(ai_chat.mcp_light, "call_tool") as execute):
+            result = ai_chat.run_chat(client, "native music effect", settings=SETTINGS)
+        self.assertFalse(result["events"][0]["ok"])
+        self.assertIn("colors is required", result["events"][0]["result"])
+        execute.assert_not_called()
+
+    def test_native_engine_does_not_advertise_ddp_tuning(self):
+        client = make_fleet()
+        owner = SimpleNamespace(fleet=client, status=lambda: {"running": True, "mode": "music",
+                                                              "renderer": {"running": False}})
+        with (patch.object(smart_director, "current", return_value=owner),
+              patch.object(ai_chat, "_chat_round", return_value=text_round("Status checked.")) as provider):
+            ai_chat.run_chat(client, "music", settings=SETTINGS)
+        tool = next(t["function"] for t in provider.call_args.args[2]["tools"]
+                    if t["function"]["name"] == "music_show")
+        self.assertEqual(set(tool["parameters"]["properties"]["action"]["enum"]),
+                         {"status", "native", "ddp"})
+
     def test_single_round_no_tools(self):
         with patch.object(ai_chat, "_chat_round", return_value=text_round("All good!")):
             result = ai_chat.run_chat(make_fleet(), "hi", settings=SETTINGS)

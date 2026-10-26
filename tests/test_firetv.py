@@ -15,6 +15,7 @@ so no real TV or adb binary is needed.
 from __future__ import annotations
 
 import subprocess
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -132,6 +133,78 @@ class ConfigTests(FireTVTestCase):
         self.assertFalse(firetv.is_enabled({"firetv": {"enabled": False}}))
         self.assertFalse(firetv.is_enabled({"firetv": {}}))
         self.assertFalse(firetv.is_enabled({}))
+
+
+class AdbStartupTests(FireTVTestCase):
+    def test_daemon_start_collision_retries_the_original_read(self):
+        self.run_mock.side_effect = [
+            subprocess.CompletedProcess([], 1, stdout="", stderr=(
+                "could not install *smartsocket* listener: Address already in use\n"
+                "* failed to start daemon\nadb: cannot connect to daemon")),
+            subprocess.CompletedProcess([], 0, stdout=POWER_AWAKE, stderr=""),
+        ]
+        command = ["-s", DEFAULT_HOST, "shell", "dumpsys", "power"]
+        self.assertEqual(firetv._run_adb(command), POWER_AWAKE.strip())
+        self.assertEqual([call.args[0] for call in self.run_mock.call_args_list],
+                         [["adb", *command], ["adb", *command]])
+
+    def test_persistent_daemon_failure_stops_after_one_retry(self):
+        self.run_mock.return_value = subprocess.CompletedProcess(
+            [], 1, stdout="", stderr="* failed to start daemon\nadb: cannot connect to daemon")
+        self.run_mock.side_effect = None
+        with self.assertRaisesRegex(RuntimeError, "cannot connect to daemon"):
+            firetv._run_adb(["devices"])
+        self.assertEqual(self.run_mock.call_count, 2)
+
+    def test_unrelated_adb_errors_are_not_retried(self):
+        self.run_mock.return_value = subprocess.CompletedProcess(
+            [], 1, stdout="", stderr="error: device unauthorized")
+        self.run_mock.side_effect = None
+        with self.assertRaisesRegex(RuntimeError, "unauthorized"):
+            firetv._run_adb(["devices"])
+        self.assertEqual(self.run_mock.call_count, 1)
+
+    def test_simultaneous_adb_reads_cannot_start_competing_daemons(self):
+        first_entered = threading.Event()
+        second_requested = threading.Event()
+        second_entered = threading.Event()
+        release_first = threading.Event()
+        errors = []
+
+        def run(argv, **kwargs):
+            if argv[-1] == "power":
+                first_entered.set()
+                if not release_first.wait(2):
+                    raise AssertionError("first ADB read was not released")
+            else:
+                second_entered.set()
+            return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
+
+        def read(service):
+            if service == "window":
+                second_requested.set()
+            try:
+                firetv._run_adb(["shell", "dumpsys", service])
+            except Exception as exc:
+                errors.append(exc)
+
+        self.run_mock.side_effect = run
+        first = threading.Thread(target=read, args=("power",))
+        second = threading.Thread(target=read, args=("window",))
+        first.start()
+        try:
+            self.assertTrue(first_entered.wait(2))
+            second.start()
+            self.assertTrue(second_requested.wait(2))
+            self.assertFalse(second_entered.wait(.1), "ADB subprocesses overlapped")
+        finally:
+            release_first.set()
+            first.join(2)
+            if second.ident is not None:
+                second.join(2)
+        self.assertFalse(first.is_alive() or second.is_alive())
+        self.assertEqual(errors, [])
+        self.assertTrue(second_entered.is_set())
 
 
 class EnabledGatingTests(FireTVTestCase):
@@ -424,6 +497,172 @@ class McpToolTests(FireTVTestCase):
                 self.assertIn("disabled", str(exc))
             else:
                 self.assertIn("disabled", result["content"][0]["text"])
+
+
+YOUTUBE_PACKAGE = "com.amazon.firetv.youtube"
+
+# Real dumpsys shape: `buffered position` sits between position and speed and the
+# position is only refreshed when PlaybackState changes.
+PLAYING_SESSION = f"""
+    player {YOUTUBE_PACKAGE}/player (userId=0)
+      package={YOUTUBE_PACKAGE}
+      active=true
+      state=PlaybackState {{state=3, position=550097, buffered position=0, speed=1.0, updated=112529869, actions=383}}
+      metadata:size=4, description=80's Dance Party Mix, Wukileaks, null
+"""
+
+PAUSED_SESSION = f"""
+    player {YOUTUBE_PACKAGE}/player (userId=0)
+      package={YOUTUBE_PACKAGE}
+      active=true
+      state=PlaybackState {{state=2, position=550097, buffered position=0, speed=0.0, updated=112529869, actions=383}}
+      metadata:size=4, description=80's Dance Party Mix, Wukileaks, null
+"""
+
+POSITIONLESS_SESSION = f"""
+    player {YOUTUBE_PACKAGE}/player (userId=0)
+      package={YOUTUBE_PACKAGE}
+      active=true
+      state=PlaybackState {{state=3}}
+      metadata:size=4, description=80's Dance Party Mix, Wukileaks, null
+"""
+
+
+class MediaSessionParseTests(unittest.TestCase):
+    def test_playing_session_exposes_position_speed_and_updated(self):
+        session = firetv.parse_media_session(PLAYING_SESSION, YOUTUBE_PACKAGE)
+
+        self.assertEqual(session["package"], YOUTUBE_PACKAGE)
+        self.assertIs(session["active"], True)
+        self.assertEqual(session["state"], 3)
+        self.assertEqual(session["description"], "80's Dance Party Mix, Wukileaks, null")
+        self.assertEqual(session["position_ms"], 550097)
+        self.assertEqual(session["speed"], 1.0)
+        self.assertEqual(session["updated_elapsed_ms"], 112529869)
+
+    def test_paused_session_keeps_zero_speed_and_position(self):
+        session = firetv.parse_media_session(PAUSED_SESSION, YOUTUBE_PACKAGE)
+
+        self.assertEqual(session["state"], 2)
+        self.assertEqual(session["position_ms"], 550097)
+        self.assertEqual(session["speed"], 0.0)
+        self.assertEqual(session["updated_elapsed_ms"], 112529869)
+
+    def test_missing_playback_fields_are_none(self):
+        session = firetv.parse_media_session(POSITIONLESS_SESSION, YOUTUBE_PACKAGE)
+
+        self.assertEqual(session["state"], 3)
+        self.assertIsNone(session["position_ms"])
+        self.assertIsNone(session["speed"])
+        self.assertIsNone(session["updated_elapsed_ms"])
+
+    def test_fields_are_found_in_any_order(self):
+        dump = PLAYING_SESSION.replace(
+            "state=3, position=550097, buffered position=0, speed=1.0, updated=112529869",
+            "speed=1.0, updated=112529869, buffered position=0, position=550097, state=3",
+        )
+        session = firetv.parse_media_session(dump, YOUTUBE_PACKAGE)
+
+        self.assertEqual(session["state"], 3)
+        self.assertEqual(session["position_ms"], 550097)
+        self.assertEqual(session["speed"], 1.0)
+        self.assertEqual(session["updated_elapsed_ms"], 112529869)
+
+
+class ObservationPositionTests(unittest.TestCase):
+    """observe() turns stale PlaybackState fields into a true position_s."""
+
+    config = {"firetv": {"observation_enabled": True, "host": DEFAULT_HOST}}
+
+    def observe(self, media_dump: str, uptime: str = "112580.04 391843.12"):
+        outputs = {
+            "power": "mWakefulness=Awake",
+            "window": f"mCurrentFocus=Window{{1 u0 {YOUTUBE_PACKAGE}/MainActivity}}",
+            "media_session": media_dump,
+            "uptime": uptime,
+        }
+        calls: list[str] = []
+
+        def read(service, _config):
+            calls.append(service)
+            if service == "uptime" and uptime is None:
+                raise RuntimeError("adb timed out after 2s")
+            return outputs.get(service, "")
+
+        with patch.object(firetv, "_observation_read", side_effect=read):
+            result = firetv.observe(self.config)
+        return result, calls
+
+    def test_playing_position_is_extrapolated_from_uptime(self):
+        result, calls = self.observe(PLAYING_SESSION)
+
+        # (550097 + (112580040 - 112529869) * 1.0) / 1000 = 600.3 s
+        self.assertEqual(result["media_session"]["position_s"], 600.3)
+        self.assertEqual(calls.count("uptime"), 1)
+        # Existing fields are preserved.
+        self.assertEqual(result["media_session"]["position_ms"], 550097)
+        self.assertEqual(result["media_session"]["state"], 3)
+
+    def test_paused_position_is_reported_without_uptime_read(self):
+        result, calls = self.observe(PAUSED_SESSION)
+
+        self.assertEqual(result["media_session"]["position_s"], 550.1)
+        self.assertNotIn("uptime", calls)
+
+    def test_playing_with_zero_speed_is_treated_as_paused(self):
+        dump = PLAYING_SESSION.replace("speed=1.0", "speed=0.0")
+        result, calls = self.observe(dump)
+
+        self.assertEqual(result["media_session"]["position_s"], 550.1)
+        self.assertNotIn("uptime", calls)
+
+    def test_unavailable_uptime_reports_none_instead_of_stale_position(self):
+        result, calls = self.observe(PLAYING_SESSION, uptime="")
+
+        self.assertEqual(calls.count("uptime"), 1)
+        self.assertIsNone(result["media_session"]["position_s"])
+        self.assertEqual(result["media_session"]["position_ms"], 550097)
+
+    def test_uptime_read_failure_never_raises(self):
+        result, _calls = self.observe(PLAYING_SESSION, uptime=None)
+
+        self.assertIsNone(result["media_session"]["position_s"])
+        self.assertNotIn("media_error", result)
+
+    def test_no_session_means_no_uptime_call(self):
+        result, calls = self.observe("")
+
+        self.assertIsNone(result["media_session"])
+        self.assertNotIn("uptime", calls)
+
+    def test_session_without_position_data_skips_uptime(self):
+        result, calls = self.observe(POSITIONLESS_SESSION)
+
+        self.assertIsNone(result["media_session"]["position_s"])
+        self.assertNotIn("uptime", calls)
+
+
+class ObservationWhitelistTests(unittest.TestCase):
+    config = {"host": DEFAULT_HOST}
+
+    def test_uptime_is_a_whitelisted_read_only_command(self):
+        with patch.object(
+            firetv, "_run_adb", return_value="112580.04 391843.12"
+        ) as run:
+            output = firetv._observation_read("uptime", self.config)
+
+        self.assertEqual(output, "112580.04 391843.12")
+        self.assertEqual(
+            run.call_args.args[0],
+            ["-s", DEFAULT_HOST, "shell", "cat", "/proc/uptime"],
+        )
+        self.assertEqual(run.call_args.kwargs["timeout"], 2.0)
+
+    def test_unknown_services_are_rejected_without_adb(self):
+        with patch.object(firetv, "_run_adb") as run:
+            with self.assertRaises(ValueError):
+                firetv._observation_read("battery", self.config)
+        run.assert_not_called()
 
 
 if __name__ == "__main__":

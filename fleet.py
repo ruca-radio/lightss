@@ -310,16 +310,6 @@ def drop_sacred_segment_fields(payload: dict) -> dict:
     return outgoing
 
 
-def _inject_segment_id(payload: dict, seg_id: int) -> dict:
-    """Return a copy of payload with every seg entry pinned to seg_id."""
-    segments = payload.get("seg")
-    if not segments:
-        return dict(payload)
-    injected = dict(payload)
-    injected["seg"] = [{**seg, "id": seg_id} for seg in segments]
-    return injected
-
-
 class LightFleet:
     """Fan-out controller for multiple WLED devices and their named channels."""
 
@@ -378,6 +368,9 @@ class LightFleet:
         if self._closed:
             return
         self._closed = True
+        monitor = getattr(self,"_controller_audio_monitor",None)
+        if monitor is not None:
+            monitor.stop()
         for client in {id(client): client for client in self.clients.values()}.values():
             close = getattr(client, "close", None)
             if callable(close):
@@ -483,12 +476,16 @@ class LightFleet:
                 expanded.append(item)
         return expanded
 
-    def _decorate_segment(self, name: str, seg_id: int | None, template: dict) -> dict:
-        entry = dict(template)
-        if seg_id is None:
-            return entry
-        entry["id"] = seg_id
-        return entry
+    def _post_controller(self, name: str, payload: dict) -> dict:
+        """Preserve controller geometry and isolate one controller's failure."""
+        outgoing = drop_sacred_segment_fields(payload)
+        udpn = dict(outgoing.get("udpn") or {})
+        outgoing = {**outgoing, "udpn": {**udpn, "nn": True}}
+        try:
+            return {"ok": True, "response": self.clients[name].post_state(outgoing)}
+        except Exception as exc:
+            _warn(f"post_state to controller {name!r} failed: {exc}")
+            return {"ok": False, "error": str(exc)}
 
     def post_state(self, payload: dict, target: str = DEFAULT_TARGET) -> dict[str, dict]:
         """Fan a payload out to the resolved controllers.
@@ -497,63 +494,39 @@ class LightFleet:
         wall columns for target=all, both strips on a controller target, or any
         explicit combo). Channel targets still inject that one segment id.
         A dead controller is reported in its result entry, never raised.
+        Each controller receives one request, retaining every segment template.
         Fleet posts carry udpn.nn (no-notify) so per-controller differences are
         not clobbered by WLED UDP sync; manual/UI changes still sync normally.
         """
+        resolved = self.resolve(target)
         director_module = sys.modules.get("smart_director")
         if director_module is not None:
             before_write = getattr(director_module, "before_external_write", None)
             if before_write is not None:
                 before_write(self)
-        resolved = self.resolve(target)
         templates = payload.get("seg")
         if templates:
             addressed = all(isinstance(entry, dict) and "id" in entry for entry in templates)
             if not addressed:
                 resolved = self._expand_resolved(resolved)
-            if not addressed and any(seg_id is not None for _name, seg_id in resolved):
-                grouped: dict[str, list[int | None]] = {}
-                for name, seg_id in resolved:
-                    grouped.setdefault(name, []).append(seg_id)
-                single_strip = len(grouped) == 1 and len(next(iter(grouped.values()))) == 1
-                results: dict[str, dict] = {}
-                for name, seg_ids in grouped.items():
-                    if single_strip:
-                        entries = [self._decorate_segment(name, seg_ids[0], template) for template in templates]
-                    else:
-                        entries = [self._decorate_segment(name, seg_id, templates[0]) for seg_id in seg_ids]
-                    outgoing = dict(payload)
-                    outgoing["seg"] = entries
-                    outgoing = drop_sacred_segment_fields(outgoing)
-                    udpn = dict(outgoing.get("udpn") or {})
-                    udpn["nn"] = True
-                    outgoing["udpn"] = udpn
-                    try:
-                        response = self.clients[name].post_state(outgoing)
-                        results[name] = {"ok": True, "response": response}
-                    except Exception as exc:
-                        _warn(f"post_state to controller {name!r} failed: {exc}")
-                        results[name] = {"ok": False, "error": str(exc)}
-                return results
-        results = {}
+        grouped: dict[str, list[int | None]] = {}
         for name, seg_id in resolved:
-            outgoing = _inject_segment_id(payload, seg_id) if seg_id is not None else dict(payload)
-            outgoing = drop_sacred_segment_fields(outgoing)
-            udpn = dict(outgoing.get("udpn") or {})
-            udpn["nn"] = True
-            outgoing["udpn"] = udpn
-            try:
-                response = self.clients[name].post_state(outgoing)
-                results[name] = {"ok": True, "response": response}
-            except Exception as exc:
-                _warn(f"post_state to controller {name!r} failed: {exc}")
-                results[name] = {"ok": False, "error": str(exc)}
+            grouped.setdefault(name, []).append(seg_id)
+        results = {}
+        for name, seg_ids in grouped.items():
+            outgoing = dict(payload)
+            if templates and None not in seg_ids:
+                outgoing["seg"] = [
+                    {**template, "id": seg_id}
+                    for seg_id in seg_ids for template in templates
+                ]
+            results[name] = self._post_controller(name, outgoing)
         return results
 
     def get_state(self, target: str = DEFAULT_TARGET) -> dict[str, dict]:
         """Per-controller state dicts; failures become {"error": ...} entries."""
         states: dict[str, dict] = {}
-        for name, _seg_id in self.resolve(target):
+        for name in dict.fromkeys(name for name, _seg_id in self.resolve(target)):
             try:
                 states[name] = self.clients[name].get_state()
             except Exception as exc:
@@ -598,11 +571,13 @@ class LightFleet:
 # Topology verification
 # ---------------------------------------------------------------------------
 
-def _device_segments(client: "lightctl.LightClient") -> dict[int, tuple[int, int]]:
-    """{segment id: (start, stop)} as the controller currently reports them."""
-    state = client.get_state()
+def _reported_segments(state: dict | None) -> dict[int, tuple[int, int]]:
+    """Extract usable segment bounds without interpreting missing data as drift."""
     segments: dict[int, tuple[int, int]] = {}
-    for index, segment in enumerate(state.get("seg") or []):
+    raw = state.get("seg") if isinstance(state, dict) else None
+    if not isinstance(raw, list):
+        return segments
+    for index, segment in enumerate(raw):
         if not isinstance(segment, dict):
             continue
         segment_id = segment.get("id", index)
@@ -612,10 +587,14 @@ def _device_segments(client: "lightctl.LightClient") -> dict[int, tuple[int, int
     return segments
 
 
-def _device_buses(client: "lightctl.LightClient") -> list[dict]:
-    """The controller's LED bus list in bus order (bus index == default segment id)."""
-    config = client.get_config()
-    buses = config.get("hw", {}).get("led", {}).get("ins")
+def _reported_buses(config: dict | None) -> list[dict]:
+    """Extract buses from firmware data, tolerating unavailable hardware fields."""
+    section = config
+    for key in ("hw", "led", "ins"):
+        if not isinstance(section, dict):
+            return []
+        section = section.get(key)
+    buses = section
     return [bus for bus in buses if isinstance(bus, dict)] if isinstance(buses, list) else []
 
 
@@ -635,20 +614,8 @@ def compare_controller_topology(
     probe, so it takes plain dicts and never performs I/O.
     """
     problems: list[str] = []
-    segments: dict[int, tuple[int, int]] = {}
-    if isinstance(state, dict):
-        for index, segment in enumerate(state.get("seg") or []):
-            if not isinstance(segment, dict):
-                continue
-            segment_id = segment.get("id", index)
-            start, stop = segment.get("start"), segment.get("stop")
-            if isinstance(segment_id, int) and isinstance(start, int) and isinstance(stop, int):
-                segments[segment_id] = (start, stop)
-    buses: list[dict] = []
-    if isinstance(config, dict):
-        raw_buses = config.get("hw", {}).get("led", {}).get("ins")
-        if isinstance(raw_buses, list):
-            buses = [bus for bus in raw_buses if isinstance(bus, dict)]
+    segments = _reported_segments(state)
+    buses = _reported_buses(config)
 
     # Without usable segment data we cannot say anything; reporting "missing
     # segment" for an unreadable or unexpected response would make a transient
@@ -708,48 +675,16 @@ def topology_mismatches(fleet: "LightFleet") -> list[str]:
         if client is None:
             continue
         try:
-            segments = _device_segments(client)
+            state = client.get_state()
         except Exception as exc:
             problems.append(f"{controller.name}: could not read segment state: {exc}")
             continue
+        if not _reported_segments(state):
+            problems.append(f"{controller.name}: could not read usable segment state")
+            continue
         try:
-            buses = _device_buses(client)
+            config = client.get_config()
         except Exception:
-            buses = []
-        for seg_id, segment in sorted(controller.segments.items()):
-            channel = _channel_of(segment)
-            live = segments.get(seg_id)
-            if live is None:
-                problems.append(
-                    f"{controller.name}: segment {seg_id} ({channel}) is configured but the "
-                    f"controller has no such segment"
-                )
-                continue
-            if segment.start is not None and segment.stop is not None:
-                if (segment.start, segment.stop) != live:
-                    problems.append(
-                        f"{controller.name}: segment {seg_id} is configured as {channel} at LEDs "
-                        f"{segment.start}..{segment.stop} but the controller reports {live[0]}..{live[1]}"
-                    )
-                    continue
-            if seg_id < len(buses):
-                bus = buses[seg_id]
-                length = bus.get("len")
-                if isinstance(length, int) and segment.pixels is not None and length != segment.pixels:
-                    problems.append(
-                        f"{controller.name}: segment {seg_id} ({channel}) is configured with "
-                        f"{segment.pixels} pixels but bus {seg_id} has {length}"
-                    )
-                pins = bus.get("pin")
-                if (
-                    segment.gpio is not None
-                    and isinstance(pins, list)
-                    and pins
-                    and isinstance(pins[0], int)
-                    and pins[0] != segment.gpio
-                ):
-                    problems.append(
-                        f"{controller.name}: segment {seg_id} ({channel}) is configured on GPIO "
-                        f"{segment.gpio} but bus {seg_id} uses GPIO {pins[0]}"
-                    )
+            config = None
+        problems.extend(compare_controller_topology(controller, state, config))
     return problems

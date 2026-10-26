@@ -392,3 +392,28 @@ def test_listener_thread_survives_transient_oserrors():
         assert listener.get_snapshot()["active"] is True
     finally:
         listener.stop()
+
+
+def test_snapshot_preserves_controller_spectral_measurements_and_freshness():
+    clock = FakeClock()
+    listener = wled_audio.WledAudioListener(clock=clock)
+    listener.feed_packet(make_packet(sample_raw=180, sample_avg=100, magnitude=2048, major_peak=440),
+                         ("10.27.27.110", 11988))
+    clock.advance(.1)
+    observed = listener.get_snapshot()
+    assert observed["sample_raw"] == 180
+    assert observed["fft_magnitude"] == 2048
+    assert observed["fft_major_peak"] == 440
+    assert observed["source_ip"] == "10.27.27.110"
+    assert observed["received_at_monotonic_s"] == 1000
+    assert observed["status"] == "live"
+    clock.advance(3)
+    stale = listener.get_snapshot()
+    assert stale["status"] == "stale"
+    assert stale["fft_major_peak"] is None
+
+
+def test_no_packet_snapshot_labels_missing_audio_instead_of_silence():
+    observed = wled_audio.WledAudioListener(clock=FakeClock()).get_snapshot()
+    assert observed["status"] == "waiting_for_packets"
+    assert observed["received_at_monotonic_s"] is None

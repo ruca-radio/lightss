@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 import music_chapters
 from types import SimpleNamespace
 
@@ -125,3 +127,132 @@ def test_model_cannot_select_unlisted_native_effect():
         complete=lambda *a,**kw:{"engine":"native","effect":23,
                                   "colors":["#a020d0","#08c896"]})
     assert result is None
+
+
+CHANNELS = {
+    "far-left": {"controller": "left", "segment": 0, "pixels": 34, "gpio": 16},
+    "middle-left": {"controller": "left", "segment": 1, "pixels": 47, "gpio": 2},
+    "middle-right": {"controller": "right", "segment": 0, "pixels": 47, "gpio": 16},
+    "far-right": {"controller": "right", "segment": 1, "pixels": 40, "gpio": 2},
+}
+STRIP_CATALOG = [
+    {"id": 155, "name": "Freqmap", "audio": "f"},
+    {"id": 156, "name": "Pixels", "audio": "f"},
+]
+
+
+def test_chapter_may_assign_distinct_native_effects_per_strip():
+    seen = {}
+
+    def complete(settings, system, user, *, timeout):
+        seen.update(json.loads(user))
+        return {"engine": "ddp", "motion": "chase", "speed": 2.0, "band_gains": [1.0] * 16,
+                "note": "Outer strips breathe, inner strips pulse.",
+                "strips": [
+                    {"channel": "far-left", "effect": 155, "native_speed": 170,
+                     "native_intensity": 200, "colors": ["#102030", "#405060"]},
+                    {"channel": "far-right", "effect": 156,
+                     "colors": [[210, 90, 20], [1, 2, 3]]},
+                ]}
+
+    result = music_chapters.design_chapter(
+        {}, "Song A", {"beat_count": 12},
+        {"channels": CHANNELS, "native_effects": STRIP_CATALOG,
+         "colors": [[180, 30, 40], [20, 80, 180]], "motion": "punch"}, 2,
+        complete=complete,
+    )
+
+    assert seen["previous"]["channels"] == CHANNELS
+    # ddp-only fields are ignored when strips are present.
+    assert result == {
+        "engine": "native", "note": "Outer strips breathe, inner strips pulse.",
+        "strips": [
+            {"channel": "far-left", "effect": 155,
+             "colors": [[16, 32, 48], [64, 80, 96]],
+             "native_speed": 170, "native_intensity": 200},
+            {"channel": "far-right", "effect": 156,
+             "colors": [[210, 90, 20], [1, 2, 3]]},
+        ],
+    }
+
+
+@pytest.mark.parametrize("strips", [
+    [],
+    [{"channel": "far-left", "effect": 155, "colors": ["#102030"]}],
+    [{"channel": "far-left", "effect": 155, "colors": ["#102030"]},
+     {"channel": "ceiling", "effect": 156, "colors": ["#102030"]}],
+    [{"channel": "far-left", "effect": 155, "colors": ["#102030"]},
+     {"channel": "far-left", "effect": 156, "colors": ["#102030"]}],
+    [{"channel": "far-left", "effect": 999, "colors": ["#102030"]},
+     {"channel": "far-right", "effect": 156, "colors": ["#102030"]}],
+    [{"channel": "far-left", "effect": 155, "colors": []},
+     {"channel": "far-right", "effect": 156, "colors": ["#102030"]}],
+    [{"channel": "far-left", "effect": 155, "colors": ["not-a-colour"]},
+     {"channel": "far-right", "effect": 156, "colors": ["#102030"]}],
+    [{"channel": "far-left", "effect": 155, "colors": ["#102030", "#204060", "#306090", "#40a0c0"]},
+     {"channel": "far-right", "effect": 156, "colors": ["#102030"]}],
+    [{"channel": "far-left", "effect": 155, "colors": ["#102030"], "native_speed": 300},
+     {"channel": "far-right", "effect": 156, "colors": ["#102030"]}],
+    [{"channel": "far-left", "effect": 155, "colors": ["#102030"]},
+     {"channel": "far-right", "effect": 156, "colors": ["#102030"]},
+     {"channel": "middle-left", "effect": 156, "colors": ["#102030"]},
+     {"channel": "middle-right", "effect": 156, "colors": ["#102030"]},
+     {"channel": "far-left", "effect": 156, "colors": ["#102030"]}],
+])
+def test_invalid_strip_chapter_is_rejected(strips):
+    result = music_chapters.design_chapter(
+        {}, "Song A", {}, {"channels": CHANNELS, "native_effects": STRIP_CATALOG}, 1,
+        complete=lambda *args, **kwargs: {
+            "engine": "native", "strips": strips,
+            "colors": ["#21c2a0", "#ce3264"]},
+    )
+    assert result is None
+
+
+def test_strip_chapter_needs_known_channel_context():
+    result = music_chapters.design_chapter(
+        {}, "Song A", {}, {"native_effects": STRIP_CATALOG}, 1,
+        complete=lambda *args, **kwargs: {"engine": "native", "strips": [
+            {"channel": "far-left", "effect": 155, "colors": ["#102030"]},
+            {"channel": "far-right", "effect": 156, "colors": ["#102030"]}]},
+    )
+    assert result is None
+
+
+def test_wall_wide_chapter_accepts_short_plain_text_note():
+    def chapter(note):
+        return music_chapters.design_chapter(
+            {}, "song", {}, {"native_effects": []}, 1,
+            complete=lambda *args, **kwargs: {"colors": ["#21c2a0", "#ce3264"],
+                                              "motion": "ripple", "note": note},
+        )
+
+    assert chapter("  Slow\nburn  ")["note"] == "Slow burn"
+    assert "note" not in chapter("x" * 121)
+
+
+def test_system_prompt_teaches_youtube_song_chapters():
+    assert "youtube.music_mix" in music_chapters.SYSTEM
+    assert "youtube.upcoming" in music_chapters.SYSTEM
+    assert music_chapters.SYSTEM.startswith("You are directing")
+
+
+def test_youtube_mix_context_reaches_the_chapter_model():
+    seen = {}
+    youtube = {"video": {"video_id": "DBuyeSmPXd0", "title": "80's Dance Party Mix"},
+               "music_mix": True,
+               "current": {"index": 1, "track": "Cher - Believe"},
+               "upcoming": [{"title": "Madonna - Vogue"}],
+               "progress_s": 200.0}
+
+    def complete(settings, system, user, *, timeout):
+        seen.update(json.loads(user))
+        return {"colors": ["#21c2a0", "#ce3264"], "motion": "ripple"}
+
+    result = music_chapters.design_chapter(
+        {}, "Cher - Believe", {"level_avg": .4},
+        {"youtube": youtube, "native_effects": []}, 2, complete=complete)
+
+    assert seen["previous"]["youtube"] == youtube
+    assert seen["track"] == "Cher - Believe"
+    assert result["motion"] == "ripple"

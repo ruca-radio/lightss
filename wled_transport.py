@@ -17,6 +17,24 @@ from urllib.parse import urlsplit
 logger = logging.getLogger("lightsctl")
 
 
+async def close_wled_client(client: Any, timeout: float = 1.0) -> None:
+    """Close a socket and its owned HTTP session, even if socket cleanup fails."""
+    try:
+        await asyncio.wait_for(client.close(), timeout=timeout)
+    except Exception:
+        logger.debug("WLED client close failed", exc_info=True)
+    finally:
+        session = getattr(client, "session", None)
+        if (
+            session is not None and getattr(client, "_close_session", False)
+            and not getattr(session, "closed", False)
+        ):
+            try:
+                await asyncio.wait_for(session.close(), timeout=timeout)
+            except Exception:
+                logger.debug("WLED owned session cleanup failed", exc_info=True)
+
+
 class WledHttpTransport:
     """Own one asyncio loop and reusable upstream session, created on demand."""
 
@@ -122,7 +140,7 @@ class WledHttpTransport:
 
     async def _close_client(self) -> None:
         if self._client is not None:
-            await self._client.close()
+            await close_wled_client(self._client, timeout=max(1.0, self.timeout))
 
     def close(self) -> None:
         with self._lock:
@@ -133,7 +151,9 @@ class WledHttpTransport:
                 return
             future = asyncio.run_coroutine_threadsafe(self._close_client(), self._loop)
             try:
-                future.result(timeout=max(1.0, self.timeout))
+                # Socket cleanup and the owned-session fallback each have a
+                # budget; let both finish before stopping their event loop.
+                future.result(timeout=2 * max(1.0, self.timeout) + 0.5)
             except Exception:
                 future.cancel()
                 logger.debug("Failed to close python-wled HTTP session", exc_info=True)

@@ -81,6 +81,109 @@ def observation_key(obs):
             media.get('package'),media.get('active'),media.get('state'),media.get('description'))
 
 
+def _chapter_note_text(value):
+    """Bound an optional model note to one line of printable plain text."""
+    if not isinstance(value,str):return None
+    text=''.join(ch for ch in ' '.join(value.split()) if ch.isprintable())
+    if not text or len(text)>120:return None
+    return text
+
+
+# --- Local playback (music played by this computer) ------------------------
+# Fire TV observation alone is blind to music played by this machine: with the
+# TV asleep or on its launcher the director would stay in steady TV lighting
+# even while the room is full of music. MPRIS/desktop now-playing is therefore a
+# first-class observation input, and its track read becomes the chapter key.
+
+_LOCAL_MEDIA_TEXT_LIMIT = 200
+
+
+def _media_text(value):
+    if not isinstance(value, str):
+        return ''
+    return ' '.join(value.split())[:_LOCAL_MEDIA_TEXT_LIMIT]
+
+
+def local_playback_playing(local_media):
+    """True when a local player reports an active track identity."""
+    if not isinstance(local_media, dict):
+        return False
+    return bool(_media_text(local_media.get('title')) or _media_text(local_media.get('artist')))
+
+
+def observation_is_playing(observation):
+    """True when an observation has an active foreground playing media session."""
+    if not isinstance(observation, dict):
+        return False
+    media = observation.get('media_session')
+    return (observation.get('connected') is True
+            and observation.get('awake') is True
+            and isinstance(media, dict)
+            and media.get('active') is True
+            and media.get('state') == 3)
+
+
+def local_playback_observation(local_media, tv_observation=None):
+    """Observation-shaped view of a track playing on this computer.
+
+    The shape mirrors a Fire TV observation so classification, the auto-mode
+    decision order and the chapter key keep working unchanged; ``local_playback``
+    carries the raw track metadata for status and chapter context.
+    """
+    title = _media_text(local_media.get('title'))
+    artist = _media_text(local_media.get('artist'))
+    album = _media_text(local_media.get('album'))
+    genre = _media_text(local_media.get('genre'))
+    player = _media_text(local_media.get('player') or local_media.get('source')) or 'local'
+    description = ' — '.join(part for part in (artist, title) if part) or title
+    package = 'local:' + player
+    observation = {
+        'connected': True,
+        'awake': True,
+        'foreground_app': package,
+        'activity_hint': 'music',
+        'reason': 'Local playback: ' + (description or player),
+        'media_session': {
+            'package': package, 'active': True, 'state': 3,
+            'description': description, 'title': title, 'artist': artist,
+            'album': album, 'genre': genre, 'source': 'local', 'player': player,
+        },
+        'local_playback': {
+            key: value for key, value in
+            (('player', player), ('title', title), ('artist', artist),
+             ('album', album), ('genre', genre))
+            if value
+        },
+    }
+    if isinstance(tv_observation, dict):
+        observation['tv'] = {
+            key: tv_observation.get(key) for key in
+            ('connected', 'awake', 'foreground_app', 'activity_hint', 'reason')
+        }
+    return observation
+
+
+def merge_local_playback(tv_observation, local_media):
+    """Prefer locally playing music unless the TV itself is actively playing media."""
+    tv = tv_observation if isinstance(tv_observation, dict) else {}
+    if observation_is_playing(tv):
+        return tv
+    if not local_playback_playing(local_media):
+        return tv
+    return local_playback_observation(local_media, tv)
+
+
+def local_now_playing():
+    """Best-effort local track identity (MPRIS/desktop player); never raises."""
+    try:
+        import music_recognizer
+
+        track = music_recognizer.now_playing()
+    except Exception:
+        return None
+    return track if isinstance(track, dict) else None
+
+
 @contextmanager
 def owned_write():
     previous=getattr(_write_context,'owned',False);_write_context.owned=True
@@ -91,12 +194,14 @@ def owned_write():
 class SmartDirector(threading.Thread):
     def __init__(self, fleet, config=None, *, listener=None, renderer_factory=None,
                  observe_fn=None, classify_fn=None, ai_settings=None, clock=time.monotonic,
-                 wall_clock=None, persist_manual=False, chapter_fn=None):
+                 wall_clock=None, persist_manual=False, chapter_fn=None, chapter_lookup=None,
+                 local_media_fn=None):
         super().__init__(name='lightss-smart-director',daemon=True)
         self.fleet=fleet;self.config=validate_config(config);self.clock=clock
         self.wall_clock=wall_clock or (lambda: datetime.now(ZoneInfo(self.config['timezone'])))
         self.listener=listener;self.renderer_factory=renderer_factory
         self.observe_fn=observe_fn;self.classify_fn=classify_fn;self.ai_settings=ai_settings or {}
+        self.local_media_fn=local_media_fn
         self.persist_manual=persist_manual;self.renderer=None
         self._lock=threading.RLock();self._stop_event=threading.Event()
         self._startup_event=threading.Event();self._startup_error=None
@@ -120,7 +225,9 @@ class SmartDirector(threading.Thread):
         self._chapter_look={};self._chapter_count=0;self._chapter_error=None
         self._chapter_history=deque(maxlen=5)
         self._output_engine='ddp';self._native_effect=None;self._native_look={}
-        self._audio_history=deque(maxlen=180);self._chapter_beats=deque(maxlen=256)
+        self._audio_history=OrderedDict();self._chapter_beats=deque(maxlen=256)
+        self._chapter_lookup=chapter_lookup
+        self._chapter_note=None;self._chapter_strips=[];self._chapter_media={}
 
     def configure(self, updates):
         with self._lock:
@@ -151,10 +258,37 @@ class SmartDirector(threading.Thread):
         import activity_intelligence
         return activity_intelligence.classify_context(observation,self.ai_settings)
 
+    def _local_media(self):
+        """Track playing on this computer, or None; a broken player never kills the director."""
+        if self.local_media_fn is None:
+            return None
+        try:
+            return self.local_media_fn()
+        except Exception:
+            return None
+
     def _observe(self):
-        if self.observe_fn: return self.observe_fn()
-        import firetv
-        return firetv.observe()
+        if self.observe_fn is not None:
+            # An injected observer owns observation; never resolve YouTube chapters.
+            observation=self.observe_fn()
+        else:
+            import firetv
+            observation=firetv.observe()
+            # Local playback is a peer input: when the TV is asleep/idle, music
+            # played by this machine must drive the music show (and its per-song
+            # chapters) instead of leaving the wall in steady TV lighting.
+            if not observation_is_playing(observation):
+                local=self._local_media()
+                if local_playback_playing(local):
+                    return local_playback_observation(local, observation)
+            if self._chapter_lookup is None:
+                import youtube_chapters
+                self._chapter_lookup=youtube_chapters.enrich_observation
+        lookup=self._chapter_lookup
+        if lookup is None:return observation
+        try:enriched=lookup(observation)
+        except Exception:return observation
+        return enriched if isinstance(enriched,dict) else observation
 
     def _observer_loop(self):
         self._executor=ThreadPoolExecutor(max_workers=1,thread_name_prefix='smart-music-recipe')
@@ -228,8 +362,8 @@ class SmartDirector(threading.Thread):
             with self._lock:self._error=str(exc)
         self._stop_observer()
 
-    def _post(self,payload):
-        with owned_write(): result=self.fleet.post_state(payload)
+    def _post(self,payload,target='all'):
+        with owned_write(): result=self.fleet.post_state(payload,target)
         if isinstance(result,dict):
             failures=[str(v.get('error','controller write failed')) for v in result.values()
                       if isinstance(v,dict) and v.get('ok') is False]
@@ -339,9 +473,113 @@ class SmartDirector(threading.Thread):
                          'col':validated['colors'][:3]}]}
         self._stop_renderer(reset_chapter=False)
         self._post(payload)
-        self._output_engine='native';self._native_effect=effect
+        self._output_engine='native';self._native_effect=effect;self._chapter_strips=[]
         self._native_look={'colors':validated['colors'],'effect':effect,'engine':'native',
                            'native_speed':speed,'native_intensity':intensity}
+        self._brightness=self.config['music_brightness'];self._mode='music'
+        self._applied_tv=None
+
+    def _channel_geometry(self):
+        """Channel name -> {controller, segment, pixels, gpio} from fleet topology."""
+        resolver=getattr(self.fleet,'channels',None)
+        mapping=resolver() if callable(resolver) else {}
+        geometry={}
+        for channel,bound in (mapping or {}).items():
+            controller,segment_id=bound
+            pixels=gpio=None
+            for configured in getattr(self.fleet,'controllers',None) or []:
+                if getattr(configured,'name',None)==controller:
+                    segment=configured.segments.get(segment_id)
+                    pixels=getattr(segment,'pixels',None) if segment is not None else None
+                    gpio=getattr(segment,'gpio',None) if segment is not None else None
+                    break
+            geometry[channel]={'controller':controller,'segment':segment_id,
+                                'pixels':pixels,'gpio':gpio}
+        return geometry
+
+    def _wall_order(self):
+        order=(getattr(self.fleet,'WALL_ORDER',None)
+               or getattr(getattr(self.fleet,'installation',None),'wall_order',None))
+        return [str(channel) for channel in (order or [])]
+
+    def _youtube_context(self, media):
+        """Song-level YouTube mix facts for the chapter model; None when absent."""
+        video=media.get('video')
+        current=media.get('current_chapter')
+        if not (isinstance(video,dict) or isinstance(current,dict) or media.get('music_mix')):
+            return None
+        upcoming=[]
+        chapters=media.get('chapters') if isinstance(media.get('chapters'),list) else []
+        index=current.get('index') if isinstance(current,dict) else None
+        if type(index) is int and 0<=index<len(chapters):
+            upcoming=[{'title':entry.get('title')} for entry in chapters[index+1:]
+                      if isinstance(entry,dict)]
+        position=media.get('position_s')
+        progress=(float(position) if isinstance(position,(int,float)) and not isinstance(position,bool)
+                  and math.isfinite(position) else 0.0)
+        return {'video':video if isinstance(video,dict) else None,
+                'music_mix':bool(media.get('music_mix')),
+                'current':current if isinstance(current,dict) else None,
+                'upcoming':upcoming,'progress_s':progress}
+
+    def _chapter_context(self, obs):
+        context={'channels':self._channel_geometry(),'wall_order':self._wall_order()}
+        local=obs.get('local_playback')
+        if isinstance(local,dict):
+            track={key:local[key] for key in ('player','title','artist','album','genre')
+                   if isinstance(local.get(key),str) and local[key].strip()}
+            if track:context['track']=track
+        media=obs.get('media_session') if isinstance(obs.get('media_session'),dict) else {}
+        youtube=self._youtube_context(media)
+        if youtube is not None:context['youtube']=youtube
+        return context
+
+    def _apply_native_strips(self, chapter):
+        """Validate a per-strip native chapter before revoking the DDP owner."""
+        import show_library
+        strips=chapter.get('strips')
+        if not isinstance(strips,list) or not 2<=len(strips)<=4:
+            raise ValueError('Strip chapter must assign two to four strips.')
+        mapping=self._channel_geometry()
+        allowed=show_library.allowed_native_ids(self.fleet, self.ai_settings)
+        normalized=[]
+        seen=set()
+        for strip in strips:
+            if not isinstance(strip,dict):raise ValueError('Strip assignment must be an object.')
+            channel=strip.get('channel')
+            if not isinstance(channel,str) or channel not in mapping or channel in seen:
+                raise ValueError('Strip chapter names an unknown or repeated channel.')
+            effect=strip.get('effect')
+            if type(effect) is not int or effect not in allowed:
+                raise ValueError('Native effect is not available as a common 1D audio effect.')
+            request={'action':'native','effect':effect,'colors':strip.get('colors')}
+            for key in ('native_speed','native_intensity'):
+                if key in strip:request[key]=strip[key]
+            _,validated=_validate_show_request(request)
+            if len(validated['colors'])>3:
+                raise ValueError('Strip colors exceed the three WLED color slots.')
+            bound=mapping[channel]
+            normalized.append({'channel':channel,'controller':bound['controller'],
+                               'segment':bound['segment'],'effect':effect,
+                               'colors':validated['colors'],
+                               'native_speed':validated.get('native_speed',160),
+                               'native_intensity':validated.get('native_intensity',180)})
+            seen.add(channel)
+        self._stop_renderer(reset_chapter=False)
+        grouped={}
+        for strip in normalized:grouped.setdefault(strip['controller'],[]).append(strip)
+        for controller,assignments in grouped.items():
+            self._post({'on':True,'transition':10,
+                        'seg':[{'id':strip['segment'],'fx':strip['effect'],
+                                'sx':strip['native_speed'],'ix':strip['native_intensity'],
+                                'frz':False,'on':True,'bri':255,'col':strip['colors']}
+                               for strip in assignments]},target=controller)
+        self._post({'on':True,'bri':round(self.config['music_brightness']*255)})
+        self._chapter_strips=[{key:strip[key] for key in
+                               ('channel','effect','colors','native_speed','native_intensity')}
+                              for strip in normalized]
+        self._output_engine='native';self._native_effect=None
+        self._native_look={'engine':'native','strips':list(self._chapter_strips)}
         self._brightness=self.config['music_brightness'];self._mode='music'
         self._applied_tv=None
 
@@ -350,22 +588,36 @@ class SmartDirector(threading.Thread):
         if audio.get('active'):
             fft=audio.get('fft') or []
             if len(fft)==16:
-                self._audio_history.append((now,float(audio.get('level',0)),tuple(float(v) for v in fft)))
-        recent=[sample for sample in self._audio_history if now-sample[0]<=30]
-        levels=[sample[1] for sample in recent]
-        bands=[round(sum(sample[2][i] for sample in recent)/len(recent),3) if recent else 0.0
+                self._audio_history[now]=(float(audio.get('level',0)),tuple(float(v) for v in fft))
+                while len(self._audio_history)>180:self._audio_history.popitem(last=False)
+        while self._audio_history and now-next(iter(self._audio_history))>30:
+            self._audio_history.popitem(last=False)
+        recent=list(self._audio_history.values())
+        levels=[sample[0] for sample in recent]
+        bands=[round(sum(sample[1][i] for sample in recent)/len(recent),3) if recent else 0.0
                for i in range(16)]
         renderer=self.renderer.status() if self.renderer else {}
-        return {'window_s':30,'level_avg':round(sum(levels)/len(levels),3) if levels else 0.0,
+        peak=audio.get('fft_major_peak') if audio.get('active') else None
+        dominant=(float(peak) if isinstance(peak,(int,float)) and not isinstance(peak,bool)
+                  and math.isfinite(peak) else None)
+        return {'window_s':30,'samples':len(recent),
+                'fft_latest':list(recent[-1][1]) if recent else [],
+                'dominant_frequency_hz':dominant,
+                'level_avg':round(sum(levels)/len(levels),3) if levels else 0.0,
                 'level_peak':round(max(levels),3) if levels else 0.0,
                 'beat_count':sum(now-beat_at<=30 for beat_at in self._chapter_beats),
-                'fft_avg':bands,'bpm':renderer.get('bpm',0),
+                'fft_avg':bands,'bpm':renderer.get('bpm'),
                 'energy':renderer.get('energy',0), 'bass':renderer.get('bass',0),
                 'mid':renderer.get('mid',0),'treble':renderer.get('treble',0)}
 
     def _maybe_chapter(self, obs, audio, now, decision):
         media=obs.get('media_session') or {}
-        track=str(media.get('description') or '').strip()
+        current=media.get('current_chapter')
+        track=''
+        if isinstance(current,dict):
+            track=str(current.get('track') or current.get('title') or '').strip()
+        if not track:
+            track=str(media.get('description') or '').strip()
         if track and track!=self._chapter_key:
             self._chapter_key=track;self._chapter_look={}
             self._chapter_generation+=1
@@ -385,17 +637,24 @@ class SmartDirector(threading.Thread):
                 try:
                     if not isinstance(chapter,dict):raise ValueError('Model returned no fresh chapter.')
                     engine=chapter.get('engine','ddp')
-                    if engine=='native':
-                        self._apply_native_chapter(chapter)
+                    strips=chapter.get('strips') if isinstance(chapter.get('strips'),list) else None
+                    if strips is not None or engine=='native':
+                        if strips is not None:
+                            self._apply_native_strips(chapter)
+                        else:
+                            self._apply_native_chapter(chapter)
                         look=dict(self._native_look)
                     elif engine=='ddp':
-                        _,look=_validate_show_request({'action':'tune',**{key:value for key,value in chapter.items() if key!='engine'}})
+                        fields={key:value for key,value in chapter.items()
+                                if key not in ('engine','note','strips')}
+                        _,look=_validate_show_request({'action':'tune',**fields})
                         if not look:raise ValueError('Model returned an empty chapter.')
                         self._chapter_look=look;self._output_engine='ddp'
-                        self._native_effect=None;self._native_look={}
+                        self._native_effect=None;self._native_look={};self._chapter_strips=[]
                         self._look_dirty=True;self._music(decision,self._reason)
                         look={**look,'engine':'ddp'}
                     else:raise ValueError('Unknown music output engine.')
+                    self._chapter_note=_chapter_note_text(chapter.get('note'))
                     self._chapter_count+=1;self._chapter_error=None
                     self._chapter_history.append({key:look[key] for key in ('colors','motion','composition_mode','engine','effect') if key in look})
                 except Exception as exc:
@@ -406,13 +665,14 @@ class SmartDirector(threading.Thread):
         if self._chapter_due_at is None or now<self._chapter_due_at:return
         if self._chapter_executor is None:
             self._chapter_executor=ThreadPoolExecutor(max_workers=1,thread_name_prefix='smart-music-chapter')
+        base=self._chapter_context(obs)
         if self._output_engine=='native':
-            previous={**self._native_look,'recent':list(self._chapter_history)}
+            previous={**base,**self._native_look,'recent':list(self._chapter_history)}
         elif self._last_recipe:
-            previous={'colors':[list(c) for c in self._last_recipe[0]],
+            previous={**base,'colors':[list(c) for c in self._last_recipe[0]],
                       'motion':self._last_recipe[3], 'composition_mode':self._last_recipe[2],
                       'engine':'ddp','recent':list(self._chapter_history)}
-        else:previous={}
+        else:previous=base
         if self.chapter_fn is None:
             import music_chapters
             chapter_fn=music_chapters.design_chapter
@@ -453,6 +713,7 @@ class SmartDirector(threading.Thread):
             audio=audio if audio is not None else (self.listener.get_snapshot() if self.listener else {})
             if observation is None and now-self._observed_at>30:obs={};decision={}
             if not isinstance(obs,dict):obs={}
+            self._chapter_media=obs.get('media_session') if isinstance(obs.get('media_session'),dict) else {}
             if not isinstance(decision,dict):decision={}
             if not isinstance(audio,dict):audio={}
             seq=audio.get('receive_sequence')
@@ -467,11 +728,16 @@ class SmartDirector(threading.Thread):
             selected=self.config['mode'];desired=selected;reason='Explicit '+selected+' mode.'
             if selected=='auto':
                 media=obs.get('media_session') or {}
+                local_playback=isinstance(obs.get('local_playback'),dict)
                 playing=(obs.get('connected') is True and obs.get('awake') is True and media.get('active') is True
                          and media.get('state')==3 and media.get('package')==obs.get('foreground_app'))
+                music_mix=playing and bool(media.get('music_mix')) and bool(media.get('current_chapter'))
                 observation_failed=not obs or bool(obs.get('error'))
                 if observation_failed:
                     desired='tv';reason='TV observation unavailable; steady lighting.';self._last_music_at=None
+                elif music_mix:
+                    # YouTube chapters identifying a music mix outrank a TV classifier.
+                    desired='music';reason='YouTube chapters identify a music mix';self._last_music_at=now
                 elif obs.get('connected') and obs.get('awake') is True and obs.get('activity_hint')=='tv':
                     desired='tv';reason='Video app: steady TV lighting.';self._last_music_at=None
                 elif playing and decision.get('kind')=='tv':
@@ -484,9 +750,13 @@ class SmartDirector(threading.Thread):
                 elif self._mode=='music' and self._last_music_at is not None and now-self._last_music_at<self.config['unknown_hold_s']:
                     desired='music';reason='Holding music through a brief metadata gap.'
                 else:desired='tv';reason='Uncertain TV content; steady lighting.'
-                if self._quiet_since is not None and now-self._quiet_since>=self.config['silence_hold_s']:
+                if (not local_playback and self._quiet_since is not None
+                        and now-self._quiet_since>=self.config['silence_hold_s']):
+                    # Local playback is known from metadata, so a quiet controller
+                    # mic (headphones, low volume, distant speaker) must not drop
+                    # the confirmed song back to steady TV lighting.
                     desired='tv';reason='Controller microphone quiet or unavailable; steady lighting.'
-                if desired=='music' and self._mode!='music':
+                if desired=='music' and self._mode!='music' and not music_mix:
                     if self._pending_mode!='music':self._pending_mode='music';self._pending_since=now
                     if now-self._pending_since<self.config['debounce_s']:desired='tv';reason='Confirming sustained music.'
                 else:self._pending_mode=None
@@ -505,6 +775,9 @@ class SmartDirector(threading.Thread):
             except Exception as exc:audio={'active':False,'error':str(exc)}
             try:renderer=self.renderer.status() if self.renderer else {'running':False,'sent_frames':0}
             except Exception as exc:renderer={'running':False,'sent_frames':0,'error':str(exc)}
+            media=self._chapter_media or {}
+            video=media.get('video')
+            current=media.get('current_chapter')
             return {'running':self.is_alive() and not self._stop_event.is_set(),
                     'selected_mode':self.config['mode'],'mode':self._mode,'reason':self._reason,
                     'show_overrides':dict(self._show_overrides),
@@ -512,9 +785,16 @@ class SmartDirector(threading.Thread):
                     'native_effect':self._native_effect if self._mode=='music' else None,
                     'chapters':{'applied':self._chapter_count,'track':self._chapter_key,
                                 'pending':bool(self._chapter_future and not self._chapter_future.done()),
-                                'last_error':self._chapter_error},
+                                'last_error':self._chapter_error,'note':self._chapter_note,
+                                'strips':self._chapter_strips,
+                                'video':video if isinstance(video,dict) else None,
+                                'current_chapter':current if isinstance(current,dict) else None,
+                                'music_mix':bool(media.get('music_mix'))},
                     'brightness_percent':round(self._brightness*100,1),'audio':audio,'renderer':renderer,
-                    'tv':dict(self._observation),'intelligence':dict(self._decision),'last_error':self._error}
+                    'tv':dict(self._observation),'intelligence':dict(self._decision),
+                    'local_playback':(dict(self._observation['local_playback'])
+                                      if isinstance(self._observation.get('local_playback'),dict) else None),
+                    'last_error':self._error}
 
     def wait_until_started(self, timeout=3.0):
         if not self._startup_event.wait(timeout):
@@ -600,7 +880,7 @@ def current():
     with _registry_lock:return _director
 
 
-def start(fleet, config=None, ai_settings=None):
+def start(fleet, config=None, ai_settings=None, local_media_fn=local_now_playing):
     global _director,_process_lock_owner
     cfg=validate_config(config)
     with _registry_lock:
@@ -611,7 +891,8 @@ def start(fleet, config=None, ai_settings=None):
         try:
             import mcp_light,music_director,realtime,shows
             mcp_light._stop_timers();music_director.stop_director();shows.stop_show();realtime.realtime_stop()
-            _director=SmartDirector(fleet,cfg,ai_settings=ai_settings,persist_manual=True)
+            _director=SmartDirector(fleet,cfg,ai_settings=ai_settings,persist_manual=True,
+                                    local_media_fn=local_media_fn)
             _process_lock_owner=_director
             _director.start();_director.wait_until_started();return _director
         except Exception as startup_error:

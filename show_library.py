@@ -22,6 +22,7 @@ from typing import Any, Callable
 import atmospheres
 import color_lab
 import look_agents
+import wled_reference
 
 
 CATALOG_TTL_S = 600.0
@@ -82,12 +83,14 @@ def candidates(index, track, audio, previous, limit=8) -> dict:
         key=lambda pair: (-_score(pair[1], wanted, recent), pair[0]),
     )
     palettes = [
-        {"id": palette["id"], "name": palette["name"], "temperature": palette["temperature"]}
+        wled_reference.annotate_palette(
+            {"id": palette["id"], "name": palette["name"], "temperature": palette["temperature"]}
+        )
         for palette in (index or {}).get("palettes") or []
         if not palette.get("special") and not str(palette.get("name") or "").lstrip().startswith("*")
     ]
     return {
-        "effects": [_public_effect(effect) for _, effect in ranked[:limit]],
+        "effects": [wled_reference.annotate_effect(_public_effect(effect)) for _, effect in ranked[:limit]],
         "palettes": palettes[:6],
     }
 

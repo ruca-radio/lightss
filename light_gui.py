@@ -9,14 +9,12 @@ import binascii
 import contextlib
 import copy
 import dataclasses
-import functools
 import ipaddress
 import json
 import logging
 import os
 import re
 import shutil
-import socket
 import subprocess
 import threading
 import time
@@ -24,7 +22,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import Future, ThreadPoolExecutor
-from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Mapping
 import uuid
@@ -42,11 +39,11 @@ import music_recognizer
 import music_director
 import song_tracking
 import look_memory
-from light_gui_html import HTML_TEMPLATE
+from wled_audio import ControllerAudioMonitor
 
 logger = logging.getLogger("light_gui")
 
-DEFAULT_AI_MODEL = "gpt-5.4-nano"
+DEFAULT_AI_MODEL = "gpt-6.1-sol"
 MAX_JSON_BODY_BYTES = 8 * 1024 * 1024
 MAX_VISION_BODY_BYTES = 10 * 1024 * 1024
 MAX_PROVIDER_RESPONSE_BYTES = 4 * 1024 * 1024
@@ -143,9 +140,9 @@ CLIENT_ACTIONS = actions.CLIENT_ACTIONS
 # Wall-wide composers + per-channel control; routed through columns.py (fleet mode only).
 WALL_ACTIONS = {'realtime_start', 'wall_span', 'realtime_stop', 'realtime_status', 'set_channel', 'wall_chase', 'dynamic_scene', 'wall_versus', 'atmosphere', 'wall_mirror', 'strips', 'design_look'}
 
-API_GET_PATHS = {'/api/audio/events', '/api/audio', '/api/music-director', '/api/suggestions', '/api/events', '/api/ai/jobs', '/wled-logo.png', '/api/firetv', '/api/player/playlists', '/api/player/apple/config', '/api/system-prompt', '/api/tv-trivia', '/api/now-playing', '/', '/api/recognize', '/api/settings', '/apple-login', '/api/music-show', '/api/playback-clock', '/api/player', '/api/tv-observation', '/api/state', '/api/player/library', '/api/match-lights', '/api/player/search', '/api/player/apple/session', '/api/idle-curator', '/tv', '/api/smart-director', '/api/effects'}
+API_GET_PATHS = {'/api/lighting-observation', '/api/audio/events', '/api/audio', '/api/music-director', '/api/suggestions', '/api/events', '/api/ai/jobs', '/wled-logo.png', '/api/firetv', '/api/player/playlists', '/api/player/apple/config', '/api/system-prompt', '/api/tv-trivia', '/api/now-playing', '/', '/api/recognize', '/api/settings', '/apple-login', '/api/music-show', '/api/playback-clock', '/api/player', '/api/tv-observation', '/api/state', '/api/player/library', '/api/match-lights', '/api/player/search', '/api/player/apple/session', '/api/idle-curator', '/tv', '/api/smart-director', '/api/boot', '/api/effects'}
 
-API_POST_PATHS = {'/api/model-response/summary', '/api/music-director', '/api/mood/control', '/api/firetv', '/api/system-prompt', '/api/smart-director', '/api/settings/reload', '/api/ai/test', '/api/recognize', '/api/controllers/verify', '/api/settings', '/api/ai_vision', '/api/calibration/vision', '/api/ai', '/api/calibration', '/api/music-show', '/api/player', '/api/tv-observation', '/api/player/apple/complete', '/api/player/library', '/api/match-lights', '/api/idle-curator', '/api/player/apple/now', '/api/action', '/api/mood/sample', '/api/calibration/self-configure/light', '/api/calibration/self-configure/finish'}
+API_POST_PATHS = {'/api/model-response/summary', '/api/music-director', '/api/mood/control', '/api/firetv', '/api/system-prompt', '/api/smart-director', '/api/settings/reload', '/api/ai/test', '/api/recognize', '/api/controllers/verify', '/api/settings', '/api/ai_vision', '/api/calibration/vision', '/api/ai', '/api/calibration', '/api/music-show', '/api/player', '/api/tv-observation', '/api/player/apple/complete', '/api/player/library', '/api/match-lights', '/api/idle-curator', '/api/boot', '/api/player/apple/now', '/api/action', '/api/mood/sample', '/api/calibration/self-configure/light', '/api/calibration/self-configure/finish'}
 
 API_HEAD_PATHS = {'/api/ai_vision', '/api/suggestions', '/api/mood/control', '/api/playback-clock', '/api/recognize', '/api/state', '/wled-logo.png', '/api/match-lights', '/api/now-playing', '/', '/api/mood/sample'}
 
@@ -180,11 +177,20 @@ def ai_action_reference() -> str:
         "slot. Set apply=true to switch the wall onto it.\n"
         "- schedule_add/schedule_remove: local schedule management with time HH:MM and action on/off/scene.\n"
         "- music_detect/music_match: now-playing media lookup and metadata-matched lighting.\n"
+        "- observe_lighting: inspect real-time physical LED output, segment colors, active effects, renderer ownership, and controller audio sync telemetry.\n"
+        "- music_show: steer live Smart Director music show (status, tune, accent, native, ddp) without tearing down background choreography.\n"
+        "- design_look: procedural multi-agent look design with color lab shaders (bass_bloom, magma_column, ember_rise, tide_pull, comet_fall).\n"
         "- wall_span/wall_mirror/wall_chase: the same effect and optional palette on all four strips. "
         "They do not change mirror, offset, reverse, grouping, spacing, or segment bounds.\n"
         "- wall_versus: left pair vs right pair with fx_left/fx_right and optional pal_left/pal_right.\n"
         "- set_channel: one channel only (channel: far-left, middle-left, middle-right, or far-right) "
         "with optional effect/palette/colors.\n"
+        "- strips: address any combination of the four wall columns. Same look on a subset: "
+        "channels + fx/pal/colors/speed/intensity. Different look per strip: assignments "
+        "[{channel, fx, pal, colors, speed, intensity}]. Unused columns stay untouched.\n"
+        "- wled_reference: look up what a WLED effect or palette does and what its intensity "
+        "slider changes (kind=effect|palette, optional query). Returns live ids. Use it before "
+        "choosing effects or palettes; never invent ids.\n"
         "- Every action accepts an optional target: all (default), a controller name, or a channel name.\n"
         "One-shot examples:\n"
         "- 'soft ocean for 20 minutes then off' -> scene ocean, nightlight on duration 20 target brightness 0.\n"
@@ -1884,6 +1890,15 @@ def _device_snapshot(client: Any) -> dict | None:
 
 def ai_context_text(client: Any, now_playing: dict | None = None, *, playback_clock: dict | None = None) -> str:
     parts: list[str] = []
+    self_config = ""
+    try:
+        import boot_sequence
+
+        self_config = boot_sequence.context_text()
+    except Exception:
+        self_config = ""
+    if self_config:
+        parts.append(self_config)
     if now_playing:
         parts.append(f"Background audio now playing: {now_playing_text(now_playing)}")
         metadata = {
@@ -1894,13 +1909,15 @@ def ai_context_text(client: Any, now_playing: dict | None = None, *, playback_cl
         parts.append("Reported song metadata: " + json.dumps(metadata))
     clock = playback_clock if playback_clock is not None else playback_clock_payload(refresh=False)["clock"]
     parts.append("Playback clock (observer only; null position means unknown; observed_for_s is NOT song position): " + json.dumps(clock))
-    monitor = getattr(client, "_controller_audio_monitor", None)
-    if isinstance(monitor, ControllerAudioMonitor):
-        parts.append("Measured controller audio (normalized live level, FFT and detected beats; "
-                     "use this energy to choose the show; controllers perform realtime beat matching): "
-                     + json.dumps(monitor.ai_summary()))
     snapshot = _device_snapshot(client)
+    from lighting_context import observe_lighting
+    observation = observe_lighting(client, snapshot=snapshot)
+    parts.append("Measured controller audio (normalized live level, FFT and detected beats; "
+                 "use this energy to choose the show; controllers perform realtime beat matching): "
+                 + json.dumps(observation["audio"]))
     parts.append(device_snapshot_text(snapshot))
+    parts.append("Live lighting observation (measured output and inferred audio features; missing data is unknown): "
+                 + json.dumps(observation,separators=(",",":")))
     recent_fx = lightctl.recent_fx_text(
         snapshot.get("effects") if isinstance(snapshot, dict) and isinstance(snapshot.get("effects"), list) else None
     )
@@ -3000,89 +3017,6 @@ def _controller_client_lifecycle(method: str, *clients: Any) -> None:
                 logger.warning("Controller client %s failed", method, exc_info=True)
 
 
-class ControllerAudioMonitor:
-    """Observe controller microphone telemetry without owning lights or playback."""
-
-    def __init__(self, client: Any, *, dry_run: bool = False) -> None:
-        self.client = client
-        self.dry_run = dry_run
-        self._lock = threading.Lock()
-        self._listener = None
-        self._closed = False
-        self._retry_at = 0.0
-        self._error: str | None = None
-        self._history = deque(maxlen=1200)
-        self._last_sequence = None
-
-    def _make_listener(self) -> Any:
-        import wled_audio
-        controllers = getattr(self.client, "controllers", [])
-        host = controllers[0].host if controllers else getattr(self.client, "host", "")
-        source = urllib.parse.urlparse(str(host)).hostname
-        if not source:
-            raise ValueError("Controller audio requires a configured controller host.")
-        source = socket.gethostbyname(source)
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
-            route.connect((source, wled_audio.AUDIO_SYNC_PORT))
-            interface = route.getsockname()[0]
-        return wled_audio.WledAudioListener(interface_ip=interface, allowed_source=source,
-                                            on_packet=self._record_audio_packet)
-
-    def _record_audio_packet(self, packet: dict) -> None:
-        # Ingest at UDP receive rate, independently of browser frame/poll rate.
-        audio = {**packet, "active": True, "fft": [v / 255 for v in packet.get("fft", [0] * 16)]}
-        with self._lock:
-            if not self._closed and audio.get("receive_sequence") != self._last_sequence:
-                self._last_sequence = audio.get("receive_sequence")
-                self._history.append((time.monotonic(), audio))
-
-    def get_snapshot(self) -> dict:
-        with self._lock:
-            if self._closed or self.dry_run:
-                return {"active": False, "level": 0, "fft": [0] * 16}
-            if self._listener is None and time.monotonic() >= self._retry_at:
-                listener = None
-                try:
-                    listener = self._make_listener()
-                    listener.start()
-                    self._listener = listener
-                    self._error = None
-                except Exception as exc:
-                    if listener is not None:
-                        with contextlib.suppress(Exception):
-                            listener.stop()
-                    self._error = str(exc)
-                    self._retry_at = time.monotonic() + 5
-                    logger.warning("Controller audio observation unavailable: %s", exc)
-            if self._listener is not None:
-                audio = self._listener.get_snapshot()
-                sequence = audio.get("receive_sequence")
-                if audio.get("active") and sequence != self._last_sequence:
-                    self._last_sequence = sequence
-                    self._history.append((time.monotonic(), dict(audio)))
-                return audio
-            return {"active": False, "level": 0, "fft": [0] * 16, "error": self._error}
-
-    def ai_summary(self) -> dict:
-        audio = self.get_snapshot()
-        with self._lock:
-            recent = [a for at, a in self._history if time.monotonic() - at <= 30] if audio.get("active") else []
-        count = len(recent)
-        return {"active": bool(audio.get("active")), "level": audio.get("level", 0),
-                "level_average": sum(a.get("level", 0) for a in recent) / count if count else 0,
-                "level_peak": max((a.get("level", 0) for a in recent), default=0),
-                "fft": [sum((a.get("fft") or [0] * 16)[i] for a in recent) / count if count else 0 for i in range(16)],
-                "beat_count": sum(bool(a.get("beat")) for a in recent),
-                "samples": count, "window_s": 30, "bpm": None}
-
-    def stop(self) -> None:
-        with self._lock:
-            self._closed = True
-            if self._listener is not None:
-                self._listener.stop()
-                self._listener = None
-
-
 class GuiState:
     def __init__(
         self,
@@ -3380,7 +3314,11 @@ class GuiState:
                     _controller_client_lifecycle("start_observing", new_client, self._info_client)
                 new_schedule.start()
                 start_configured_smart_director(self)
-                if director_was_running or music_director_config().get("enabled"):
+                # One owner only: when Smart Director is configured, it stays the
+                # owner after a reload; the legacy director is for setups that
+                # explicitly disabled it.
+                if (not smart_director_config().get("enabled")
+                        and (director_was_running or music_director_config().get("enabled"))):
                     with contextlib.suppress(Exception):
                         set_music_director(new_client, True)
                 return (
@@ -3541,6 +3479,8 @@ def smart_suggestions(
 
 SETTINGS_MERGE_KEYS = (
     "ai",
+    "agents",
+    "look_models",
     "controllers",
     "installation",
     "audio_source",
@@ -3574,8 +3514,15 @@ def current_settings(config: dict | None = None) -> dict:
             }
             for c in fleet_mod.load_controllers(config)
         ]
+    ai_cfg = ai_settings(config)
+    look_models = {
+        role: agent_cfg.get("model", "")
+        for role, agent_cfg in (ai_cfg.get("agents") or {}).items()
+        if isinstance(agent_cfg, dict)
+    }
     return {
-        "ai": ai_settings(config),
+        "ai": ai_cfg,
+        "look_models": look_models,
         "system_prompt_override": (
             override if isinstance(override, str) and override.strip() else None
         ),
@@ -3611,6 +3558,49 @@ def _merge_settings(config: dict, updates: dict) -> None:
                 raise ValueError("audio_player must be an object.")
             previous = config.get(key) if isinstance(config.get(key), dict) else {}
             config[key] = {**previous, **value}
+            continue
+        if key == "agents":
+            if not isinstance(value, dict):
+                raise ValueError("agents must be an object.")
+            current_ai = config.setdefault("ai", {})
+            if not isinstance(current_ai, dict):
+                current_ai = {}
+                config["ai"] = current_ai
+            current_agents = current_ai.setdefault("agents", {})
+            if not isinstance(current_agents, dict):
+                current_agents = {}
+                current_ai["agents"] = current_agents
+            for role, role_update in value.items():
+                if isinstance(role_update, dict) and isinstance(current_agents.get(role), dict):
+                    current_agents[role].update(role_update)
+                else:
+                    current_agents[role] = role_update
+            continue
+        if key == "look_models":
+            if not isinstance(value, dict):
+                raise ValueError("look_models must be an object.")
+            current_ai = config.setdefault("ai", {})
+            if not isinstance(current_ai, dict):
+                current_ai = {}
+                config["ai"] = current_ai
+            current_agents = current_ai.setdefault("agents", {})
+            if not isinstance(current_agents, dict):
+                current_agents = {}
+                current_ai["agents"] = current_agents
+            for role, model_val in value.items():
+                if isinstance(model_val, str):
+                    role_dict = current_agents.setdefault(role, {})
+                    if not isinstance(role_dict, dict):
+                        role_dict = {}
+                        current_agents[role] = role_dict
+                    role_dict["model"] = model_val
+                    if model_val:
+                        role_dict["enabled"] = True
+                elif isinstance(model_val, dict):
+                    if isinstance(current_agents.get(role), dict):
+                        current_agents[role].update(model_val)
+                    else:
+                        current_agents[role] = model_val
             continue
         if (
             key == "ai"
@@ -3775,6 +3765,39 @@ def set_music_director_enabled(enabled: bool) -> dict:
         return md_cfg
 
 
+def _firetv_media_observer() -> Any | None:
+    """Read-only Fire TV observer used as a song-change signal, when enabled.
+
+    Playback on the TV never reaches MPRIS, so without this the Music Director
+    only learns about song changes from room-mic Shazam, which can miss them.
+    """
+    try:
+        import firetv  # lazy: shelling out to adb is only for this path
+
+        if firetv.load_firetv_config().get("observation_enabled") is not True:
+            return None
+        return firetv.observe
+    except Exception:
+        logger.debug("Fire TV media observer unavailable", exc_info=True)
+        return None
+
+
+def _music_director_start_kwargs() -> dict[str, Any]:
+    """Runtime kwargs for MusicDirector (AI identity + optional TV change source)."""
+    cfg = music_director_config()
+    kwargs: dict[str, Any] = {"ai_settings": ai_settings()}
+    if cfg.get("poll_s") is not None:
+        kwargs["poll_s"] = float(cfg["poll_s"])
+    if cfg.get("idle_atmosphere"):
+        kwargs["idle_atmosphere"] = str(cfg["idle_atmosphere"])
+    if cfg.get("ambient_poll_s") is not None:
+        kwargs["ambient_poll_s"] = float(cfg["ambient_poll_s"])
+    observer = _firetv_media_observer()
+    if observer is not None:
+        kwargs["observe_tv"] = observer
+    return kwargs
+
+
 def music_director_status_payload() -> dict:
     """GET /api/music-director payload: live director status plus the enabled flag
     (enabled = running). Never raises; degrades gracefully when music_director.py
@@ -3816,18 +3839,23 @@ def tv_trivia_payload() -> dict:
 def set_music_director(client: Any, enabled: bool) -> dict:
     import music_director
 
-    cfg = music_director_config()
     if enabled:
-        import smart_director
+        # The two directors are mutually exclusive wall owners. Do not silently
+        # steal ownership from the AI director: a stray click on the legacy
+        # toggle used to disable AI lighting (and its song chapters) for hours.
+        if smart_director_config().get("enabled"):
+            raise RuntimeError(
+                "AI lighting (auto) is on. Turn it off in the Self-config card "
+                "before switching to legacy music mode."
+            )
         if smart_director_owns_wall(client):
-            raise ValueError("Smart Director owns the wall; disable it before starting Legacy AI music.")
-        kwargs: dict[str, Any] = {"ai_settings": ai_settings()}
-        if cfg.get("poll_s") is not None:
-            kwargs["poll_s"] = float(cfg["poll_s"])
-        if cfg.get("idle_atmosphere"):
-            kwargs["idle_atmosphere"] = str(cfg["idle_atmosphere"])
-        if cfg.get("ambient_poll_s") is not None:
-            kwargs["ambient_poll_s"] = float(cfg["ambient_poll_s"])
+            import smart_director
+
+            try:
+                smart_director.stop(steady=True)
+            except Exception as exc:
+                raise RuntimeError(f"Could not stop Smart Director: {exc}") from exc
+        kwargs = _music_director_start_kwargs()
         monitor = getattr(client, "_controller_audio_monitor", None)
         if isinstance(monitor, ControllerAudioMonitor):
             monitor.get_snapshot()  # keep AI audio/beat history alive without an open UI
@@ -3837,6 +3865,42 @@ def set_music_director(client: Any, enabled: bool) -> dict:
     set_music_director_enabled(enabled)
     status = music_director.director_status()
     return {"ok": True, "status": status, "enabled": bool(status.get("running"))}
+
+
+def apply_music_director_request(state: Any, enabled: bool) -> dict:
+    """Apply the user-facing Music Director switch (GUI checkbox / Start button).
+
+    ``set_music_director`` deliberately refuses to take the wall from AI lighting
+    so a programmatic or stray call cannot silently disable it. A request that
+    comes from the GUI is different: the operator explicitly asked for legacy
+    music mode, and the two directors are mutually exclusive wall owners. Instead
+    of dead-ending in a retry loop (``Music Director toggle failed`` while AI
+    lighting is on), hand the wall over explicitly: stop AI lighting, persist it
+    off so it does not return at the next boot, then start the legacy director.
+    If the legacy director cannot start, AI lighting is restored so the wall is
+    never left without an owner.
+    """
+    if not enabled:
+        return set_music_director(state.client, False)
+    if not smart_director_config().get("enabled"):
+        return set_music_director(state.client, True)
+    try:
+        configure_smart_director(state, {"enabled": False})
+    except Exception as exc:
+        raise RuntimeError(f"Could not turn off AI lighting: {exc}") from exc
+    try:
+        result = set_music_director(state.client, True)
+    except Exception:
+        try:
+            configure_smart_director(state, {"enabled": True, "mode": "auto"})
+        except Exception:
+            logger.exception(
+                "Could not restore AI lighting after Music Director failed to start"
+            )
+        raise
+    logger.info("Music Director took the wall from AI lighting (explicit request).")
+    result["switched_from"] = "ai_lighting"
+    return result
 
 
 def verify_controllers(timeout: float = 2.0) -> dict:
@@ -3924,22 +3988,6 @@ def test_ai_connection(timeout: float = 10.0) -> dict:
         return {"ok": False, "message": f"AI test failed: {exc}"}
 
 
-def _fleet_catalog_text(devices: dict) -> str:
-    """Deduplicate only identical catalogs, retaining their controller owners."""
-    groups: dict[str, tuple[list[str], list, list]] = {}
-    for name, sub in devices.items():
-        if not isinstance(sub, dict) or not isinstance(sub.get('effects'), list) or not sub['effects']:
-            continue
-        effects = sub['effects']
-        fxdata = sub.get('fxdata') if isinstance(sub.get('fxdata'), list) else []
-        key = json.dumps([effects, fxdata])
-        if key not in groups:
-            groups[key] = ([], effects, fxdata)
-        groups[key][0].append(str(name))
-    return '\n\n'.join('Catalog for controllers: ' + ', '.join(names) + '\n' + catalog_text_for_prompt(effects, fxdata)
-                         for names, effects, fxdata in groups.values())
-
-
 def desktop_observation() -> dict | None:
     """Use recent provider-page observations; no network or player ownership needed."""
     try:
@@ -3953,30 +4001,6 @@ def desktop_observation() -> dict | None:
     if not snapshots:
         return None
     return max(snapshots, key=lambda item: (bool(item.get('playing')), item.get('observed_at') or 0))
-
-
-def mood_catalog_effects(snapshot: dict | None) -> set[int] | None:
-    """Use this request's catalogs, never a different client's global cache."""
-    import atmospheres
-    if not isinstance(snapshot, dict):
-        return None
-    if isinstance(snapshot.get('devices'), dict):
-        devices = list(snapshot['devices'].values())
-    elif 'effects' in snapshot or 'state' in snapshot:
-        devices = [snapshot]
-    else:
-        devices = [value for value in snapshot.values() if isinstance(value, dict)]
-    policies = []
-    known = False
-    for device in devices:
-        effects = device.get('effects') if isinstance(device, dict) else None
-        if isinstance(effects, list):
-            known = True
-            classified = atmospheres.classify_effects(effects, device.get('fxdata') or [])
-            policies.append({key for key, value in classified.items() if not value['unsafe']})
-        else:
-            policies.append(set(lightctl.SAFE_EFFECTS) | {0})
-    return set.intersection(*policies) if policies and known else None
 
 
 def _pick_ai_str(cfg: dict, key: str, env_names: tuple[str, ...], default: str) -> str:
@@ -4035,23 +4059,6 @@ def _seed_effect_policy(client: Any, snapshot: dict | None) -> None:
                 mcp_light.seed_effect_catalog(name, sub.get("effects"), sub.get("fxdata"))
 
 
-def _snapshot_effect_names(snapshot: dict | None) -> list:
-    """Extract the (shared) effect name list from any snapshot envelope shape."""
-    if not isinstance(snapshot, dict):
-        return []
-    devices = snapshot.get("devices")
-    if isinstance(devices, dict):
-        candidates = devices.values()
-    elif isinstance(snapshot.get("effects"), list):
-        return snapshot["effects"]
-    else:
-        candidates = snapshot.values()  # legacy fleet {name: snapshot}
-    for sub in candidates:
-        if isinstance(sub, dict) and isinstance(sub.get("effects"), list) and sub["effects"]:
-            return sub["effects"]
-    return []
-
-
 def _audio_player_enabled(config: dict | None = None) -> bool:
     """Player is opt-in; default to the non-player interface."""
     if config is None:
@@ -4080,26 +4087,6 @@ def audio_player_public_settings(config: dict | None = None) -> dict:
         "apple_authorized": bool(audio_player.apple_user_token() or raw.get("apple_user_token")),
         "sources": list(audio_player.SOURCES),
     }
-
-
-def _deep_merge_ai_agents(existing_ai: dict, incoming_ai: dict) -> dict:
-    """Merge ai updates; ai.agents[role] is deep-merged so a partial POST
-    cannot wipe sibling roles or other keys on the same role."""
-    merged = dict(incoming_ai)
-    incoming_agents = incoming_ai.get("agents")
-    if not isinstance(incoming_agents, dict):
-        return merged
-    existing_agents = existing_ai.get("agents") if isinstance(existing_ai.get("agents"), dict) else {}
-    agents = dict(existing_agents)
-    for role, role_updates in incoming_agents.items():
-        if isinstance(role_updates, dict) and isinstance(agents.get(role), dict):
-            role_merged = dict(agents[role])
-            role_merged.update(role_updates)
-            agents[role] = role_merged
-        else:
-            agents[role] = role_updates
-    merged["agents"] = agents
-    return merged
 
 
 def set_tv_observation_enabled(enabled: bool) -> dict:
@@ -4205,6 +4192,152 @@ def auto_start_smart_director(state: Any) -> Any:
         _smart_director_startup_error = str(exc)
         logger.error("Smart Director auto-start failed: %s", exc)
         return None
+
+
+def boot_sequence_config(config: dict | None = None) -> dict:
+    """Return one complete, validated self-config boot settings object."""
+    import boot_sequence
+
+    if config is None:
+        config = lightctl.load_config()
+    section = config.get("boot_sequence") if isinstance(config, dict) else None
+    raw = section if isinstance(section, dict) else {}
+    return boot_sequence.validate_config({key: raw[key] for key in boot_sequence.DEFAULTS if key in raw})
+
+
+def boot_status_payload() -> dict:
+    """GET /api/boot: self-config sequence state plus the last persisted report."""
+    try:
+        import boot_sequence
+
+        status = dict(boot_sequence.boot_status())
+        status["enabled"] = bool(boot_sequence_config().get("enabled"))
+        return {"ok": True, **status}
+    except Exception as exc:
+        return {
+            "ok": False, "enabled": False, "running": False, "phase": "idle",
+            "started_at": None, "finished_at": None, "step": None, "lines": [],
+            "report": None, "error": f"Self-config unavailable: {exc}",
+        }
+
+
+def wall_automation_busy(state: Any | None = None) -> str | None:
+    """Name the current wall owner, or None when nothing is driving the LEDs."""
+    client = getattr(state, "client", None) if state is not None else None
+    try:
+        if client is not None and smart_director_owns_wall(client):
+            return "Smart Director"
+    except Exception:
+        pass
+    try:
+        import music_director
+
+        if bool(music_director.director_status().get("running")):
+            return "Music Director"
+    except Exception:
+        pass
+    try:
+        import shows
+
+        if bool(shows.show_status().get("running")):
+            return "a running light show"
+    except Exception:
+        pass
+    try:
+        import realtime
+
+        if bool(realtime.realtime_status().get("running")):
+            return "the realtime renderer"
+    except Exception:
+        pass
+    return None
+
+
+def _start_boot_sequence(state: Any, *, force: bool = False) -> Any:
+    """Start the self-config sequence when configured; returns its thread or None."""
+    if bool(getattr(state, "dry_run", False)) or not hasattr(state, "client"):
+        return None
+    if not _is_fleet(state.client):
+        logger.info("Self-config boot skipped: fleet mode is required.")
+        return None
+    settings = boot_sequence_config()
+    if not settings.get("enabled") and not force:
+        return None
+    import boot_sequence
+
+    if force:
+        settings = {**settings, "enabled": True}
+    boot = boot_sequence.start_boot(state.client, settings)
+    if boot is not None:
+        logger.info("Self-config boot sequence started.")
+    return boot
+
+
+def _start_configured_automation(state: Any) -> None:
+    """Start the single configured wall owner: Smart Director, else legacy music."""
+    if bool(getattr(state, "dry_run", False)) or not hasattr(state, "client"):
+        return
+    if smart_director_config().get("enabled"):
+        auto_start_smart_director(state)
+        return
+    if music_director_config().get("enabled"):
+        try:
+            import music_director
+
+            music_director.start_director(state.client, **_music_director_start_kwargs())
+        except Exception:
+            logger.exception("Music Director auto-start failed")
+
+
+def _boot_then_automation(state: Any) -> None:
+    """Startup order: self-config the wall, then hand it to persisted automation."""
+    try:
+        boot = _start_boot_sequence(state)
+        if boot is not None:
+            boot.join()
+    except Exception:
+        logger.exception("Self-config boot sequence failed")
+    try:
+        status = boot_status_payload()
+        if status.get("report"):
+            import boot_sequence
+
+            for line in boot_sequence.summary_text(status["report"]).splitlines():
+                logger.info("Self-config: %s", line)
+    except Exception:
+        pass
+    _start_configured_automation(state)
+
+
+def configure_boot_sequence(state: Any, updates: dict | None = None) -> dict:
+    """Persist self-config settings, or run the sequence once with {"run": true}."""
+    import boot_sequence
+
+    if updates is not None and not isinstance(updates, dict):
+        raise ValueError("Self-config body must be a JSON object.")
+    unknown = set(updates or {}) - {"enabled", "dwell_s", "brightness", "run"}
+    if unknown:
+        raise ValueError(f"Unknown self-config setting: {sorted(unknown)[0]}.")
+    run_now = bool((updates or {}).get("run"))
+    if run_now:
+        if bool(getattr(state, "dry_run", False)):
+            raise ValueError("Self-config cannot run in dry-run mode.")
+        if not _is_fleet(state.client):
+            raise ValueError("Self-config requires fleet mode.")
+        owner = wall_automation_busy(state)
+        if owner is not None:
+            raise RuntimeError(f"Self-config needs the wall: stop {owner} first.")
+    changes = {key: value for key, value in (updates or {}).items() if key != "run"}
+    if changes:
+        def apply(config: dict) -> None:
+            section = dict(config.get("boot_sequence") or {})
+            section.update(changes)
+            config["boot_sequence"] = boot_sequence.validate_config(section)
+
+        lightctl.mutate_config(apply)
+    if run_now:
+        _start_boot_sequence(state, force=True)
+    return boot_status_payload()
 
 
 def smart_director_owns_wall(client: Any | None = None) -> bool:
@@ -4456,7 +4589,20 @@ def make_handler(state: GuiState):
             if path == "/api/tv-observation":
                 import firetv
 
-                self.respond_json({"ok": True, **firetv.observe()})
+                observation = firetv.observe()
+                # Best effort: long-form YouTube music mixes expose authored
+                # chapters; attach the resolved video/chapter for UI inspection.
+                try:
+                    import youtube_chapters
+
+                    observation = youtube_chapters.enrich_observation(observation)
+                except Exception:
+                    logger.debug("YouTube chapter enrichment unavailable", exc_info=True)
+                self.respond_json({"ok": True, **observation})
+                return
+            if path == "/api/lighting-observation":
+                from lighting_context import observe_lighting
+                self.respond_json(observe_lighting(state.client))
                 return
             if path == "/api/music-show":
                 import smart_director
@@ -4464,6 +4610,9 @@ def make_handler(state: GuiState):
                 return
             if path == "/api/smart-director":
                 self.respond_json(smart_director_status_payload())
+                return
+            if path == "/api/boot":
+                self.respond_json(boot_status_payload())
                 return
             if path == "/api/idle-curator":
                 self.respond_json(idle_curator_status_payload())
@@ -4924,7 +5073,7 @@ def make_handler(state: GuiState):
             if not self.guard_origin():
                 return
             path = urllib.parse.urlparse(self.path).path
-            if path in {"/api/smart-director", "/api/music-show", "/api/idle-curator"}:
+            if path in {"/api/smart-director", "/api/music-show", "/api/idle-curator", "/api/boot"}:
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
                     if not 0 <= length <= 4096:
@@ -4933,11 +5082,24 @@ def make_handler(state: GuiState):
                     if self.headers.get_content_type() != "application/json":
                         raise ValueError("JSON content type required.")
                     data = json.loads(self.rfile.read(length) or b"{}")
+                    # Record who switched wall ownership: Music mode vs AI lighting
+                    # drift was otherwise invisible without request logging.
+                    logger.info(
+                        "API: POST %s %s",
+                        path,
+                        {
+                            key: data.get(key)
+                            for key in ("enabled", "mode", "action", "run")
+                            if isinstance(data, dict) and key in data
+                        },
+                    )
                     if path == "/api/music-show":
                         import smart_director
                         self.respond_json(smart_director.control_show(state.client, data))
                     elif path == "/api/idle-curator":
                         self.respond_json(configure_idle_curator(state, data))
+                    elif path == "/api/boot":
+                        self.respond_json(configure_boot_sequence(state, data))
                     else:
                         self.respond_json(configure_smart_director(state, data))
                 except (ValueError, TypeError) as exc:
@@ -5115,10 +5277,22 @@ def make_handler(state: GuiState):
                 if path == "/api/music-director":
                     if not isinstance(data, dict):
                         raise ValueError("Music Director body must be a JSON object.")
+                    logger.info("API: POST /api/music-director %s",
+                                {"enabled": data.get("enabled")})
                     try:
                         self.respond_json(
-                            set_music_director(state.client, bool(data.get("enabled")))
+                            apply_music_director_request(
+                                state, bool(data.get("enabled"))
+                            )
                         )
+                    except (ValueError, TypeError) as exc:
+                        logger.warning("Music Director request rejected: %s", exc)
+                        self.respond_json({"ok": False, "error": str(exc)}, status=400)
+                    except RuntimeError as exc:
+                        # An expected conflict is a 409, not a server crash: the
+                        # browser shows this text next to the toggle.
+                        logger.warning("Music Director toggle failed: %s", exc)
+                        self.respond_json({"ok": False, "error": str(exc)}, status=409)
                     except Exception as exc:
                         logger.exception("Music Director toggle failed")
                         self.respond_json(
@@ -5204,7 +5378,6 @@ def make_handler(state: GuiState):
                                 status=503,
                             )
                             return
-                        import base64
 
                         try:
                             audio_bytes = _decode_base64_blob(
@@ -5258,8 +5431,6 @@ def make_handler(state: GuiState):
                     if isinstance(provided_now_playing, dict):
                         provided_np = provided_now_playing
                     elif used_client_mic and music_recognizer.can_identify_song():
-                        import base64
-
                         try:
                             audio_bytes = _decode_base64_blob(
                                 audio_b64, max_bytes=6 * 1024 * 1024, label="Audio"
@@ -5308,7 +5479,6 @@ def make_handler(state: GuiState):
                             {"ok": False, "error": "audio_b64 is required"}, status=400
                         )
                         return
-                    import base64
 
                     try:
                         audio_bytes = _decode_base64_blob(
@@ -5662,20 +5832,14 @@ def main() -> int:
         (args.listen, args.port),
         make_handler(state),
     )
-    if music_director_config().get("enabled") and not args.dry_run:
-        try:
-            import music_director  # lazy: module is built in parallel and may be missing
-
-            logger.info("Auto-starting Music Director (enabled in config).")
-            cfg = music_director_config()
-            kwargs: dict[str, Any] = {"ai_settings": ai_settings()}
-            if cfg.get("poll_s") is not None:
-                kwargs["poll_s"] = float(cfg["poll_s"])
-            if cfg.get("idle_atmosphere"):
-                kwargs["idle_atmosphere"] = str(cfg["idle_atmosphere"])
-            music_director.start_director(state.client, **kwargs)
-        except Exception:
-            logger.exception("Music Director auto-start failed")
+    # Self-config boot first (it owns the wall), then the persisted automation.
+    # Running this off the server thread keeps HTTP responsive during the sequence.
+    threading.Thread(
+        target=_boot_then_automation,
+        args=(state,),
+        name="lightss-boot-automation",
+        daemon=True,
+    ).start()
     if args.listen not in ("127.0.0.1", "::1", "localhost"):
         logger.warning(
             "GUI is listening on the LAN without built-in authentication; restrict access with the host firewall or reverse proxy."

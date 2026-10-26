@@ -29,7 +29,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import atmospheres
 import music_recognizer
@@ -46,6 +46,9 @@ logger = logging.getLogger("music_director")
 _IDLE_STRIKES = 2
 # Room-mic Shazam is slow and rate-limited; don't hammer it on every poll.
 DEFAULT_AMBIENT_POLL_S = 20.0
+# Reading the Fire TV's media session over adb is also not free; one look per
+# poll interval is enough because songs change on a human timescale.
+DEFAULT_TV_POLL_S = 8.0
 
 # ---------------------------------------------------------------------------
 # Mood rules
@@ -155,7 +158,6 @@ def classify_track_ai(artist: str, title: str, settings: dict, timeout: float = 
     "api_key_env"} — the same shape light_gui.ai_settings() returns.
     """
     import json
-    import os
     import urllib.request
 
     try:
@@ -246,13 +248,26 @@ class MusicDirector(threading.Thread):
 
     def __init__(self, fleet: LightFleet, poll_s: float = 8.0,
                  idle_atmosphere: str | None = None, ai_settings: dict | None = None,
-                 ambient_poll_s: float = DEFAULT_AMBIENT_POLL_S):
+                 ambient_poll_s: float = DEFAULT_AMBIENT_POLL_S,
+                 observe_tv: Callable[[], dict] | None = None,
+                 tv_poll_s: float = DEFAULT_TV_POLL_S):
         super().__init__(daemon=True, name="lightss-music-director")
         self.fleet = fleet
         self.poll_s = float(poll_s)
         self.idle_atmosphere = idle_atmosphere
         self.ai_settings = ai_settings
         self.ambient_poll_s = max(0.0, float(ambient_poll_s))
+        self.tv_poll_s = max(0.0, float(tv_poll_s))
+        # Optional callable returning a Fire TV observation dict. When the music
+        # plays on the TV (YouTube/Spotify TV apps), MPRIS sees nothing and the
+        # mic may never confirm a spectral change; the TV's media session is then
+        # the only reliable "a different song started" signal. Injected so tests
+        # never run adb.
+        self._observe_tv = observe_tv
+        self._tv_observed_at = 0.0
+        self._tv_media: str | None = None
+        self._tv_session: str | None = None
+        self._tv_last_error_at = 0.0
         self.current_track: str | None = None
         self.current_song: dict | None = None
         self.last_response: str | None = None
@@ -285,6 +300,40 @@ class MusicDirector(threading.Thread):
 
     # -- poll handling -----------------------------------------------------
 
+    def _tv_media_session(self) -> str | None:
+        """Description of a playing TV media session, or None.
+
+        The Fire TV is a separate device: its playback never reaches MPRIS and
+        room-mic Shazam only notices it when the spectrum happens to jump far
+        enough. Its own media session is the authoritative change signal, so it
+        is polled (throttled) and compared between polls.
+        """
+        now = time.monotonic()
+        if self._tv_observed_at and (now - self._tv_observed_at) < self.tv_poll_s:
+            return self._tv_media
+        self._tv_observed_at = now
+        observe = self._observe_tv
+        if observe is None:
+            self._tv_media = None
+            return None
+        try:
+            observation = observe()
+        except Exception as exc:
+            # A broken adb link must not spam a log line every poll.
+            if now - self._tv_last_error_at > 300.0:
+                self._tv_last_error_at = now
+                logger.info("Music director: TV observation failed: %s", exc)
+            self._tv_media = None
+            return None
+        media = observation.get("media_session") if isinstance(observation, dict) else None
+        if not isinstance(media, dict):
+            self._tv_media = None
+            return None
+        playing = media.get("active") is not False and media.get("state") == 3
+        description = str(media.get("description") or "").strip()
+        self._tv_media = description if (playing and description) else None
+        return self._tv_media
+
     def _read_track(self) -> dict | None:
         """Integrated player/MPRIS metadata first, else room-mic Shazam."""
         try:
@@ -294,9 +343,21 @@ class MusicDirector(threading.Thread):
             mpris = None
         if isinstance(mpris, dict):
             self._ambient_sticky = None
+            self._tv_session = None
             return mpris
         if self._stop_event.is_set():
             return None
+        media_session = self._tv_media_session()
+        if media_session and media_session != self._tv_session:
+            # A different item started on the TV: identify it now instead of
+            # waiting for the microphone to confirm a spectral change it may
+            # never confirm. Resetting re-arms the detector's first-sample query.
+            self._tv_session = media_session
+            self._ambient_tracker.reset()
+            self._last_ambient_at = 0.0
+            logger.info("Music director: TV media session changed: %r", media_session)
+        elif not media_session:
+            self._tv_session = None
         now = time.monotonic()
         if self._last_ambient_at and (now - self._last_ambient_at) < self.ambient_poll_s:
             return self._ambient_sticky
@@ -461,7 +522,7 @@ class MusicDirector(threading.Thread):
             )
             return
         self.last_error = None
-        logger.info("Music director: AI show for %r live (%d tool calls): %s",
+        logger.info("Music director: AI show for %r scheduled (%d tool calls): %s",
                     title, len(result["log"]), result["text"][:120])
 
     def _handle_idle(self) -> None:
@@ -593,4 +654,8 @@ def director_status() -> dict:
         "last_response": getattr(director, "last_response", None),
         "last_error": getattr(director, "last_error", None),
         "mood": director.current_mood,
+        # Why the track is (or is not) updating: state/queries/failures of the
+        # room-mic gate plus the last TV media session seen.
+        "tracker": director._ambient_tracker.status(),
+        "tv_session": getattr(director, "_tv_session", None),
     }

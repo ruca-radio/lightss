@@ -110,6 +110,34 @@ def test_construction_does_not_start_network_io(boundary):
     observer.close()
 
 
+@pytest.mark.parametrize("host", ["http://wled.local/proxy", "http://user:pass@wled.local",
+                                 "http://[::1]", "http://wled.local?proxy=1"])
+def test_observer_rejects_hosts_the_http_adapter_cannot_represent(host):
+    with pytest.raises(ValueError, match="HTTP controller"):
+        PythonWLEDObserver(host)
+
+
+def test_observer_retries_after_client_construction_failure(boundary):
+    factory, created = boundary
+    attempts = []
+
+    def failing_factory(host, request_timeout):
+        attempts.append(host)
+        if len(attempts) == 1:
+            raise RuntimeError("temporary client initialization failure")
+        return factory(host, request_timeout)
+
+    observer = PythonWLEDObserver("http://127.0.0.1", client_factory=failing_factory,
+                                  retry_initial=0.01, retry_max=0.02)
+    observer.start()
+    try:
+        eventually(observer.cached_json)
+        assert len(attempts) == 2
+        assert not created.empty()
+    finally:
+        observer.close()
+
+
 def test_cache_preserves_raw_firmware_fields_and_segment_ids(observed):
     observer, socket, _ = observed
     assert observer.cached_json() == RAW

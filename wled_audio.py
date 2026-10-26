@@ -21,11 +21,14 @@ https://github.com/MoonModules/WLED-AudioReactive-Usermod/blob/main/audio_reacti
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import socket
 import struct
 import threading
+import statistics
+import urllib.parse
 import time
 from collections import deque
 from typing import Any, Callable
@@ -191,6 +194,7 @@ class WledAudioListener:
             parsed["beat"] = beat
             parsed["receive_sequence"] = self._receive_sequence
             parsed["source_ip"] = source_ip
+            parsed["received_at_monotonic_s"] = now
             self._last = parsed
             self._last_at = now
         if self._on_packet is not None:
@@ -210,6 +214,9 @@ class WledAudioListener:
         if not active or last is None:
             return {
                 "active": False,
+                "status": "stale" if last is not None else "waiting_for_packets",
+                "received_at_monotonic_s": last.get("received_at_monotonic_s") if last else None,
+                "sample_raw": None, "fft_magnitude": None, "fft_major_peak": None,
                 "age_s": age_s,
                 "level": 0.0,
                 "peak": False,
@@ -223,6 +230,11 @@ class WledAudioListener:
             }
         return {
             "active": True,
+            "status": "live",
+            "received_at_monotonic_s": last["received_at_monotonic_s"],
+            "sample_raw": last["sample_raw"],
+            "fft_magnitude": last["fft_magnitude"],
+            "fft_major_peak": last["fft_major_peak"],
             "age_s": age_s,
             "level": last["level"],
             "peak": last["sample_peak"] > 0,
@@ -257,3 +269,126 @@ class WledAudioListener:
                 continue
             errors = 0
             self.feed_packet(data, addr)
+
+
+class ControllerAudioMonitor:
+    """Observe controller microphone telemetry without owning lights or playback."""
+
+    def __init__(self, client: Any, *, dry_run: bool = False) -> None:
+        self.client = client
+        self.dry_run = dry_run
+        self._lock = threading.Lock()
+        self._listener = None
+        self._closed = False
+        self._retry_at = 0.0
+        self._error: str | None = None
+        self._history = deque(maxlen=1200)
+        self._last_sequence = None
+
+    def _make_listener(self) -> Any:
+        import wled_audio
+        controllers = getattr(self.client, "controllers", [])
+        host = controllers[0].host if controllers else getattr(self.client, "host", "")
+        source = urllib.parse.urlparse(str(host)).hostname
+        if not source:
+            raise ValueError("Controller audio requires a configured controller host.")
+        source = socket.gethostbyname(source)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
+            route.connect((source, wled_audio.AUDIO_SYNC_PORT))
+            interface = route.getsockname()[0]
+        return wled_audio.WledAudioListener(interface_ip=interface, allowed_source=source,
+                                            on_packet=self._record_audio_packet)
+
+    def _record_audio_packet(self, packet: dict) -> None:
+        # Ingest at UDP receive rate, independently of browser frame/poll rate.
+        audio = {**packet, "active": True, "fft": [v / 255 for v in packet.get("fft", [0] * 16)]}
+        with self._lock:
+            if not self._closed and audio.get("receive_sequence") != self._last_sequence:
+                self._last_sequence = audio.get("receive_sequence")
+                self._history.append((time.monotonic(), audio))
+
+    def get_snapshot(self) -> dict:
+        with self._lock:
+            if self._closed or self.dry_run:
+                return {"active": False, "level": 0, "fft": [0] * 16}
+            if self._listener is None and time.monotonic() >= self._retry_at:
+                listener = None
+                try:
+                    listener = self._make_listener()
+                    listener.start()
+                    self._listener = listener
+                    self._error = None
+                except Exception as exc:
+                    if listener is not None:
+                        with contextlib.suppress(Exception):
+                            listener.stop()
+                    self._error = str(exc)
+                    self._retry_at = time.monotonic() + 5
+                    logger.warning("Controller audio observation unavailable: %s", exc)
+            if self._listener is not None:
+                audio = self._listener.get_snapshot()
+                sequence = audio.get("receive_sequence")
+                if audio.get("active") and sequence != self._last_sequence:
+                    self._last_sequence = sequence
+                    self._history.append((time.monotonic(), dict(audio)))
+                return audio
+            return {"active": False, "level": 0, "fft": [0] * 16, "error": self._error}
+
+    def ai_summary(self) -> dict:
+        """Expose fresh measurements separately from rolling/estimated features."""
+        audio = self.get_snapshot()
+        now = time.monotonic()
+        with self._lock:
+            history = list(self._history)
+        return summarize_audio(audio, history, now)
+
+    def stop(self) -> None:
+        with self._lock:
+            self._closed = True
+            if self._listener is not None:
+                self._listener.stop()
+                self._listener = None
+
+
+
+def summarize_audio(audio: dict, history: list, now: float) -> dict:
+    """Summarize receiver-timed mic features; no song identity or raw audio is inferred."""
+    active = bool(audio.get("active"))
+    recent = [(at, item) for at, item in history if 0 <= now-at <= 30] if active else []
+    def window(seconds):
+        items = [item for at, item in recent if now-at <= seconds]
+        count = len(items)
+        bands = [sum((item.get("fft") or [0]*16)[i] for item in items)/count if count else 0
+                 for i in range(16)]
+        levels = [item.get("level", 0) for item in items]
+        return {"samples": count, "level_average": sum(levels)/count if count else 0,
+                "level_peak": max(levels, default=0), "fft_average": bands,
+                "bass": sum(bands[:4])/4, "mid": sum(bands[4:10])/6,
+                "treble": sum(bands[10:])/6,
+                "beat_count": sum(bool(item.get("beat")) for item in items)}
+    windows = {f"{seconds}s": window(seconds) for seconds in (2, 10, 30)}
+    long = windows["30s"]
+    beats = [at for at, item in recent if item.get("beat") and now-at <= 10]
+    intervals = [b-a for a,b in zip(beats,beats[1:]) if .25 <= b-a <= 1.5]
+    bpm = None
+    confidence = 0.0
+    if len(intervals) >= 3 and now-beats[-1] <= 2:
+        median = statistics.median(intervals)
+        deviation = sum(abs(value-median) for value in intervals)/len(intervals)
+        confidence = min(1.0,len(intervals)/7)*max(0.0,1-deviation/median)
+        if confidence >= .25:
+            bpm = round(60/median, 1)
+    return {"active": active, "status": audio.get("status", "live" if active else "unavailable"),
+            "source": "controller_audio_sync", "source_ip": audio.get("source_ip"),
+            "age_s": audio.get("age_s"), "receive_sequence": audio.get("receive_sequence"),
+            "received_at_monotonic_s": audio.get("received_at_monotonic_s"),
+            "level": audio.get("level",0) if active else None,
+            "level_average": long["level_average"], "level_peak": long["level_peak"],
+            "fft": long["fft_average"], "fft_latest": audio.get("fft") if active else None,
+            "sample_raw": audio.get("sample_raw") if active else None,
+            "controller_peak": bool(audio.get("peak",audio.get("sample_peak",0))) if active else None,
+            "dominant_frequency_hz": audio.get("fft_major_peak") if active else None,
+            "fft_magnitude": audio.get("fft_magnitude") if active else None,
+            "beat_count": long["beat_count"], "beat_source": "local_energy_onset_estimate",
+            "bpm": bpm, "bpm_confidence": round(confidence,3), "bpm_source": "local_onset_intervals",
+            "samples": long["samples"], "window_s": 30, "windows": windows}

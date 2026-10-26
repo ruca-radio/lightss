@@ -113,7 +113,7 @@ def _artwork_url(value: Any, size: int = 240) -> str:
         return value.replace("{w}", str(size)).replace("{h}", str(size))
     if isinstance(value, list) and value:
         last = value[-1] if isinstance(value[-1], dict) else {}
-        return str(last.get("url") or last.get("url") or "")
+        return _artwork_url(last, size)
     if isinstance(value, dict):
         if value.get("url"):
             return _artwork_url(value.get("url"), size)
@@ -292,11 +292,23 @@ def _youtube_artwork(video: dict) -> str:
     return _artwork_url(thumbs)
 
 
-def _youtube_status(settings: dict | None, transport: Any) -> dict[str, Any]:
+def _youtube_request(settings: dict | None, transport: Any, method: str, path: str, body: dict | None = None) -> Any:
+    """Keep companion connection settings consistent across player operations."""
     host = _host(settings, "youtube_host", DEFAULT_YOUTUBE_HOST)
     token = str((settings or {}).get("youtube_token") or "").strip() or None
+    return transport.request(method, f"{host}/api/v1/{path}", body=body, headers=_auth_headers(token))
+
+
+def _youtube_state(settings: dict | None, transport: Any) -> dict:
+    data = _youtube_request(settings, transport, "GET", "state")
+    if not isinstance(data, dict):
+        raise ValueError("Youtopia state must be a JSON object")
+    return data
+
+
+def _youtube_status(settings: dict | None, transport: Any) -> dict[str, Any]:
     try:
-        data = transport.request("GET", f"{host}/api/v1/state", headers=_auth_headers(token))
+        data = _youtube_state(settings, transport)
     except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError, TypeError):
         return {
             "source": "youtube_music",
@@ -308,7 +320,6 @@ def _youtube_status(settings: dict | None, transport: Any) -> dict[str, Any]:
             "artwork": "",
             "message": "YouTube Music is not connected. Start Youtopia or set the host in Player connections.",
         }
-    data = data if isinstance(data, dict) else {}
     player = data.get("player") if isinstance(data.get("player"), dict) else {}
     video = data.get("video") if isinstance(data.get("video"), dict) else {}
     title = str(video.get("title") or data.get("title") or "").strip()
@@ -332,8 +343,6 @@ def _youtube_status(settings: dict | None, transport: Any) -> dict[str, Any]:
 
 
 def _youtube_command(settings: dict | None, command: str, transport: Any, data: dict | None = None) -> dict[str, Any]:
-    host = _host(settings, "youtube_host", DEFAULT_YOUTUBE_HOST)
-    token = str((settings or {}).get("youtube_token") or "").strip() or None
     body: dict[str, Any]
     if command == "playItem":
         payload = {key: value for key, value in (data or {}).items() if key in ("videoId", "playlistId") and value}
@@ -343,12 +352,7 @@ def _youtube_command(settings: dict | None, command: str, transport: Any, data: 
     else:
         body = {"command": command}
     try:
-        transport.request(
-            "POST",
-            f"{host}/api/v1/command",
-            body=body,
-            headers=_auth_headers(token),
-        )
+        _youtube_request(settings, transport, "POST", "command", body)
     except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError, TypeError) as exc:
         return {"ok": False, "source": "youtube_music", "command": command, "message": str(exc)}
     return {"ok": True, "source": "youtube_music", "command": command, "message": f"Sent {command} to Youtopia"}
@@ -577,10 +581,8 @@ def search_library(
                     items.append(_map_apple_item(row, kind))
         return {"ok": True, "source": source, "query": query, "items": items}
     if source == "youtube_music":
-        host = _host(settings, "youtube_host", DEFAULT_YOUTUBE_HOST)
-        token = str((settings or {}).get("youtube_token") or "").strip() or None
         try:
-            data = transport.request("GET", f"{host}/api/v1/state", headers=_auth_headers(token))
+            data = _youtube_state(settings, transport)
         except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError, TypeError):
             return {
                 "ok": False,
@@ -589,7 +591,6 @@ def search_library(
                 "items": [],
                 "message": "YouTube Music is not connected. Start Youtopia or set the host in Player connections.",
             }
-        data = data if isinstance(data, dict) else {}
         player = data.get("player") if isinstance(data.get("player"), dict) else {}
         queue = player.get("queue") if isinstance(player.get("queue"), dict) else {}
         raw_items = []
@@ -617,10 +618,8 @@ def list_playlists(
         }
     transport = transport or UrlTransport()
     if source == "youtube_music":
-        host = _host(settings, "youtube_host", DEFAULT_YOUTUBE_HOST)
-        token = str((settings or {}).get("youtube_token") or "").strip() or None
         try:
-            data = transport.request("GET", f"{host}/api/v1/playlists", headers=_auth_headers(token))
+            data = _youtube_request(settings, transport, "GET", "playlists")
         except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError, TypeError):
             return {
                 "ok": False,

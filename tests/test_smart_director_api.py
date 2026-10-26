@@ -1,5 +1,6 @@
 import http.client
 import json
+import sys
 import threading
 from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
@@ -198,6 +199,37 @@ def test_post_reports_startup_runtime_error_without_persisting_enabled(api_serve
     assert status == 409
     assert payload == {"ok": False, "error": "renderer busy"}
     assert config == before
+
+
+def test_music_director_request_hands_wall_over_from_ai_lighting(api_server):
+    """POST /api/music-director while AI lighting is on switches owners instead of failing."""
+    server, state, config = api_server
+    config["smart_director"]["enabled"] = True
+    music = Mock()
+    music.director_status.return_value = {"running": True}
+    with (
+        patch.object(
+            light_gui, "_music_director_start_kwargs", return_value={"ai_settings": {}}
+        ),
+        patch.dict(sys.modules, {"music_director": music}),
+    ):
+        conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+        conn.request(
+            "POST",
+            "/api/music-director",
+            body=json.dumps({"enabled": True}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        response = conn.getresponse()
+        payload = json.loads(response.read())
+        conn.close()
+
+    assert response.status == 200
+    assert payload["ok"] is True
+    assert payload["switched_from"] == "ai_lighting"
+    assert config["smart_director"]["enabled"] is False
+    assert config["music_director"]["enabled"] is True
+    music.start_director.assert_called_once()
 
 
 def test_browser_beat_owner_is_rejected_and_manual_ddp_hands_off_first(monkeypatch):

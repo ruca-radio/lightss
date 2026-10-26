@@ -50,29 +50,62 @@ def _wall_channels(fleet: LightFleet) -> list[tuple[str, str, int]]:
     return [(channel, *channels[channel]) for channel in ordered]
 
 
+# Keys callers may use for a segment color; `col` is the canonical WLED field
+# and wins when more than one is supplied.
+_COLOR_KEYS = ("col", "colors", "color")
+
+
+def _normalize_colors(value: object) -> list[list[int]]:
+    """Normalize a segment color argument into WLED color arrays.
+
+    Accepts the three shapes the AI tool surface uses: a hex string
+    ("FF8800" / "#FF8800", RGB or RGBW), a flat RGB(W) list ([255, 0, 0]), or
+    a list of RGB(W) lists ([[255, 0, 0], [0, 0, 255]]). Components are clamped
+    to bytes, like every other current caller expects.
+    """
+    if isinstance(value, str):
+        return [list(lightctl.hex_to_rgbw(value)[:3])]
+    if isinstance(value, (list, tuple)):
+        if not value:
+            raise ValueError("colors must contain at least one RGB color")
+        if isinstance(value[0], (int, float)):
+            return [[lightctl.clamp_byte(component) for component in value]]
+        colors: list[list[int]] = []
+        for color in value:
+            if isinstance(color, str):
+                colors.append(list(lightctl.hex_to_rgbw(color)[:3]))
+            elif isinstance(color, (list, tuple)) and color:
+                colors.append([lightctl.clamp_byte(component) for component in color])
+            else:
+                raise ValueError(
+                    f"color must be an RGB list or hex string, got {color!r}"
+                )
+        return colors
+    raise ValueError(f"color must be a hex string or RGB list, got {value!r}")
+
+
 def _seg_entry(fx: int | None, pal: int | None, seg_opts: dict) -> dict:
-    """Build one segment entry, clamping byte-valued fields."""
+    """Build one segment entry, clamping byte-valued fields.
+
+    ``col``, ``colors`` and ``color`` are aliases for the segment colors; all
+    are normalized onto WLED's ``col`` field (``col`` wins when repeated).
+    """
     seg: dict = {}
     if fx is not None:
         seg["fx"] = int(fx)
     if pal is not None:
         seg["pal"] = int(pal)
+    col_value = next(
+        (seg_opts[key] for key in _COLOR_KEYS if seg_opts.get(key) is not None),
+        None,
+    )
+    if col_value is not None:
+        seg["col"] = _normalize_colors(col_value)
     for key, value in seg_opts.items():
-        if value is None or key in SACRED_SEGMENT_KEYS:
+        if value is None or key in SACRED_SEGMENT_KEYS or key in _COLOR_KEYS:
             continue
         if key in _BYTE_SEG_KEYS:
             seg[key] = lightctl.clamp_byte(value)
-        elif key == "col":
-            # Accept a hex string ("FF8800") or a flat RGB list ([255, 0, 0])
-            # as a single color, like mcp_light's set_zone does.
-            if isinstance(value, str):
-                value = [lightctl.hex_to_rgbw(value)[:3]]
-            elif value and isinstance(value[0], (int, float)):
-                value = [value]
-            seg["col"] = [
-                [lightctl.clamp_byte(component) for component in color]
-                for color in value
-            ]
         else:
             seg[key] = value
     return seg
@@ -154,7 +187,10 @@ def left_vs_right(
 
 
 def apply_channels(fleet: LightFleet, channels: list[str], fx: int, pal: int | None = None, **seg_opts) -> dict:
-    """Same look on an explicit subset of strips (any 1-4 combo)."""
+    """Same look on an explicit subset of strips (any 1-4 combo).
+
+    ``seg_opts`` may include ``colors``/``col`` for a shared color palette.
+    """
     if not channels:
         raise ValueError("apply_channels requires at least one channel")
     entry = _seg_entry(fx, pal, seg_opts)
@@ -162,7 +198,7 @@ def apply_channels(fleet: LightFleet, channels: list[str], fx: int, pal: int | N
 
 
 def per_strip(fleet: LightFleet, specs: list[dict]) -> dict:
-    """Different fx/pal/options per named strip, one POST per controller."""
+    """Different fx/pal/colors/options per named strip, one POST per controller."""
     if not specs:
         raise ValueError("per_strip requires at least one strip assignment")
     channels = fleet.channels()
@@ -172,7 +208,22 @@ def per_strip(fleet: LightFleet, specs: list[dict]) -> dict:
         if channel not in channels:
             raise ValueError(f"Unknown channel {channel!r}. Valid: {', '.join(channels)}")
         controller, seg_id = channels[channel]
-        opts = {key: value for key, value in spec.items() if key not in {"channel", "fx", "pal", "effect", "palette"}}
+        opts = {
+            key: value
+            for key, value in spec.items()
+            if key
+            not in {
+                "channel", "fx", "pal", "effect", "palette",
+                "col", "colors", "color",
+            }
+        }
+        # Normalize the color aliases through the canonical `col` field.
+        col_value = next(
+            (spec[key] for key in _COLOR_KEYS if spec.get(key) is not None),
+            None,
+        )
+        if col_value is not None:
+            opts["col"] = col_value
         fx = spec.get("fx", spec.get("effect"))
         pal = spec.get("pal", spec.get("palette"))
         entry = _seg_entry(None if fx is None else int(fx), None if pal is None else int(pal), opts)
@@ -185,6 +236,7 @@ def per_strip(fleet: LightFleet, specs: list[dict]) -> dict:
 def set_channel(fleet: LightFleet, channel: str, **seg_opts) -> dict:
     """Thin wrapper: apply raw seg options to a single channel.
 
+    Accepts hex/flat/nested ``col`` as well as the ``colors``/``color`` aliases.
     The fleet injects the segment id into the payload when the target is a
     channel, so the entry here is intentionally id-less.
     """

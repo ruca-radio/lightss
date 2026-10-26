@@ -72,7 +72,9 @@ def test_observe_only_reads_power_focus_and_foreground_media(adb):
     assert result['awake'] is True
     assert result['foreground_app'] == YOUTUBE
     assert result['media_session'] == {'package': YOUTUBE, 'active': True, 'state': 3,
-                                       'description': 'A song, An artist, null'}
+                                       'description': 'A song, An artist, null',
+                                       'position_ms': 1261, 'speed': 1.0,
+                                       'updated_elapsed_ms': None, 'position_s': 1.3}
     assert [argv[3:] for argv, _ in adb[0]] == [
         ['shell', 'dumpsys', 'power'], ['shell', 'dumpsys', 'window'],
         ['shell', 'dumpsys', 'media_session']]

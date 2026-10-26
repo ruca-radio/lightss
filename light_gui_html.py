@@ -181,6 +181,90 @@ HTML_TEMPLATE = """<!doctype html>
       display: block;
       animation: tab-fade-in 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
     }
+    .tab-header-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 18px 0;
+      flex-wrap: wrap;
+    }
+    .tab-header-row .tab-bar {
+      margin: 0;
+    }
+    .advanced-toggle {
+      display: inline-flex;
+      align-items: center;
+      cursor: pointer;
+      user-select: none;
+    }
+    .advanced-toggle input {
+      position: absolute;
+      opacity: 0;
+      width: 0;
+      height: 0;
+      pointer-events: none;
+    }
+    .advanced-toggle-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 16px;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text-secondary);
+      background: rgba(255,255,255,.05);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      transition: all .2s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .advanced-toggle-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: rgba(255,255,255,.3);
+      transition: all .2s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .advanced-toggle:hover .advanced-toggle-badge {
+      color: var(--text);
+      background: rgba(255,255,255,.09);
+      border-color: rgba(255,255,255,.22);
+    }
+    .advanced-toggle input:checked + .advanced-toggle-badge,
+    body.show-advanced .advanced-toggle-badge {
+      color: #fff;
+      background: rgba(6,182,212,.18);
+      border-color: var(--accent);
+      box-shadow: 0 0 16px rgba(6,182,212,.28);
+    }
+    .advanced-toggle input:checked + .advanced-toggle-badge .advanced-toggle-dot,
+    body.show-advanced .advanced-toggle-dot {
+      background: var(--accent);
+      box-shadow: 0 0 8px var(--accent);
+    }
+    body:not(.show-advanced):not(:has(#advancedToggle:checked)) .advanced-only {
+      display: none !important;
+    }
+    body:not(.show-advanced):not(:has(#advancedToggle:checked)) #tab-live .grid {
+      grid-template-columns: 1fr;
+      max-width: 680px;
+      margin: 0 auto;
+    }
+    body:not(.show-advanced):not(:has(#advancedToggle:checked)) #tab-live .left-col {
+      display: none;
+    }
+    .advanced-gate-notice {
+      display: none;
+      text-align: center;
+      padding: 44px 20px;
+      background: rgba(255,255,255,.03);
+      border: 1px dashed rgba(255,255,255,.15);
+      border-radius: var(--radius-lg);
+      grid-column: 1 / -1;
+    }
+    body:not(.show-advanced):not(:has(#advancedToggle:checked)) .advanced-gate-notice {
+      display: block;
+    }
     .target-bar {
       display: flex;
       gap: 10px;
@@ -293,6 +377,12 @@ HTML_TEMPLATE = """<!doctype html>
     .mode-pill.running { color: #d1fae5; border-color: rgba(52,211,153,.45); background: rgba(16,185,129,.16); }
     .mode-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: stretch; }
     .mode-actions .stop-button { min-width: 112px; padding-inline: 16px; }
+    .boot-card .mode-actions { align-items: center; }
+    .boot-toggle { display: flex; gap: 7px; align-items: center; cursor: pointer; white-space: nowrap; font-size: 13px; color: var(--text-secondary); font-weight: 650; }
+    .boot-toggle input { cursor: pointer; }
+    .boot-lines { display: grid; gap: 4px; max-height: 150px; overflow-y: auto; margin-top: 10px; }
+    .boot-line { padding: 6px 9px; border-radius: var(--radius-sm); background: rgba(4,8,20,.46); border: 1px solid rgba(255,255,255,.10); color: var(--text-secondary); font-size: 12px; line-height: 1.35; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+    .boot-ai-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
     .mode-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
     .mode-summary-item { padding: 10px 12px; border-radius: var(--radius-sm); background: rgba(4,8,20,.46); border: 1px solid rgba(255,255,255,.10); }
     .mode-summary-item span { display: block; font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 5px; }
@@ -725,6 +815,30 @@ __PLAYER_STAGE__
 
 __PLAYER_DECK__
 
+    <div class="card boot-card" id="bootCard">
+      <div class="mode-header">
+        <div>
+          <h2>🧭 Self-config</h2>
+          <p class="mode-subtitle">At startup, lights each strip in turn to verify its mapping and current programming, then restores the previous look before automation starts.</p>
+        </div>
+        <span class="mode-pill" id="bootPhase">Idle</span>
+      </div>
+      <div class="mode-actions">
+        <label class="boot-toggle" title="Run the self-config sequence when the GUI starts">
+          <input type="checkbox" id="bootEnabled" onchange="toggleBootEnabled(this.checked)"> Run at startup
+        </label>
+        <button class="secondary" id="bootRun" onclick="runBootNow()" title="Run the self-config sequence now">Run now</button>
+      </div>
+      <div class="auto-status" id="bootStatus" role="status" aria-live="polite">Loading self-config status...</div>
+      <div class="boot-lines" id="bootLines" role="list" aria-live="polite"></div>
+      <div class="boot-ai-row">
+        <label class="boot-toggle" title="Let the AI director own the wall (TV taming and per-song lighting)">
+          <input type="checkbox" id="aiLightingEnabled" onchange="toggleAiLighting(this.checked)"> 🤖 AI lighting (auto)
+        </label>
+        <span class="target-hint" id="aiLightingStatus" role="status" aria-live="polite">Loading AI director...</span>
+      </div>
+    </div>
+
     <div class="target-bar">
       <span>🎯 Target</span>
       <select id="targetSelect" onchange="setTarget(this.value)" title="Which controller or channel actions apply to">
@@ -746,7 +860,7 @@ __PLAYER_DECK__
         </span>
         <span class="target-hint" id="firetvMsg"></span>
       </span>
-      <span class="firetv-bar">
+      <span class="firetv-bar advanced-only">
         <label class="firetv-toggle" title="Identify the current song and let AI direct the lights">
           <input type="checkbox" id="musicDirectorEnabled" onchange="toggleMusicDirector(this.checked)"> 🎵 Music Director
         </label>
@@ -755,7 +869,7 @@ __PLAYER_DECK__
       </span>
     </div>
 
-    <div class="tv-observation" role="region" aria-label="Read-only TV observation">
+    <div class="tv-observation advanced-only" role="region" aria-label="Read-only TV observation">
       <label><input type="checkbox" id="tvObservationEnabled" onchange="toggleTvObservation(this.checked)"> Observe TV (read-only)</label>
       <button class="secondary" id="tvObservationRefresh" onclick="refreshTvObservation()">Refresh TV status</button>
       <span class="observation-status" id="tvObservationStatus" role="status">Loading observation setting...</span>
@@ -764,17 +878,26 @@ __PLAYER_DECK__
 
 
 
-    <div class="tab-bar">
-      <button class="tab-btn" onclick="openCalibration()">Calibrate LEDs</button>
-      <button class="tab-btn active" data-tab="live" onclick="switchTab('live')">Live View</button>
-      <button class="tab-btn" data-tab="manual" onclick="switchTab('manual')">Manual Controls</button>
-      <button class="tab-btn" data-tab="settings" onclick="switchTab('settings')">⚙ Settings</button>
+    <div class="tab-header-row">
+      <div class="tab-bar">
+        <button class="tab-btn advanced-only" onclick="openCalibration()">Calibrate LEDs</button>
+        <button class="tab-btn active" data-tab="live" onclick="switchTab('live')">Live View</button>
+        <button class="tab-btn" data-tab="manual" onclick="switchTab('manual')">Manual Controls</button>
+        <button class="tab-btn advanced-only" data-tab="settings" onclick="switchTab('settings')">⚙ Settings</button>
+      </div>
+      <label class="advanced-toggle" title="Show expert controls, raw diagnostics, and backend configuration">
+        <input type="checkbox" id="advancedToggle" onchange="document.body.classList.toggle('show-advanced', this.checked); if(!this.checked &amp;&amp; document.getElementById('tab-settings')?.classList.contains('active')) switchTab('live');">
+        <span class="advanced-toggle-badge">
+          <span class="advanced-toggle-dot"></span>
+          ⚙ Advanced
+        </span>
+      </label>
     </div>
 
     <div id="tab-live" class="tab-content active">
       <div class="grid">
         <div class="left-col">
-          <div class="card">
+          <div class="card advanced-only">
             <h2>AI Chat</h2>
             <div class="chat-controls">
               <button class="secondary" onclick="clearChat()" title="Clear all chat messages">Clear Chat</button>
@@ -791,7 +914,7 @@ __PLAYER_DECK__
             <div id="aiReply" class="ai-reply"></div>
             <div id="aiConfirmations" class="confirmations"></div>
           </div>
-          <div class="vision-card">
+          <div class="vision-card advanced-only">
             <h3 style="color:#00f0ff; margin-top:0; display:flex; align-items:center; gap:8px;">
               <span>👁️</span> AI Vision Eye
             </h3>
@@ -808,7 +931,7 @@ __PLAYER_DECK__
           </div>
         </div>
         <div class="right-col">
-          <div class="card">
+          <div class="card advanced-only">
             <h2>Controller State</h2>
             <div class="state-display" id="stateDisplay">Connecting...</div>
             <div class="row" style="margin-top:12px;">
@@ -847,7 +970,7 @@ __PLAYER_DECK__
         <button onclick="send('hex', {color: hexColor.value, transition: Number(transition.value)})" title="Set color from hex value">Set Hex</button>
       </div>
     </div>
-    <div class="card">
+    <div class="card advanced-only">
       <h2>🌡️ Temperature</h2>
       <div class="row">
         <button class="secondary" onclick="send('temp', {kelvin: 2700, transition: Number(transition.value)})" title="Set warm 2700K temperature">Warm 2700K</button>
@@ -879,7 +1002,7 @@ __PLAYER_DECK__
         <input id="transition" type="range" min="0" max="2000" value="0" oninput="transText.textContent=this.value">
       </label>
     </div>
-    <div class="card">
+    <div class="card advanced-only">
       <h2>🧱 Wall (4 columns)</h2>
       <div class="row">
         <label>Effect
@@ -936,7 +1059,7 @@ __PLAYER_DECK__
         <button class="danger" onclick="send('delete_scene', {name: saveSceneName.value})" title="Delete named scene">Delete</button>
       </div>
     </div>
-    <div class="card">
+    <div class="card advanced-only">
       <h2>🧬 Dynamic AI Scenes</h2>
       <p class="card-note">Generated mode is not a stock WLED effect. It paints the wall directly with exact-length per-strip frames and knows the top/bottom strip layout.</p>
       <label>Mood
@@ -1003,7 +1126,7 @@ __PLAYER_DECK__
       <div class="card-note">Effect mode stays within the safe stock WLED effect surface. Generated mode is the new pixel-frame painter for this wall layout.</div>
       <div class="status-output" id="dynSceneStatus">Ready.</div>
     </div>
-    <div class="card">
+    <div class="card advanced-only">
       <h2>⚡ Realtime Direct Mode</h2>
       <p class="card-note">Realtime streams unique palettes and motion over DDP and overrides WLED effects until you stop it or the timeout ends. Pass your own colors and a seed to build a look, or leave them blank and let mood + seed invent one.</p>
       <div class="row">
@@ -1067,7 +1190,7 @@ __PLAYER_DECK__
       </div>
       <div class="status-output" id="realtimeStatus">Idle.</div>
     </div>
-    <div class="card">
+    <div class="card advanced-only">
       <h2>🗣 Feedback & Memory</h2>
       <p class="card-note">Save a quick reaction so the next generated look can repeat what worked and avoid what missed.</p>
       <label>Notes
@@ -1090,7 +1213,7 @@ __PLAYER_DECK__
       <div class="status-output" id="feedbackStatus">Ready.</div>
       <pre class="memory-output" id="lookMemorySummary">No look memory loaded yet.</pre>
     </div>
-    <div class="card">
+    <div class="card advanced-only">
       <h2>⏱️ Timers & Simulations</h2>
       <div class="row" style="margin-bottom:8px;">
         <label style="margin:0;">Preset ID (1-250)
@@ -1119,7 +1242,7 @@ __PLAYER_DECK__
         <button onclick="send('fade_off', {minutes: Number(fadeMinutes.value)})" title="Start gradual fade-off timer">Start Fade</button>
       </div>
     </div>
-    <div class="card">
+    <div class="card advanced-only">
       <h2>📅 Schedule</h2>
       <div class="row">
         <label style="margin:0;">Time
@@ -1143,7 +1266,13 @@ __PLAYER_DECK__
 
   <div id="tab-settings" class="tab-content">
     <div class="manual-grid">
-      <div class="card">
+      <div class="advanced-gate-notice">
+        <div style="font-size:32px; margin-bottom:12px;">⚙️</div>
+        <h3 style="margin:0 0 8px; font-size:16px; color:#fff;">Advanced Settings &amp; Diagnostics</h3>
+        <p style="margin:0 0 16px; font-size:13px; color:var(--text-secondary); max-width:440px; margin-inline:auto;">Hardware fleet controllers, AI models, custom prompts, and audio routing are hidden while Advanced mode is off.</p>
+        <button class="secondary" onclick="document.getElementById('advancedToggle').click()" style="padding:8px 18px;">Show Advanced Settings</button>
+      </div>
+      <div class="card advanced-only">
         <h2>🤖 AI Provider</h2>
         <label>Provider
           <select id="setAiProvider" onchange="aiProviderChanged()">
@@ -1177,7 +1306,7 @@ __PLAYER_DECK__
         <div class="settings-msg" id="aiSettingsMsg"></div>
       </div>
 
-      <div class="card">
+      <div class="card advanced-only">
         <h2>🎨 Look Agents</h2>
         <p class="card-note">Optional per-role models. Leave provider/base URL blank to inherit the main AI provider. The librarian indexes effects and palettes for song chapters. Point its base URL at an OpenAI-compatible host such as Ollama. Leave it off to let an enabled colorist suggest song palettes.</p>
         <div class="agent-role">
@@ -1243,9 +1372,13 @@ __PLAYER_DECK__
             <input id="agentLibrarianKeyEnv" type="text" placeholder="optional, e.g. OLLAMA_API_KEY" style="width:100%;">
           </label>
         </div>
+        <div class="row" style="margin-top:14px;">
+          <button onclick="saveLookAgentSettings(this)" title="Save Look Agent settings">Save Look Agents</button>
+        </div>
+        <div class="settings-msg" id="lookAgentMsg"></div>
       </div>
 
-      <div class="card">
+      <div class="card advanced-only">
         <h2>🧠 System Prompt</h2>
         <textarea id="setSysPrompt" rows="9" style="width:100%; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px;" placeholder="Loading..."></textarea>
         <div class="row" style="margin-top:10px;">
@@ -1260,7 +1393,7 @@ __PLAYER_DECK__
         <div class="settings-msg" id="sysPromptMsg"></div>
       </div>
 
-      <div class="card">
+      <div class="card advanced-only">
         <h2>🔌 Controllers</h2>
         <div id="controllerRows"></div>
         <div class="row" style="margin-top:10px;">
@@ -1271,7 +1404,7 @@ __PLAYER_DECK__
         <div class="settings-msg" id="controllersMsg"></div>
       </div>
 
-      <div class="card">
+      <div class="card advanced-only">
         <h2>🎙 Audio Input</h2>
         <label>Audio source
           <select id="setAudioSource" onchange="audioSourceChanged()">
@@ -2018,7 +2151,7 @@ __PLAYER_SETTINGS_CARD__
     }
 
     function expireControllerAudioTelemetry() {
-      if (!controllerAudioStatus || controllerAudioActive() || audioReactiveRunning) return;
+      if (!controllerAudioStatus || performance.now() - controllerAudioAt < 2500 || audioReactiveRunning) return;
       controllerAudioStatus = null;
       controllerAudioPending = null;
       if (controllerVizActive()) {
@@ -2027,7 +2160,7 @@ __PLAYER_SETTINGS_CARD__
       }
       controllerLevelHistory = []; controllerLastSequence = null;
       resetAnalysisDisplay();
-      setText('vizStatus', 'Controller audio unavailable');
+      setText('vizStatus', 'Controller audio unavailable · feed disconnected');
       setText('micPipelineState', 'Controller mic unavailable');
     }
 
@@ -2053,7 +2186,8 @@ __PLAYER_SETTINGS_CARD__
         levelHistory:controllerLevelHistory.slice(), waveform:[]});
       renderAnalyzerFrame(musicAnalysis);
       setText('waveformLabel', 'CONTROLLER LEVEL HISTORY + BEAT');
-      setText('vizStatus', active ? 'Controller mic · live audio' : 'Controller audio unavailable');
+      setText('vizStatus', active ? 'Controller mic · live audio' :
+        (audio.error ? 'Controller audio: ' + audio.error : 'Waiting for controller audio packets'));
       setText('micPipelineState', active ? 'Controller mic' : 'Controller mic unavailable');
     }
 
@@ -2318,12 +2452,200 @@ __PLAYER_SETTINGS_CARD__
       try {
         const data = await postJson('/api/music-director', {enabled: !!enabled});
         if (data.ok === false) throw new Error(data.error || 'Save failed.');
-        musicDirectorMsg(enabled ? 'Music mode on' : 'Music mode off', 'ok');
+        // Music Director and AI lighting are mutually exclusive wall owners.
+        // An explicit switch hands the wall over and persists AI lighting off,
+        // so report that instead of leaving the two toggles looking active.
+        const switched = !!(enabled && data.switched_from === 'ai_lighting');
+        musicDirectorMsg(
+          switched ? 'Music mode on · AI lighting turned off' : (enabled ? 'Music mode on' : 'Music mode off'),
+          'ok'
+        );
+        if (switched && typeof loadAiLighting === 'function') loadAiLighting();
         setMusicDirectorPolling(enabled);
       } catch (err) {
         if (cb) cb.checked = !enabled;  // revert on error
         musicDirectorMsg(err.message || 'Error saving Music setting.', 'err');
       }
+    }
+
+    // --- Self-config boot sequence -------------------------------------------
+    let bootPollTimer = null;
+    let bootPollBusy = false;
+    let bootLastLineCount = 0;
+    let bootLastPhase = null;
+
+    function bootPhaseLabel(phase) {
+      if (phase === 'running') return 'Running';
+      if (phase === 'done') return 'Done';
+      if (phase === 'error') return 'Error';
+      return 'Idle';
+    }
+
+    function renderBootLines(lines) {
+      const box = document.getElementById('bootLines');
+      if (!box) return;
+      box.textContent = '';
+      (lines || []).forEach(line => {
+        const row = document.createElement('div');
+        row.className = 'boot-line';
+        row.textContent = String(line);
+        box.appendChild(row);
+      });
+    }
+
+    function renderBootStatus(data) {
+      if (!data || data.ok === false) {
+        setText('bootStatus', data && data.error ? 'Self-config unavailable: ' + data.error : 'Self-config unavailable.');
+        return;
+      }
+      const phase = data.phase || 'idle';
+      const step = data.step && typeof data.step === 'object' ? data.step : null;
+      const lines = (Array.isArray(data.lines) ? data.lines : []).map(line => String(line));
+      const enabled = document.getElementById('bootEnabled');
+      if (enabled) enabled.checked = !!data.enabled;
+      const pill = document.getElementById('bootPhase');
+      if (pill) {
+        pill.textContent = bootPhaseLabel(phase);
+        pill.className = phase === 'running' ? 'mode-pill running' : 'mode-pill';
+      }
+      let text;
+      if (phase === 'running') {
+        const index = Math.max(1, Number(step && step.index) || 1);
+        const total = Math.max(index, Number(step && step.total) || lines.length || 4);
+        const channel = step && step.channel ? ' · ' + step.channel : '';
+        const detail = step && step.text ? ' · ' + step.text : '';
+        text = 'Step ' + index + '/' + total + channel + detail;
+      } else if (phase === 'done') {
+        const total = step && step.total ? ' · ' + step.total + ' strips verified' : '';
+        text = 'Done' + (data.finished_at ? ' · ' + data.finished_at : '') + total;
+      } else if (phase === 'error') {
+        text = 'Error' + (data.error ? ': ' + data.error : ' (boot sequence failed)');
+      } else {
+        text = data.enabled ? 'Idle · runs at startup' : 'Idle · startup run disabled';
+      }
+      if (data.error && phase !== 'error') text += ' · ' + data.error;
+      setText('bootStatus', text);
+      if (phase === 'running' && bootLastPhase !== 'running') bootLastLineCount = 0;
+      if (lines.length < bootLastLineCount) bootLastLineCount = 0;
+      lines.slice(bootLastLineCount).forEach(line => appendModelResponse('boot', line));
+      bootLastLineCount = lines.length;
+      renderBootLines(lines);
+      if (phase === 'done' && bootLastPhase !== 'done') appendModelResponse('boot', text);
+      bootLastPhase = phase;
+    }
+
+    function scheduleBootPoll(delay) {
+      if (bootPollTimer) clearTimeout(bootPollTimer);
+      bootPollTimer = setTimeout(pollBoot, delay);
+    }
+
+    async function pollBoot() {
+      if (bootPollBusy) return;
+      bootPollBusy = true;
+      bootPollTimer = null;
+      try {
+        if (document.hidden) return;
+        let data = null;
+        try {
+          data = await fetchJsonWithTimeout('/api/boot', {}, 5000);
+          renderBootStatus(data);
+        } catch (err) {
+          setText('bootStatus', 'Self-config status unavailable: ' + (err && err.message ? err.message : err));
+        }
+        loadAiLighting();
+        if (!document.hidden) scheduleBootPoll(data && data.phase === 'running' ? 800 : 2000);
+      } finally {
+        bootPollBusy = false;
+      }
+    }
+
+    function loadBootStatus() {
+      if (bootPollTimer) clearTimeout(bootPollTimer);
+      bootPollTimer = null;
+      pollBoot();
+    }
+
+    async function toggleBootEnabled(enabled) {
+      const box = document.getElementById('bootEnabled');
+      setText('bootStatus', 'Saving...');
+      try {
+        const data = await postJson('/api/boot', {enabled: !!enabled});
+        if (!data || data.ok === false) throw new Error(data && data.error ? data.error : 'Could not save.');
+        renderBootStatus(data);
+      } catch (err) {
+        if (box) box.checked = !enabled;
+        setText('bootStatus', 'Could not save: ' + (err && err.message ? err.message : err));
+      }
+    }
+
+    async function runBootNow() {
+      const button = document.getElementById('bootRun');
+      if (button) button.disabled = true;
+      setText('bootStatus', 'Starting self-config...');
+      try {
+        const data = await postJson('/api/boot', {run: true});
+        if (!data || data.ok === false) throw new Error(data && data.error ? data.error : 'Self-config could not start.');
+        renderBootStatus(data);
+        scheduleBootPoll(800);
+      } catch (err) {
+        setText('bootStatus', 'Cannot run now: ' + (err && err.message ? err.message : err));
+      } finally {
+        if (button) button.disabled = false;
+      }
+    }
+
+    // --- AI lighting (auto) toggle -------------------------------------------
+    let aiLightingBusy = false;
+
+    function renderAiLighting(data) {
+      const settings = (data && data.settings) || {};
+      const status = (data && data.status) || {};
+      const box = document.getElementById('aiLightingEnabled');
+      if (box) box.checked = !!settings.enabled;
+      const error = status.error || status.startup_error || (data && data.ok === false ? data.error : '');
+      const text = status.running ? 'Active · ' + (status.mode || 'auto') : 'Off';
+      setText('aiLightingStatus', error ? text + ' · ' + error : text);
+    }
+
+    async function loadAiLighting() {
+      if (aiLightingBusy) return;
+      try {
+        const data = await fetchJsonWithTimeout('/api/smart-director', {}, 5000);
+        if (aiLightingBusy) return;
+        renderAiLighting(data);
+      } catch (err) {
+        setText('aiLightingStatus', 'AI director unavailable: ' + (err && err.message ? err.message : err));
+      }
+    }
+
+    async function toggleAiLighting(enabled) {
+      const box = document.getElementById('aiLightingEnabled');
+      if (aiLightingBusy) return;
+      aiLightingBusy = true;
+      setText('aiLightingStatus', 'Applying...');
+      try {
+        const data = await postJson('/api/smart-director', {enabled: !!enabled, mode: 'auto'});
+        if (!data || data.ok === false) throw new Error(data && data.error ? data.error : 'Could not update AI lighting.');
+        renderAiLighting(data);
+      } catch (err) {
+        if (box) box.checked = !enabled;
+        setText('aiLightingStatus', 'Could not update: ' + (err && err.message ? err.message : err));
+      } finally {
+        aiLightingBusy = false;
+      }
+    }
+
+    if (typeof document.addEventListener === 'function') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+          if (bootPollTimer) {
+            clearTimeout(bootPollTimer);
+            bootPollTimer = null;
+          }
+        } else {
+          loadBootStatus();
+        }
+      });
     }
 
     async function wallMode(mode) {
@@ -2392,15 +2714,17 @@ __PLAYER_SETTINGS_CARD__
       }
     }
 
-    async function sendBeatUpdate(values) {
-      if (beatRequestInFlight) return;
+    async function sendBeatUpdate(values, timeoutMs = 900) {
+      if (beatRequestInFlight) return {ok:false,error:'Another lighting update is in progress. Try again.'};
       beatRequestInFlight = true;
       try {
         optimisticPreviewFromAction('beat', values);
-        const data = await postAction('beat', values, 900);
+        const data = await postAction('beat', values, timeoutMs);
         if (!data.ok) console.warn('Beat update rejected:', data.error);
+        return data;
       } catch (err) {
         console.warn('Beat update skipped:', err.message);
+        return {ok:false,error:err.message};
       } finally {
         beatRequestInFlight = false;
       }
@@ -3539,11 +3863,17 @@ __PLAYER_SETTINGS_CARD__
           const data = await postJson('/api/music-director', {enabled: true});
           if (!data || data.ok === false) throw new Error(data?.error || 'Music Director could not start.');
           await loadMusicDirectorState();
+          const switched = data.switched_from === 'ai_lighting';
+          if (switched && typeof loadAiLighting === 'function') loadAiLighting();
           if (btn) btn.textContent = 'Music Director Running';
           setMusicModeUi(true, 'Song changes');
           setText('micPipelineState', 'Music Director');
           setText('songSourceState', 'Media metadata / ambient ID');
-          if (st) st.textContent = 'AI follows identified songs; WLED handles local audio reactivity.';
+          if (st) {
+            st.textContent = switched
+              ? 'Music Director owns the wall; AI lighting (auto) was turned off.'
+              : 'AI follows identified songs; WLED handles local audio reactivity.';
+          }
         } catch (err) {
           stopAudioReactive();
           if (st) st.textContent = 'Music mode error: ' + err.message;
@@ -3721,27 +4051,37 @@ __PLAYER_SETTINGS_CARD__
     }
 
     function getActiveColors() {
+      // Minimum max-channel magnitude for a color to count as visible; prevents
+      // an all-black strip (e.g. an off/ambient segment) from painting an
+      // invisible black VU bar or beat lamp.
+      const COLOR_MIN_MAGNITUDE = 12;
+      const usableColor = (rgb) => Array.isArray(rgb) && rgb.length >= 3 &&
+        rgb.slice(0, 3).every(value => typeof value === 'number' && isFinite(value)) &&
+        Math.max(rgb[0], rgb[1], rgb[2]) >= COLOR_MIN_MAGNITUDE;
       if (controllerVizActive()) {
-        const pixels = controllerPreviewColors().filter(rgb => rgb.some(value => value > 0));
-        const palette = controllerVizStatus.intelligence?.colors || [];
+        const pixels = controllerPreviewColors().filter(usableColor);
+        const palette = (controllerVizStatus.intelligence?.colors || []).filter(usableColor);
         const c1 = pixels[0] || palette[0] || [45,180,210];
         const c2 = pixels[Math.floor(pixels.length/2)] || palette[1] || [150,80,210];
         return {c1:`rgb(${c1.join(',')})`, c2:`rgb(${c2.join(',')})`, c3:`rgb(${c1.join(',')})`, raw1:c1,raw2:c2,raw3:c1,on:true,bri:255};
       }
-      if (typeof currentStripState !== 'undefined' && currentStripState && currentStripState.on && currentStripState.colors && currentStripState.colors[0]) {
-        const c1 = currentStripState.colors[0];
-        const c2 = currentStripState.colors[1] || c1;
-        const c3 = currentStripState.colors[2] || c1;
-        return {
-          c1: `rgb(${c1[0]}, ${c1[1]}, ${c1[2]})`,
-          c2: `rgb(${c2[0]}, ${c2[1]}, ${c2[2]})`,
-          c3: `rgb(${c3[0]}, ${c3[1]}, ${c3[2]})`,
-          raw1: c1,
-          raw2: c2,
-          raw3: c3,
-          on: true,
-          bri: currentStripState.bri ?? 255
-        };
+      if (typeof currentStripState !== 'undefined' && currentStripState && currentStripState.on && Array.isArray(currentStripState.colors)) {
+        const valid = currentStripState.colors.filter(usableColor);
+        if (valid.length) {
+          const c1 = valid[0];
+          const c2 = valid[1] || c1;
+          const c3 = valid[2] || c1;
+          return {
+            c1: `rgb(${c1[0]}, ${c1[1]}, ${c1[2]})`,
+            c2: `rgb(${c2[0]}, ${c2[1]}, ${c2[2]})`,
+            c3: `rgb(${c3[0]}, ${c3[1]}, ${c3[2]})`,
+            raw1: c1,
+            raw2: c2,
+            raw3: c3,
+            on: true,
+            bri: currentStripState.bri ?? 255
+          };
+        }
       }
       return {
         c1: 'rgb(34, 211, 238)',
@@ -4016,29 +4356,40 @@ __PLAYER_SETTINGS_CARD__
     }
 
     async function creativeBoostBin(binIndex, analysis) {
+      const band = Math.max(0, Math.min(15, Math.floor(Number(binIndex) || 0)));
       if (controllerVizActive() && controllerVizStatus.mode === 'music' && controllerVizStatus.renderer?.running) {
-        const band = Math.max(0, Math.min(15, Math.floor(Number(binIndex) || 0)));
-        setText('liveShowMessage', `Accenting band ${band + 1}…`);
+        setText('spectrumMessage', `Accenting band ${band + 1}…`);
         try {
           const data = await postJson('/api/music-show', {action:'accent',band,strength:1});
           if (!data || data.ok === false) throw new Error(data?.error || 'Accent failed.');
           if (data.status) renderSmartDirectorStatus(data.status);
-          setText('liveShowMessage', `Band ${band + 1} accented`);
+          setText('spectrumMessage', `Band ${band + 1} accented`);
           flashOrb(.25);
-        } catch (err) { setText('liveShowMessage', 'Accent failed: ' + err.message); }
+        } catch (err) { setText('spectrumMessage', 'Accent failed: ' + err.message); }
+        return;
+      }
+      if (controllerVizActive()) {
+        setText('spectrumMessage', 'Frequency accents need the DDP music renderer.');
         return;
       }
       // Click spectrum bar → creatively map that frequency energy to color/effect
-      const energy = (analysis && analysis.energy) || 0.6;
-      const r = Math.round(60 + binIndex * 7 + energy * 80);
-      const g = Math.round(30 + (binIndex % 7) * 22);
-      const b = Math.round(160 - binIndex * 4 + energy * 60);
+      const measured = analysis?.source === 'controller' ? Number(analysis.energy) : Number(analysis?.energy) / 255;
+      const energy = Number.isFinite(measured) ? Math.max(0,Math.min(1,measured)) : 0.6;
+      const r = Math.round(60 + band * 7 + energy * 80);
+      const g = Math.round(30 + (band % 7) * 22);
+      const b = Math.round(160 - band * 4 + energy * 60);
       const w = Math.round(energy * 90);
       const spd = Math.round(80 + energy * 130);
       // Send a beat-ish color + safe effect with intensity tied to the bin.
       // Goes through sendBeatUpdate (not send) so a click during reactive
       // mode doesn't stop the music-mode beat loop.
-      sendBeatUpdate({ red: r, green: g, blue: b, white: w, brightness: Math.round(120 + energy*90), effect: (binIndex % 5 === 0 ? 9 : 8), speed: spd });
+      setText('spectrumMessage', `Applying band ${band + 1} boost…`);
+      const result = await sendBeatUpdate({ red: r, green: g, blue: b, white: w, brightness: Math.round(120 + energy*90), effect: (band % 5 === 0 ? 9 : 8), speed: spd }, 4000);
+      if (!result?.ok) {
+        setText('spectrumMessage', 'Boost failed: ' + (result?.error || 'Lighting update was not applied.'));
+        return;
+      }
+      setText('spectrumMessage', `Band ${band + 1} boost applied`);
       flashOrb(energy);
     }
 
@@ -4625,24 +4976,25 @@ __PLAYER_SETTINGS_CARD__
         document.getElementById('setAiVisionModel').value = ai.vision_model || '';
         document.getElementById('setAiKeyEnv').value = ai.api_key_env || '';
         const agents = ai.agents || {};
+        const lookModels = s.look_models || {};
         const colorist = agents.colorist || {};
         const motion = agents.motion || {};
         const critic = agents.critic || {};
         const librarian = agents.librarian || {};
         document.getElementById('agentColoristEnabled').checked = !!colorist.enabled;
-        document.getElementById('agentColoristModel').value = colorist.model || '';
+        document.getElementById('agentColoristModel').value = colorist.model || lookModels.colorist || '';
         document.getElementById('agentColoristProvider').value = colorist.provider || '';
         document.getElementById('agentColoristBaseUrl').value = colorist.base_url || '';
         document.getElementById('agentMotionEnabled').checked = !!motion.enabled;
-        document.getElementById('agentMotionModel').value = motion.model || '';
+        document.getElementById('agentMotionModel').value = motion.model || lookModels.motion || '';
         document.getElementById('agentMotionProvider').value = motion.provider || '';
         document.getElementById('agentMotionBaseUrl').value = motion.base_url || '';
         document.getElementById('agentCriticEnabled').checked = !!critic.enabled;
-        document.getElementById('agentCriticModel').value = critic.model || '';
+        document.getElementById('agentCriticModel').value = critic.model || lookModels.critic || '';
         document.getElementById('agentCriticProvider').value = critic.provider || '';
         document.getElementById('agentCriticBaseUrl').value = critic.base_url || '';
         document.getElementById('agentLibrarianEnabled').checked = !!librarian.enabled;
-        document.getElementById('agentLibrarianModel').value = librarian.model || '';
+        document.getElementById('agentLibrarianModel').value = librarian.model || lookModels.librarian || '';
         document.getElementById('agentLibrarianProvider').value = librarian.provider || '';
         document.getElementById('agentLibrarianBaseUrl').value = librarian.base_url || '';
         document.getElementById('agentLibrarianKeyEnv').value = librarian.api_key_env || '';
@@ -4716,6 +5068,49 @@ __PLAYER_SETTINGS_CARD__
       try {
         const data = await postJson('/api/settings', {ai: ai});
         setMsg(msg, data.ok ? 'AI settings saved.' : (data.error || 'Save failed.'), data.ok ? 'ok' : 'err');
+        const lookMsg = document.getElementById('lookAgentMsg');
+        if (lookMsg && data.ok) setMsg(lookMsg, 'Look agent settings saved.', 'ok');
+      } catch (e) {
+        setMsg(msg, 'Error: ' + e.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function saveLookAgentSettings(btn) {
+      const msg = document.getElementById('lookAgentMsg');
+      const agents = {
+        colorist: {
+          enabled: document.getElementById('agentColoristEnabled').checked,
+          model: document.getElementById('agentColoristModel').value.trim(),
+          provider: document.getElementById('agentColoristProvider').value.trim(),
+          base_url: document.getElementById('agentColoristBaseUrl').value.trim()
+        },
+        motion: {
+          enabled: document.getElementById('agentMotionEnabled').checked,
+          model: document.getElementById('agentMotionModel').value.trim(),
+          provider: document.getElementById('agentMotionProvider').value.trim(),
+          base_url: document.getElementById('agentMotionBaseUrl').value.trim()
+        },
+        critic: {
+          enabled: document.getElementById('agentCriticEnabled').checked,
+          model: document.getElementById('agentCriticModel').value.trim(),
+          provider: document.getElementById('agentCriticProvider').value.trim(),
+          base_url: document.getElementById('agentCriticBaseUrl').value.trim()
+        },
+        librarian: {
+          enabled: document.getElementById('agentLibrarianEnabled').checked,
+          model: document.getElementById('agentLibrarianModel').value.trim(),
+          provider: document.getElementById('agentLibrarianProvider').value.trim(),
+          base_url: document.getElementById('agentLibrarianBaseUrl').value.trim(),
+          api_key_env: document.getElementById('agentLibrarianKeyEnv').value.trim()
+        }
+      };
+      btn.disabled = true;
+      setMsg(msg, 'Saving...', 'info');
+      try {
+        const data = await postJson('/api/settings', {ai: {agents: agents}});
+        setMsg(msg, data.ok ? 'Look agent settings saved.' : (data.error || 'Save failed.'), data.ok ? 'ok' : 'err');
       } catch (e) {
         setMsg(msg, 'Error: ' + e.message, 'err');
       } finally {
@@ -4973,6 +5368,8 @@ __PLAYER_SETTINGS_CARD__
     setInterval(expireControllerAudioTelemetry, 500);
     startControllerAudioStream();
     loadMusicDirectorState();
+    loadBootStatus();
+    loadAiLighting();
 
     // Extra wiring for top visualizers + creative features
     const orbEl2 = document.getElementById('energyOrb');
@@ -4988,7 +5385,7 @@ __PLAYER_SETTINGS_CARD__
     const vz = document.getElementById('vizStatus');
     if (vz) {
       setInterval(() => {
-        if (controllerVizActive() || controllerAudioActive()) return;
+        if (controllerVizActive() || (controllerAudioStatus && performance.now() - controllerAudioAt < 2500)) return;
         if (audioReactiveRunning) vz.textContent = '🎵 live reactive';
         else vz.textContent = audioReactiveRunning || musicModeRunning ? 'active' : 'idle';
       }, 900);
@@ -5099,6 +5496,7 @@ PLAYER_STAGE_ENABLED = """    <section class="visualizer-hero player-stage" id="
         <div class="viz-panel">
           <div class="viz-label">FREQUENCY SPECTRUM (click bars to boost lights creatively)</div>
           <canvas class="spectrum-canvas" id="spectrumCanvas" width="720" height="40"></canvas>
+          <div id="spectrumMessage" role="status" aria-live="polite" style="font-size:11px;min-height:1.4em;margin-top:4px;"></div>
 
           <div style="display:grid; grid-template-columns: auto 1fr; gap:10px; align-items:center; margin-top:6px;">
             <!-- Energy orb (pulses on beat, colored by current light) -->
@@ -5187,6 +5585,7 @@ PLAYER_STAGE_DISABLED = """    <!-- VISUALIZERS AT THE TOP: Prominent, beautiful
         <div class="viz-panel">
           <div class="viz-label">FREQUENCY SPECTRUM (click bars to boost lights creatively)</div>
           <canvas class="spectrum-canvas" id="spectrumCanvas" width="720" height="40"></canvas>
+          <div id="spectrumMessage" role="status" aria-live="polite" style="font-size:11px;min-height:1.4em;margin-top:4px;"></div>
 
           <div style="display:grid; grid-template-columns: auto 1fr; gap:10px; align-items:center; margin-top:6px;">
             <!-- Energy orb (pulses on beat, colored by current light) -->
@@ -5349,7 +5748,7 @@ NOW_PLAYING_CARD_DISABLED = """          <div class="card">
           </div>"""
 
 
-PLAYER_SETTINGS_CARD_ENABLED = """      <div class="card">
+PLAYER_SETTINGS_CARD_ENABLED = """      <div class="card advanced-only">
         <h2>Player connections</h2>
         <p class="card-note">Desktop: sign in directly in each service tab. Browser-only legacy mode: optional companion connection or Apple MusicKit token below.</p>
         <label><input type="checkbox" id="setPlayerEnabled" checked> Enable onboard audio player</label>
@@ -5367,7 +5766,7 @@ PLAYER_SETTINGS_CARD_ENABLED = """      <div class="card">
       </div>"""
 
 
-PLAYER_SETTINGS_CARD_DISABLED = """      <div class="card">
+PLAYER_SETTINGS_CARD_DISABLED = """      <div class="card advanced-only">
         <h2>Onboard audio player</h2>
         <p class="card-note">Player UI is hidden while disabled.</p>
         <label><input type="checkbox" id="setPlayerEnabled"> Enable onboard audio player</label>

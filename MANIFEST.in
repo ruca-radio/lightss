@@ -3,4 +3,4 @@ recursive-include scripts *.py
 recursive-include tests *.py
 recursive-include lightss_assets *.png
 
-recursive-include packaging *.desktop *.md
+recursive-include packaging *.desktop

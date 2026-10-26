@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import struct
 
+import pytest
+
 import audio_player
 
 
@@ -19,6 +21,31 @@ class FakeTransport:
         if not self.responses:
             return {"ok": True}
         return self.responses.pop(0)
+
+
+@pytest.mark.parametrize("response", [None, [], "invalid"])
+def test_youtube_status_rejects_nonobject_companion_state(response):
+    status = audio_player.player_status(transport=FakeTransport(responses=[response]))
+    assert status["connected"] is False
+    assert status["playing"] is False
+
+
+def test_youtube_search_rejects_nonobject_companion_state():
+    result = audio_player.search_library({}, "youtube_music", "song", FakeTransport(responses=[[]]))
+    assert result["ok"] is False
+    assert result["items"] == []
+
+
+def test_youtube_invalid_host_reports_disconnection():
+    status = audio_player.player_status({"youtube_host": "http://[broken"}, transport=FakeTransport())
+    assert status["connected"] is False
+
+
+def test_thumbnail_artwork_expands_size_placeholders():
+    transport = FakeTransport(responses=[{
+        "video": {"thumbnails": [{"url": "https://image.test/{w}x{h}.jpg"}]},
+    }])
+    assert audio_player.player_status(transport=transport)["artwork"] == "https://image.test/240x240.jpg"
 
 
 def test_youtube_status_maps_companion_state():

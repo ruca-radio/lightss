@@ -79,6 +79,23 @@ director can repeat what worked and avoid known issues.
 
 ## Realtime direct-control renderer
 
+AI decisions and the read-only MCP tool `observe_lighting` share a current controller
+observation, also available at `GET /api/lighting-observation`. It combines actual
+per-strip Peek pixel-buffer samples, observed frame changes, live effect/brightness
+settings, renderer ownership, and controller microphone features. Audio includes
+latest FFT, dominant frequency and magnitude, plus 2/10/30-second summaries and
+onset-derived tempo with confidence. Missing packets mean unknown audio, not silence;
+controller peaks and locally estimated beats are identified separately. Each source
+has its own reception age; these observations are not hardware-synchronized.
+
+Peek currently supports 1D strips and one subscriber per controller. If WLED's own
+Peek UI takes over, Lightss marks its preview stale rather than reclaiming it on a
+timer. Controller buffers describe rendered RGB (white folded into RGB), not physical
+brightness or proof that the LEDs emitted that light. DDP tool summaries preserve
+bounded visual samples and label them as sender frames rather than controller
+readback. Controller audio delivery diagnostics are in
+[`docs/controller-audio-firewall.md`](docs/controller-audio-firewall.md).
+
 For direct AI-directed visuals, Lightss includes a bounded local DDP renderer
 (`realtime_start`, `realtime_stop`, `realtime_status`). The AI can build a unique
 look from shader (`auto`, `red_rocks`, `aurora_flow`, `bass_bloom`,

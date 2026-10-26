@@ -53,7 +53,18 @@ class ChangeAwareRecognizer:
     Local samples are still observed during the cooldown. A failed identification
     gets one delayed retry, not an endless timer loop. The lock also coalesces
     concurrent browser samples. A stable match is returned from memory.
+
+    Exception: when no song is known at all, failed tries are retried on a slow,
+    capped backoff. Without that, two transient lookup failures (a network blip
+    or a moment of talking before the chorus) parked the detector forever: it
+    only re-armed on a spectral change strong enough to trip the novelty gate,
+    which real same-room song changes often never reach. The AI then stopped
+    receiving song changes until the process was restarted.
     """
+
+    # A parked detector with no identity re-probes on this slow, capped backoff.
+    BLIND_RETRY_FIRST_S = 60.0
+    BLIND_RETRY_MAX_S = 300.0
 
     def __init__(self, recognize: Callable, cooldown_seconds: float = 20.0):
         self._remote = recognize
@@ -78,6 +89,8 @@ class ChangeAwareRecognizer:
             self._queries = 0
             self._reason = 'listening'
             self._last_error = ''
+            self._failures = 0
+            self._blind_retry_at = None
 
     def recognize(self, audio: bytes, *, now: float | None = None) -> dict | None:
         now = time.monotonic() if now is None else now
@@ -116,11 +129,20 @@ class ChangeAwareRecognizer:
                     self._pending = True
                     self._attempts = 0
                     self._novel_seconds = 0
+                    self._blind_retry_at = None
                 else:
                     self._novel_seconds = 0
                     # Slowly learn natural within-song changes, not volume shifts.
                     blended = .95 * self._baseline + .05 * profile
                     self._baseline = blended / np.linalg.norm(blended)
+            if (not self._pending and self._song is None
+                    and self._blind_retry_at is not None and now >= self._blind_retry_at):
+                # No identity and no confirmed change: re-arm a slow blind probe
+                # so a transient failure can never silence the song feed until a
+                # restart. Nothing to protect here — there is no song to keep.
+                self._pending = True
+                self._attempts = 0
+                self._reason = 'reprobing_without_song'
             if not self._pending:
                 self._reason = 'waiting_for_change'
                 return dict(self._song) if self._song else None
@@ -149,9 +171,18 @@ class ChangeAwareRecognizer:
                 self.clock.observe(self._song, now=now)
                 self._pending = False
                 self._reason = 'waiting_for_change'
+                self._failures = 0
+                self._blind_retry_at = None
             elif self._attempts >= 2:
                 self._pending = False
                 self._reason = 'waiting_for_change'
+                if self._song is None:
+                    # Nothing identified yet: schedule a slow blind re-probe
+                    # (60 s, 120 s, 240 s, then every 300 s).
+                    self._failures += 1
+                    delay = min(self.BLIND_RETRY_MAX_S,
+                                self.BLIND_RETRY_FIRST_S * (2 ** (self._failures - 1)))
+                    self._blind_retry_at = now + delay
             else:
                 self._reason = 'retry_pending'
             return dict(self._song) if self._song else None
@@ -159,7 +190,9 @@ class ChangeAwareRecognizer:
     def status(self) -> dict:
         with self._lock:
             return {'mode': 'on_change', 'state': self._reason,
-                    'queries': self._queries, 'last_error': self._last_error,
+                    'queries': self._queries, 'failures': self._failures,
+                    'blind_retry_pending': self._blind_retry_at is not None,
+                    'last_error': self._last_error,
                     'clock': self.clock.snapshot()}
 
 

@@ -16,6 +16,8 @@ import time
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
+from wled_transport import WledHttpTransport, close_wled_client
+
 logger = logging.getLogger("lightss.wled_observer")
 
 
@@ -34,9 +36,9 @@ class PythonWLEDObserver:
         retry_initial: float = 0.5,
         retry_max: float = 15.0,
     ) -> None:
-        parsed = urlsplit(host)
-        if parsed.scheme != "http" or parsed.port not in (None, 80) or not parsed.hostname:
+        if not WledHttpTransport.supports_host(host):
             raise ValueError("python-wled observation requires an HTTP controller on port 80")
+        parsed = urlsplit(host)
         self.host = parsed.hostname
         self.timeout = timeout
         self._factory = client_factory
@@ -79,6 +81,11 @@ class PythonWLEDObserver:
             ):
                 return None
             return copy.deepcopy(self._cache)
+
+    def observed_at(self) -> float | None:
+        """Expose cache receipt time without pretending a cached read is new."""
+        with self._lock:
+            return self._fetched_at if self._cache is not None else None
 
     def invalidate(self) -> None:
         """Drop observations immediately, including while a request is in flight."""
@@ -134,9 +141,10 @@ class PythonWLEDObserver:
         retry = self._retry_initial
         try:
             while not self._closed:
-                client = factory(self.host, request_timeout=self.timeout)
+                client = None
                 listener = None
                 try:
+                    client = factory(self.host, request_timeout=self.timeout)
                     await asyncio.wait_for(client.update(), timeout=self.timeout)
                     await asyncio.wait_for(client.connect(), timeout=self.timeout)
                     if not client.connected:
@@ -165,24 +173,8 @@ class PythonWLEDObserver:
                     if listener is not None:
                         listener.cancel()
                         await asyncio.gather(listener, return_exceptions=True)
-                    try:
-                        await asyncio.wait_for(client.close(), timeout=1.0)
-                    except Exception:
-                        logger.debug("WLED observer session close failed", exc_info=True)
-                    finally:
-                        # Upstream closes the session after its socket. A failed
-                        # or stalled socket close must still release owned HTTP
-                        # resources; externally supplied sessions remain owned by
-                        # their caller.
-                        session = getattr(client, "session", None)
-                        if (
-                            session is not None and getattr(client, "_close_session", False)
-                            and not getattr(session, "closed", False)
-                        ):
-                            try:
-                                await asyncio.wait_for(session.close(), timeout=1.0)
-                            except Exception:
-                                logger.debug("WLED owned session cleanup failed", exc_info=True)
+                    if client is not None:
+                        await close_wled_client(client)
                 if not self._closed:
                     await asyncio.sleep(retry)
                     retry = min(retry * 2, self._retry_max)

@@ -294,6 +294,39 @@ class LedsPayloadTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class ValidateShowTests(unittest.TestCase):
+    def test_invalid_show_tool_does_not_revoke_existing_lighting_owner(self):
+        import smart_director
+        lights = make_fleet()
+        with mock.patch.object(smart_director, 'before_external_write') as handoff:
+            with self.assertRaisesRegex(ValueError, 'Step 0:.*seg'):
+                mcp_light.call_tool(lights, 'start_show', {'show': {'steps': [
+                    {'look': {'payload': {'seg': ['magenta']}}, 'duration_s': 1}]}}, FakeModes())
+        handoff.assert_not_called()
+
+    def test_single_segment_object_is_normalized_before_show_execution(self):
+        original = {'seg': {'fx': 159, 'col': [[160, 20, 140]]}}
+        steps = shows.validate_show({'steps': [{'look': {'payload': original}, 'duration_s': .01}]})
+        lights = make_fleet()
+        shows.apply_look(lights, steps[0]['look'])
+        for client in lights.clients.values():
+            self.assertEqual([segment['fx'] for segment in client.payloads[0]['seg']], [159, 159])
+        self.assertIsInstance(original['seg'], dict)
+
+    def test_bad_segment_shapes_fail_before_replacing_a_running_show(self):
+        for segments in ('magenta', ['magenta'], [9]):
+            with self.subTest(segments=segments):
+                lights = make_fleet()
+                shows.start_show(lights, {'name': 'existing', 'steps': [
+                    {'look': {'payload': {'bri': 100}}, 'duration_s': 60}]})
+                self.assertTrue(wait_for(lambda: posted_count(lights) == 2))
+                try:
+                    with self.assertRaisesRegex(ValueError, 'Step 0:.*seg'):
+                        shows.start_show(lights, {'steps': [{'look': {'payload': {'seg': segments}}, 'duration_s': 1}]})
+                    self.assertEqual(shows.show_status()['name'], 'existing')
+                    self.assertEqual(posted_count(lights), 2)
+                finally:
+                    shows.stop_show()
+
     def test_accepts_atmosphere_look(self):
         steps = shows.validate_show({
             "name": "demo",

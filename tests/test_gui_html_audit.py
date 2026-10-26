@@ -296,6 +296,19 @@ class PlayerDisabledRenderTests(unittest.TestCase):
                     f"{element_id} missing from player_enabled={enabled} render",
                 )
 
+    def test_look_agents_settings_card_controls_and_save(self):
+        html = light_gui.render_html(player_enabled=True)
+        self.assertIn("saveLookAgentSettings(this)", html)
+        self.assertIn('id="lookAgentMsg"', html)
+        self.assertIn("async function saveLookAgentSettings", html)
+        for agent_id in (
+            "agentColoristEnabled", "agentColoristModel", "agentColoristProvider", "agentColoristBaseUrl",
+            "agentMotionEnabled", "agentMotionModel", "agentMotionProvider", "agentMotionBaseUrl",
+            "agentCriticEnabled", "agentCriticModel", "agentCriticProvider", "agentCriticBaseUrl",
+            "agentLibrarianEnabled", "agentLibrarianModel", "agentLibrarianProvider", "agentLibrarianBaseUrl",
+        ):
+            self.assertIn(f'id="{agent_id}"', html)
+
 
 if __name__ == "__main__":
     unittest.main()

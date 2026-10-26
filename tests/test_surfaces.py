@@ -1,6 +1,7 @@
 import http.client
 import json
 import re
+import subprocess
 import threading
 import tomllib
 import unittest
@@ -539,11 +540,25 @@ class SurfaceTests(unittest.TestCase):
 
     def test_browser_beat_posts_are_coalesced(self):
         html = light_gui.render_html()
-
-        self.assertIn("let beatRequestInFlight = false;", html)
-        self.assertIn("function sendBeatUpdate(values)", html)
-        self.assertIn("if (beatRequestInFlight) return;", html)
-        self.assertIn("sendBeatUpdate({red: color[0]", html)
+        code = html[html.index("async function sendBeatUpdate("):html.index("function parseTagList(")]
+        script = '''
+        let beatRequestInFlight=false,resolvePost;const posts=[];
+        const optimisticPreviewFromAction=()=>{};
+        const postAction=(action,values)=>{posts.push({action,values});return new Promise(resolve=>resolvePost=resolve);};
+        ''' + code + '''
+        (async()=>{
+          const first=sendBeatUpdate({brightness:100});
+          const overlap=await sendBeatUpdate({brightness:200});
+          resolvePost({ok:true});await first;
+          console.log(JSON.stringify({posts,overlap,busy:beatRequestInFlight}));
+        })().catch(e=>{console.error(e);process.exit(1)});
+        '''
+        result = subprocess.run(['node','-e',script], capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        actual = json.loads(result.stdout)
+        self.assertEqual(actual['posts'], [{'action':'beat','values':{'brightness':100}}])
+        self.assertFalse(actual['overlap']['ok'])
+        self.assertFalse(actual['busy'])
 
     def test_explicit_platform_and_ai_control_take_ownership_from_music_mode(self):
         html = light_gui.render_html()

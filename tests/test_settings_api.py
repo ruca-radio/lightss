@@ -394,6 +394,44 @@ class SettingsApiHttpTest(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertIn("OPENAI_API_KEY", payload["message"])
 
+    def test_post_settings_look_models_merges_ai_agents(self) -> None:
+        self._write_config({
+            "ai": {
+                "model": "base-model",
+                "agents": {
+                    "colorist": {"enabled": False, "model": ""},
+                    "motion": {"enabled": False, "model": ""},
+                },
+            }
+        })
+        status, payload = self._post(
+            "/api/settings",
+            {"look_models": {"colorist": "color-v2", "motion": {"model": "motion-v2", "enabled": True}}},
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        config = self._read_config()
+        self.assertEqual(config["ai"]["agents"]["colorist"]["model"], "color-v2")
+        self.assertTrue(config["ai"]["agents"]["colorist"]["enabled"])
+        self.assertEqual(config["ai"]["agents"]["motion"]["model"], "motion-v2")
+        self.assertTrue(config["ai"]["agents"]["motion"]["enabled"])
+
+        _, get_payload = self._get("/api/settings")
+        self.assertEqual(get_payload["settings"]["look_models"]["colorist"], "color-v2")
+        self.assertEqual(get_payload["settings"]["look_models"]["motion"], "motion-v2")
+
+    def test_post_settings_top_level_agents_merges_ai_agents(self) -> None:
+        self._write_config({"ai": {"model": "base-model"}})
+        status, payload = self._post(
+            "/api/settings",
+            {"agents": {"critic": {"enabled": True, "model": "critic-v2"}}},
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        config = self._read_config()
+        self.assertEqual(config["ai"]["agents"]["critic"]["model"], "critic-v2")
+        self.assertTrue(config["ai"]["agents"]["critic"]["enabled"])
+
 
 class AiSettingsPrecedenceTest(unittest.TestCase):
     """ai_settings(): config.ai.* beats env, env beats defaults."""

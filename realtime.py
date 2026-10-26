@@ -336,10 +336,7 @@ def _unit_float(value: Any, default: float = 0.0) -> float:
     return min(1.0, max(0.0, number))
 
 
-def _expanded_palette(colors: Any) -> list[tuple[int, int, int]]:
-    """Normalize arbitrary color input into stable stops for smooth live blending."""
-    palette = color_lab.normalize_palette(colors)
-    return [color_lab.sample_palette(palette, index / 4) for index in range(5)]
+
 
 
 def _sample_music_palette(palette, amount):

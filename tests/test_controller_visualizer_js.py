@@ -191,3 +191,33 @@ def test_byte_scaled_browser_audio_has_a_bounded_energy_orb():
     result = subprocess.run(['node', '-e', script], text=True, capture_output=True, timeout=5)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == '0 0 50px #22d3ee'
+
+
+def test_black_strip_colors_fall_back_to_visible_palette():
+    html = light_gui.render_html()
+    code = html[html.index('function getActiveColors('):html.index('function averageBand(')]
+    script = '''let peakLevel=0;let currentStripState={on:true,bri:255,colors:[[0,0,0],[0,0,0],[0,0,0]]};
+      const controllerVizActive=()=>false;const nodes={};
+      const document={getElementById:id=>nodes[id]||(nodes[id]={style:{},classList:{toggle(name,on){nodes[id].on=on;},add(){},remove(){}}})};
+      const setTimeout=()=>{};
+    ''' + code + '''
+      const black=getActiveColors();
+      currentStripState={on:true,bri:255,colors:[[255,0,0],[0,255,0]]};
+      const valid=getActiveColors();
+      currentStripState={on:true,bri:255,colors:[[0,0,0],[0,0,0],[0,0,0]]};
+      updateVu(.6,true,true);
+      console.log(JSON.stringify({black,valid,fill:nodes.vuFill.style.background,width:nodes.vuFill.style.width}));
+    '''
+    result = subprocess.run(['node', '-e', script], text=True, capture_output=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    measured = json.loads(result.stdout)
+    for key in ('c1', 'c2', 'c3'):
+        assert measured['black'][key] != 'rgb(0, 0, 0)'
+        assert measured['black'][key] != 'rgb(0,0,0)'
+    assert measured['black']['c1'] == 'rgb(34, 211, 238)'
+    assert measured['black']['c2'] == 'rgb(251, 191, 36)'
+    assert measured['black']['c3'] == 'rgb(236, 72, 153)'
+    assert measured['valid']['c1'] == 'rgb(255, 0, 0)'
+    assert 'rgb(0,0,0)' not in measured['fill'].replace(' ', '')
+    assert 'linear-gradient' in measured['fill']
+    assert measured['width'] == '60%'

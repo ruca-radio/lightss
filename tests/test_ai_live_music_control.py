@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 from unittest.mock import Mock
+from types import SimpleNamespace
 
 import pytest
 
 import ai_chat
 import mcp_light
 import smart_director
+from tests.test_smart_director import rig
 
 
 def _music_tool() -> dict:
@@ -48,6 +50,65 @@ def test_music_show_schema_exposes_full_bounded_status_tune_accent_contract():
     assert (props["band"]["minimum"], props["band"]["maximum"]) == (0, 15)
     assert props["strength"]["default"] == 1
     assert "composition_mode" in props
+
+
+@pytest.mark.parametrize("arguments,missing", [
+    ({"action": "native", "colors": [[20, 160, 80]]}, "effect"),
+    ({"action": "accent"}, "band"),
+])
+def test_live_action_required_arguments_are_validated_before_dispatch(arguments, missing):
+    errors = ai_chat._validate_against_schema(arguments, _music_tool()["inputSchema"])
+    assert f"arguments.{missing} is required" in errors
+
+
+def test_chat_native_palette_hands_active_renderer_to_controller(rig, monkeypatch):
+    from unittest.mock import patch
+    from tests.test_smart_director import music, tv
+    import show_library
+    director, client, listener, clock = rig
+    director.configure({"mode": "music"})
+    director.step(tv(), music(), listener.get_snapshot())
+    monkeypatch.setattr(smart_director, "_director", director)
+    monkeypatch.setattr(show_library, "allowed_native_ids", lambda *args: {155})
+    rounds = [
+        {"choices": [{"message": {"tool_calls": [{"id": "native-1", "type": "function",
+            "function": {"name": "music_show", "arguments": json.dumps({
+                "action": "native", "effect": 155, "colors": [[20, 160, 80]]})}}]}}]},
+        {"choices": [{"message": {"content": "Native effect applied."}}]},
+    ]
+    with patch.object(director, "is_alive", return_value=True), patch.object(ai_chat, "_chat_round", side_effect=rounds):
+        result = ai_chat.run_chat(client, "Use a native music effect", settings={
+            "base_url": "https://example.test/v1", "model": "test", "api_key_env": "UNSET"})
+    assert result["events"][0]["ok"] is True
+    assert director.status()["output_engine"] == "native"
+    assert director.status()["renderer"]["running"] is False
+    assert client.posts[-1][0]["seg"][0]["fx"] == 155
+    assert client.posts[-1][0]["seg"][0]["col"] == [[20, 160, 80]]
+
+
+def test_owner_loss_during_provider_request_rejects_live_action(monkeypatch):
+    client = Mock()
+    owner = SimpleNamespace(fleet=client, status=lambda: {"running": True, "mode": "music", "renderer": {"running": True}})
+    active = [owner]
+    monkeypatch.setattr(smart_director, "current", lambda: active[0])
+    captured = {}
+    def provider(_url, _headers, body, _timeout):
+        if not any(message.get("role") == "tool" for message in body["messages"]):
+            captured["tools"] = body["tools"]
+            active[0] = None
+            return {"choices": [{"message": {"tool_calls": [{"id": "accent-1", "type": "function",
+                "function": {"name": "music_show", "arguments": '{"action":"accent","band":3}'}}]}}]}
+        return {"choices": [{"message": {"content": "The music owner stopped."}}]}
+    monkeypatch.setattr(ai_chat, "_chat_round", provider)
+    execute = Mock()
+    monkeypatch.setattr(mcp_light, "call_tool", execute)
+    result = ai_chat.run_chat(client, "Accent the music", settings={
+        "base_url": "https://example.test/v1", "model": "test", "api_key_env": "UNSET"})
+    tool = next(t["function"] for t in captured["tools"] if t["function"]["name"] == "music_show")
+    assert "accent" in tool["parameters"]["properties"]["action"]["enum"]
+    assert result["events"][0]["ok"] is False
+    assert "invalid tool arguments" in result["events"][0]["result"]
+    execute.assert_not_called()
 
 
 @pytest.mark.parametrize("arguments", [
@@ -129,6 +190,8 @@ def test_run_chat_sends_compact_complete_music_status_to_model(monkeypatch):
         assert renderer["intensity"] == 0.87
         assert len(renderer["band_gains"]) == len(renderer["band_levels"]) == 16
         assert all("colors" not in item and item["color_count"] == 32 for item in renderer["preview"])
+        assert renderer["preview"][0]["sample_colors"][0] == [0, 1, 2]
+        assert renderer["preview"][0]["source"] == "sender_ddp_frame"
         return {"choices": [{"message": {"role": "assistant", "content": "Actual speed is 1.328× with punch motion."}}]}
 
     monkeypatch.setattr(ai_chat, "_chat_round", provider)

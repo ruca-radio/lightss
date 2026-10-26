@@ -3,7 +3,6 @@ from unittest.mock import patch
 
 import fleet
 import light_gui
-import lightctl
 
 
 class LifecycleClient:

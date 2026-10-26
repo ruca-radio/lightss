@@ -320,6 +320,56 @@ class DirectorThreadTests(unittest.TestCase):
         self.assertEqual(director.current_track, "Lady Gaga — Poker Face")
         self.assertEqual(seg_posts(fleet_), 2)
 
+    def test_tv_media_session_change_forces_reidentification(self):
+        """A TV song change must bypass the room-mic novelty gate.
+
+        Regression: with playback on the Fire TV, MPRIS is empty and Shazam only
+        re-queried after a strong spectral change. The TV's own media session is
+        the authoritative change signal and must trigger a fresh identity.
+        """
+        fleet_ = FakeFleet()
+        tv = {"description": "Song A, Artist A, Album A"}
+        calls = {"n": 0}
+
+        def ambient(*_a, **_k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return track("Artist A", "Song A", "pop")
+            return track("Artist B", "Song B", "metal")
+
+        director = self._start(
+            fleet_, lambda: None, ambient=ambient, poll_s=0.05,
+            ambient_poll_s=60.0, tv_poll_s=0.0,
+            observe_tv=lambda: {"media_session": {
+                "active": True, "state": 3, "description": tv["description"]}},
+        )
+        self.assertTrue(wait_for(lambda: director.current_track == "Artist A — Song A"))
+        first_look_posts = seg_posts(fleet_)
+        self.assertEqual(calls["n"], 1)
+
+        tv["description"] = "Song B, Artist B, Album B"
+        self.assertTrue(wait_for(lambda: director.current_track == "Artist B — Song B"))
+        self.assertEqual(calls["n"], 2)  # one forced lookup, not a Shazam poll loop
+        self.assertTrue(wait_for(lambda: seg_posts(fleet_) == first_look_posts + 2))
+
+    def test_tv_media_session_ignores_non_playing_state(self):
+        """A paused/no-description TV session must not force Shazam lookups."""
+        fleet_ = FakeFleet()
+        calls = {"n": 0}
+
+        def ambient(*_a, **_k):
+            calls["n"] += 1
+            return track("Artist A", "Song A", "pop")
+
+        self._start(
+            fleet_, lambda: None, ambient=ambient, poll_s=0.05,
+            ambient_poll_s=60.0, tv_poll_s=0.0,
+            observe_tv=lambda: {"media_session": {
+                "active": True, "state": 2, "description": "Paused Item"}},
+        )
+        time.sleep(0.3)
+        self.assertEqual(calls["n"], 1)  # only the first-sample lookup
+
     def test_ambient_exception_does_not_kill_director(self):
         fleet_ = FakeFleet()
 

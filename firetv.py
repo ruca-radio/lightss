@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+import threading
 
 import lightctl
 
@@ -27,6 +28,7 @@ logger = logging.getLogger("lightss.firetv")
 
 DEFAULT_HOST = "10.27.27.207:5555"
 ADB_TIMEOUT = 8.0
+_adb_lock = threading.Lock()
 
 DISABLED_MESSAGE = "FireTV control is disabled in settings"
 
@@ -71,25 +73,35 @@ def _serial(config: dict) -> str:
 
 
 def _run_adb(args: list[str], timeout: float = ADB_TIMEOUT) -> str:
-    """Run an adb command, returning stdout. Raises RuntimeError on failure."""
-    try:
-        proc = subprocess.run(
-            ["adb", *args],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"adb timed out after {timeout}s") from exc
-    except subprocess.SubprocessError as exc:
-        raise RuntimeError(f"adb error: {exc}") from exc
-    except OSError as exc:
-        raise RuntimeError(f"adb failed to run: {exc}") from exc
-    output = (proc.stdout or "").strip()
-    if proc.returncode != 0:
-        detail = (proc.stderr or "").strip() or output or f"exit code {proc.returncode}"
-        raise RuntimeError(f"adb error: {detail}")
-    return output
+    """Serialize ADB startup and retry one daemon failure without killing the server."""
+    with _adb_lock:
+        for attempt in range(2):
+            try:
+                proc = subprocess.run(
+                    ["adb", *args],
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError(f"adb timed out after {timeout}s") from exc
+            except subprocess.SubprocessError as exc:
+                raise RuntimeError(f"adb error: {exc}") from exc
+            except OSError as exc:
+                raise RuntimeError(f"adb failed to run: {exc}") from exc
+            output = (proc.stdout or "").strip()
+            if proc.returncode == 0:
+                return output
+            detail = (proc.stderr or "").strip() or output or f"exit code {proc.returncode}"
+            daemon_error = detail.lower()
+            if attempt == 0 and (
+                "cannot connect to daemon" in daemon_error
+                or "failed to start daemon" in daemon_error
+                or ("smartsocket" in daemon_error and "address already in use" in daemon_error)
+            ):
+                logger.info("FireTV adb daemon startup failed; retrying command once")
+                continue
+            raise RuntimeError(f"adb error: {detail}")
 
 
 def _adb_shell(command: list[str], config: dict) -> str:
@@ -195,6 +207,37 @@ _VIDEO_APPS = {"com.amazon.avod.tv.client", "com.netflix.ninja",
                "com.disney.disneyplus", "com.hulu.plus"}
 _MIXED_APPS = {"com.amazon.firetv.youtube", "com.google.android.youtube.tv"}
 
+# Android PlaybackState line: `state=PlaybackState {state=3, position=550097,
+# buffered position=0, speed=1.0, updated=112529869, ...}`. Field order is not
+# guaranteed and `buffered position` is a separate field from `position`, so the
+# brace body is split into key=value pairs instead of matched ordinally.
+_PLAYBACK_STATE_RE = re.compile(r"state=PlaybackState\s*\{([^}]*)\}")
+
+
+def _playback_fields(text: str) -> dict[str, str]:
+    """Split a PlaybackState body into {field: raw value} pairs."""
+    fields: dict[str, str] = {}
+    for part in re.split(r",\s*", text):
+        key, separator, value = part.partition("=")
+        key = key.strip()
+        if separator and key:
+            fields[key] = value.strip()
+    return fields
+
+
+def _playback_int(value: object) -> int | None:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _playback_float(value: object) -> float | None:
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
 
 def parse_media_session(text: str, foreground_app: str | None) -> dict | None:
     """Summarize an active foreground session, not unrelated session history.
@@ -202,6 +245,11 @@ def parse_media_session(text: str, foreground_app: str | None) -> dict | None:
     Description is untrusted display text, not proof of genre or music playback.
     Android's comma-separated description is retained intact: commas also occur
     inside titles and cannot reliably distinguish title from artist.
+
+    Playback position is reported from PlaybackState as ``position_ms`` plus the
+    monotonic ``updated_elapsed_ms`` timestamp and ``speed``; Android only
+    refreshes those fields on state changes, so callers extrapolate with device
+    uptime (see ``observe``).
     """
     if not foreground_app:
         return None
@@ -212,14 +260,19 @@ def parse_media_session(text: str, foreground_app: str | None) -> dict | None:
         package = block.splitlines()[0].strip()
         if package != foreground_app or not re.search(r"(?m)^\s*active=true\s*$", block):
             continue
-        state = re.search(r"state=PlaybackState\s*\{state=(\d+)", block)
+        playback = _PLAYBACK_STATE_RE.search(block)
+        fields = _playback_fields(playback.group(1)) if playback else {}
+        state = _playback_int(fields.get("state"))
         description = re.search(r"(?m)^\s*metadata:.*?description=(.*)$", block)
         description = description.group(1).strip()[:500] if description else None
         if description in ("", "null", "null, null, null"):
             description = None
         candidates.append({"package": package, "active": True,
-                           "state": int(state.group(1)) if state else None,
-                           "description": description})
+                           "state": state,
+                           "description": description,
+                           "position_ms": _playback_int(fields.get("position")),
+                           "speed": _playback_float(fields.get("speed")),
+                           "updated_elapsed_ms": _playback_int(fields.get("updated"))})
     return next((item for item in candidates if item["state"] == 3),
                 candidates[0] if candidates else None)
 
@@ -243,11 +296,22 @@ def activity_hint(awake: bool | None, foreground_app: str | None,
     return "unknown", "Not enough evidence to distinguish music from TV viewing."
 
 
+_OBSERVATION_COMMANDS: dict[str, list[str]] = {
+    "power": ["dumpsys", "power"],
+    "window": ["dumpsys", "window"],
+    "media_session": ["dumpsys", "media_session"],
+    # Monotonic device clock (seconds since boot) used to correct the stale
+    # PlaybackState position; read-only and cheap.
+    "uptime": ["cat", "/proc/uptime"],
+}
+
+
 def _observation_read(service: str, config: dict) -> str:
-    """Fixed read-only dumpsys commands, bounded timeouts and one reconnect."""
-    if service not in {"power", "window", "media_session"}:
+    """Fixed read-only device reads, bounded timeouts and one reconnect."""
+    observed = _OBSERVATION_COMMANDS.get(str(service))
+    if observed is None:
         raise ValueError("Unsupported TV observation service")
-    command = ["-s", _serial(config), "shell", "dumpsys", service]
+    command = ["-s", _serial(config), "shell", *observed]
     try:
         return _run_adb(command, timeout=2.0)
     except RuntimeError as exc:
@@ -257,6 +321,42 @@ def _observation_read(service: str, config: dict) -> str:
         if "unable to connect" in output.lower() or "cannot connect" in output.lower():
             raise RuntimeError("TV observation connection failed") from exc
         return _run_adb(command, timeout=2.0)
+
+
+def _uptime_ms(config: dict) -> float | None:
+    """Device uptime in milliseconds (first /proc/uptime value); None on failure."""
+    try:
+        output = _observation_read("uptime", config)
+        match = re.search(r"\d+(?:\.\d+)?", output or "")
+        if not match:
+            return None
+        return float(match.group(0)) * 1000.0
+    except Exception as exc:  # observation is best effort; never raise to observe()
+        logger.info("FireTV uptime read failed: %s", exc)
+        return None
+
+
+def _media_position_s(media: dict, config: dict) -> float | None:
+    """True playback position in seconds from a stale PlaybackState snapshot.
+
+    Playing sessions extrapolate ``position_ms`` with the device uptime elapsed
+    since ``updated_elapsed_ms``; paused (or speed 0) uses the reported position.
+    A playing session whose uptime cannot be read reports None rather than a
+    stale position.
+    """
+    position_ms = media.get("position_ms")
+    if position_ms is None:
+        return None
+    state = media.get("state")
+    speed = media.get("speed")
+    updated_ms = media.get("updated_elapsed_ms")
+    playing = state == 3 and isinstance(speed, (int, float)) and speed > 0
+    if playing and updated_ms is not None:
+        uptime_ms = _uptime_ms(config)
+        if uptime_ms is None:
+            return None
+        position_ms = position_ms + max(0.0, uptime_ms - float(updated_ms)) * float(speed)
+    return round(max(0.0, float(position_ms) / 1000.0), 1)
 
 
 def observe(cfg: dict | None = None) -> dict:
@@ -285,6 +385,9 @@ def observe(cfg: dict | None = None) -> dict:
                 _observation_read("media_session", config), result["foreground_app"])
         except RuntimeError as exc:
             result["media_error"] = str(exc)
+        if result["media_session"] is not None:
+            result["media_session"]["position_s"] = _media_position_s(
+                result["media_session"], config)
     result["activity_hint"], result["reason"] = activity_hint(
         result["awake"], result["foreground_app"], result["media_session"])
     return result

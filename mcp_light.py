@@ -9,6 +9,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import sys
 import threading
 from typing import Any
@@ -24,6 +25,7 @@ import realtime
 import music_recognizer
 import shows
 import wled_files
+import wled_reference
 logger = logging.getLogger("mcp_light")
 
 SERVER_INFO = {"name": "bedroom-light-controller", "version": "1.1.0"}
@@ -100,12 +102,61 @@ def _segment_schema() -> dict:
     return {"type": "integer", "description": "Segment id on the target controller", "minimum": 0, "maximum": 31}
 
 
+def _strip_colors_schema(description: str) -> dict:
+    """JSON schema for per-strip colors (RGB triplets or hex strings)."""
+    return {
+        "type": ["array", "string"],
+        "minItems": 1,
+        "maxItems": 8,
+        "description": (
+            description
+            + " One color or a list of colors; each color is an RGB triplet of "
+            "integers 0-255, or a hex string such as 'FF8800'."
+        ),
+    }
+
+
 # Tools whose payload builders accept a seg_id (per-segment targeting).
 SEGMENT_TOOLS = {"set_color", "set_hex_color", "set_temperature", "set_effect"}
 
 
 def build_tools() -> list[dict]:
     tools = [
+        {"name": "observe_lighting", "description": "Read current per-strip WLED pixel-buffer colors, renderer ownership and measured controller audio with freshness and confidence. Missing telemetry is unknown, not silence; does not change lights.",
+         "inputSchema": {"type":"object","properties":{},"additionalProperties":False}},
+        {
+            "name": "wled_reference",
+            "description": (
+                "Look up what a WLED effect or palette actually does, what its intensity "
+                "slider changes, and which live effect/palette id runs it on this wall. "
+                "Descriptions come from the official WLED wiki; ids always come from the "
+                "controller's live catalog. Use before choosing an effect or palette for a "
+                "mood, song or TV moment; never invent ids."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["effect", "palette"],
+                        "description": "Look up effects or palettes.",
+                    },
+                    "query": {
+                        "type": "string",
+                        "maxLength": 120,
+                        "description": "Optional name/keyword filter, e.g. 'fire', 'chase', 'ocean', 'rainbow'.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "description": "Maximum rows to return (default 8).",
+                    },
+                },
+                "required": ["kind"],
+                "additionalProperties": False,
+            },
+        },
         {
             "name": "light_on",
             "description": "Turn the bedroom LEDs on.",
@@ -350,9 +401,10 @@ def build_tools() -> list[dict]:
         {
             "name": "strips",
             "description": (
-                "Address any combination of the four wall columns (channels). "
-                "Same look: pass channels (e.g. [\"far-left\",\"far-right\"]) plus fx. "
-                "Different looks: pass assignments [{channel, fx, pal}]. "
+                "Address any combination of the four wall columns (channels) with "
+                "different colors/palettes/effects per strip. "
+                "Same look: pass channels (e.g. [\"far-left\",\"far-right\"]) plus fx/colors. "
+                "Different looks: pass assignments [{channel, fx, pal, colors, bri, on}]. "
                 "Unused columns are left unchanged. Use the COLUMN MAP from the snapshot for the exact channel names."
             ),
             "inputSchema": {
@@ -365,6 +417,9 @@ def build_tools() -> list[dict]:
                     },
                     "fx": int_schema("Effect id when using channels", 0, 255),
                     "pal": int_schema("Palette id when using channels", 0, 255),
+                    "colors": _strip_colors_schema(
+                        "Shared colors/palette for the selected strips (channels mode)."
+                    ),
                     "speed": int_schema("Effect speed", 0, 255),
                     "intensity": int_schema("Effect intensity", 0, 255),
                     "assignments": {
@@ -377,6 +432,17 @@ def build_tools() -> list[dict]:
                                 "pal": int_schema("Palette id", 0, 255),
                                 "sx": int_schema("Speed", 0, 255),
                                 "ix": int_schema("Intensity", 0, 255),
+                                "col": _strip_colors_schema(
+                                    "Color(s) for this strip; `colors` is an alias."
+                                ),
+                                "colors": _strip_colors_schema(
+                                    "Color(s) for this strip; `col` is an alias."
+                                ),
+                                "bri": int_schema("Per-strip segment brightness", 0, 255),
+                                "on": {
+                                    "type": "boolean",
+                                    "description": "Turn this strip on (true) or off (false); omit to leave it unchanged",
+                                },
                             },
                             "required": ["channel"],
                             "additionalProperties": False,
@@ -627,12 +693,34 @@ def build_tools() -> list[dict]:
                     "Start a timed multi-step light show. A show is "
                     "{'name'?, 'loop'?: bool, 'steps': [{'look': {...}, 'duration_s': float, 'transition_s'?}, ...]}; "
                     "a look is {'atmosphere': name}, {'wall_mode': 'span|mirror|chase|versus', ...kwargs}, or "
-                    "{'payload': {...}, 'target'?}. With loop=true the show repeats until stop_show."
+                    "{'payload': {...}, 'target'?}. Payload is WLED JSON: seg must be a segment object "
+                    "or an array of segment objects, with col as numeric RGB/RGBW arrays. "
+                    "With loop=true the show repeats until stop_show."
                 ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "show": {"type": "object", "description": "Show definition (see tool description)"},
+                        "show": {
+                            "type": "object", "description": "Show definition (see tool description)",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "loop": {"type": "boolean"},
+                                "steps": {"type": "array", "minItems": 1, "items": {
+                                    "type": "object", "properties": {
+                                        "look": {"type": "object", "properties": {
+                                            "atmosphere": {"type": "string"},
+                                            "wall_mode": {"type": "string", "enum": ["span", "mirror", "chase", "versus", "left_vs_right"]},
+                                            "payload": {"type": "object", "properties": {
+                                                "seg": {"type": ["object", "array"], "items": {"type": "object"}},
+                                            }},
+                                            "target": {"type": "string"},
+                                        }},
+                                        "duration_s": {"type": "number", "minimum": 0},
+                                        "transition_s": {"type": "number", "minimum": 0},
+                                    }, "required": ["look", "duration_s"],
+                                }},
+                            }, "required": ["steps"],
+                        },
                     },
                     "required": ["show"],
                     "additionalProperties": False,
@@ -757,7 +845,9 @@ def build_tools() -> list[dict]:
             "description": (
                 "Inspect or tune Smart Director music. Tune/accent adjust the live DDP renderer; "
                 "native hands off to a validated common WLED 1D audio-reactive effect, and "
-                "ddp reclaims the pixel stream. Only one output engine runs at a time."
+                "ddp reclaims the pixel stream. Controls require Smart Director to own an active "
+                "music show on this fleet; status works while it is off. Native requires effect "
+                "and colors; accent requires band. Only one output engine runs at a time."
             ),
             "inputSchema": {
                 "type": "object",
@@ -802,6 +892,16 @@ def build_tools() -> list[dict]:
                     "native_speed": {"type": "integer", "minimum": 0, "maximum": 255},
                     "native_intensity": {"type": "integer", "minimum": 0, "maximum": 255},
                 },
+                "allOf": [
+                    {
+                        "if": {"properties": {"action": {"enum": ["native"]}}, "required": ["action"]},
+                        "then": {"required": ["effect", "colors"]},
+                    },
+                    {
+                        "if": {"properties": {"action": {"enum": ["accent"]}}, "required": ["action"]},
+                        "then": {"required": ["band"]},
+                    },
+                ],
                 "additionalProperties": False,
             },
         }
@@ -957,7 +1057,8 @@ def _compact_music_show_result(result: dict[str, Any]) -> dict[str, Any]:
                 continue
             metadata = {key: value for key, value in item.items() if key != "colors"}
             colors = item.get("colors")
-            metadata["color_count"] = len(colors) if isinstance(colors, list) else 0
+            from lighting_context import summarize_pixels
+            metadata.update(summarize_pixels(colors if isinstance(colors,list) else [],source="sender_ddp_frame"))
             preview_metadata.append(metadata)
         compact_renderer["preview"] = preview_metadata
     return compact
@@ -1553,6 +1654,241 @@ def _wall_mode(client: Any, args: dict[str, Any]) -> str:
     return _with_fleet_status(f"Wall mode {mode} applied.", result)
 
 
+# ---------------------------------------------------------------------------
+# Per-strip color/brightness validation (strips tool)
+# ---------------------------------------------------------------------------
+
+_HEX_COLOR_RE = re.compile(r"#?(?:[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$")
+_STRIP_COLOR_KEYS = ("col", "colors", "color")
+_MAX_STRIP_COLORS = 8
+
+
+def _strip_rgb(value: Any, *, field: str) -> list[int]:
+    """Validate one RGB triplet of integers 0-255."""
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        raise ValueError(
+            f"{field} must be an RGB triplet of three integers 0-255, got {value!r}."
+        )
+    triplet: list[int] = []
+    for component in value:
+        if type(component) is not int:
+            raise ValueError(
+                f"{field} must use integer RGB components 0-255, got {component!r}."
+            )
+        if not 0 <= component <= 255:
+            raise ValueError(
+                f"{field} RGB components must be between 0 and 255, got {component}."
+            )
+        triplet.append(component)
+    return triplet
+
+
+def _strip_colors(value: Any, *, field: str = "colors") -> list[list[int]]:
+    """Validate per-strip colors; returns WLED-ready RGB color arrays.
+
+    Accepts a hex string ("FF8800"/"#FF8800", RGB or RGBW), one flat RGB
+    triplet ([255, 0, 0]), or 1-8 RGB triplets/hex strings
+    ([[255, 0, 0], "00FF00"]).
+    """
+    if isinstance(value, str):
+        text = value.strip()
+        if not _HEX_COLOR_RE.fullmatch(text):
+            raise ValueError(
+                f"{field} hex color must be #RRGGBB or #RRGGBBWW, got {value!r}."
+            )
+        return [list(lightctl.hex_to_rgbw(text)[:3])]
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(
+            f"{field} must be a hex string, an RGB triplet, or a list of RGB "
+            f"triplets, got {value!r}."
+        )
+    if not value:
+        raise ValueError(f"{field} must contain at least one color.")
+    if all(type(item) is int for item in value):
+        return [_strip_rgb(list(value), field=field)]
+    if not 1 <= len(value) <= _MAX_STRIP_COLORS:
+        raise ValueError(
+            f"{field} must contain 1 through {_MAX_STRIP_COLORS} colors, "
+            f"got {len(value)}."
+        )
+    colors: list[list[int]] = []
+    for index, item in enumerate(value):
+        item_field = f"{field}[{index}]"
+        if isinstance(item, str):
+            colors.extend(_strip_colors(item, field=item_field))
+        else:
+            colors.append(_strip_rgb(item, field=item_field))
+    return colors
+
+
+def _strip_byte(value: Any, *, field: str) -> int:
+    """Validate one WLED byte (0-255 integer)."""
+    if type(value) is not int or not 0 <= value <= 255:
+        raise ValueError(
+            f"{field} must be an integer between 0 and 255, got {value!r}."
+        )
+    return value
+
+
+def _strip_color_arg(spec: dict, *, field: str) -> list[list[int]] | None:
+    """Return the first validated color argument in a spec (col > colors > color)."""
+    for key in _STRIP_COLOR_KEYS:
+        value = spec.get(key)
+        if value is not None:
+            return _strip_colors(value, field=f"{field}.{key}")
+    return None
+
+
+def _check_strip_channels(client: Any, channels: list[str]) -> None:
+    """Reject channel names the fleet does not configure (clear ValueError)."""
+    known = client.channels() if _is_fleet(client) else {}
+    # Duck-typed test fleets may expose no channels; per_strip still validates.
+    if not known:
+        return
+    for channel in channels:
+        if channel not in known:
+            raise ValueError(
+                f"Unknown channel {channel!r}. Valid: {', '.join(known)}."
+            )
+
+
+_REFERENCE_MAX_ITEMS = 20
+
+
+def _live_effect_palette_names(client: Any) -> tuple[list[str], list[str], str]:
+    """Effect and palette names from the live controller catalog (authoritative ids)."""
+    target = None
+    clients = getattr(client, "clients", None) if _is_fleet(client) else None
+    if isinstance(clients, dict) and clients:
+        target = next(iter(clients.values()))
+    elif not _is_fleet(client):
+        target = client
+    if target is None:
+        raise ValueError("No controller catalog is available for reference lookup.")
+    effects = target.get_effects()
+    palettes = target.get_palettes()
+    return (
+        [str(name) for name in effects] if isinstance(effects, list) else [],
+        [str(name) for name in palettes] if isinstance(palettes, list) else [],
+        str(getattr(target, "host", "") or ""),
+    )
+
+
+def _wled_reference_tool(client: Any, args: dict[str, Any]) -> str:
+    """Join official wiki descriptions to the live effect/palette id order."""
+    kind = str(args.get("kind") or "").strip().lower()
+    if kind not in {"effect", "palette"}:
+        raise ValueError("kind must be 'effect' or 'palette'.")
+    limit = args.get("limit", 8)
+    if type(limit) is not int or not 1 <= limit <= _REFERENCE_MAX_ITEMS:
+        raise ValueError("limit must be an integer from 1 through 20.")
+    query = " ".join(str(args.get("query") or "").split())
+    if len(query) > 120:
+        raise ValueError("query must be at most 120 characters.")
+    effects, palettes, host = _live_effect_palette_names(client)
+    names = effects if kind == "effect" else palettes
+    items: list[dict[str, Any]] = []
+    for effect_id, name in enumerate(names):
+        info = (
+            wled_reference.effect_info(name)
+            if kind == "effect"
+            else wled_reference.palette_info(name)
+        ) or {}
+        item: dict[str, Any] = {
+            "id": effect_id,
+            "name": name,
+            "description": info.get("description"),
+        }
+        if kind == "effect":
+            item["intensity"] = info.get("intensity")
+        items.append(item)
+    if query:
+        tokens = query.casefold().split()
+
+        def matches(item: dict[str, Any]) -> bool:
+            text = " ".join(
+                str(item.get(key) or "") for key in ("name", "description", "intensity", "id")
+            ).casefold()
+            return all(token in text for token in tokens)
+
+        matched = [item for item in items if matches(item)]
+    else:
+        matched = list(items)
+    payload = {
+        "kind": kind,
+        "controller": host,
+        "query": query,
+        "matched": len(matched),
+        "returned": min(len(matched), limit),
+        "items": matched[:limit],
+        "note": (
+            "ids are the live controller catalog order; descriptions come from the WLED "
+            "wiki and only cover effects/palettes that existed there."
+        ),
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _strips_tool(client: Any, args: dict[str, Any]) -> str:
+    """Apply per-strip looks/colors/brightness through columns composers."""
+    if not _is_fleet(client):
+        raise ValueError("strips requires fleet mode (run without --host).")
+    assignments = args.get("assignments")
+    if isinstance(assignments, list) and assignments:
+        cleaned: list[dict[str, Any]] = []
+        for index, spec in enumerate(assignments):
+            field = f"assignments[{index}]"
+            if not isinstance(spec, dict):
+                raise ValueError(f"{field} must be an object with a channel.")
+            channel = str(spec.get("channel") or "").strip()
+            if not channel:
+                raise ValueError(f"{field} requires a channel name.")
+            _check_strip_channels(client, [channel])
+            clean = dict(spec)
+            clean["channel"] = channel
+            if clean.get("fx") is not None:
+                _check_fx_allowed(client, channel, int(clean["fx"]))
+                clean["fx"] = int(clean["fx"])
+            if clean.get("pal") is not None:
+                clean["pal"] = int(clean["pal"])
+            if clean.get("bri") is not None:
+                clean["bri"] = _strip_byte(clean["bri"], field=f"{field}.bri")
+            if clean.get("on") is not None and type(clean["on"]) is not bool:
+                raise ValueError(
+                    f"{field}.on must be true or false, got {clean['on']!r}."
+                )
+            colors = _strip_color_arg(clean, field=field)
+            if colors is not None:
+                for key in _STRIP_COLOR_KEYS:
+                    clean.pop(key, None)
+                clean["col"] = colors
+            cleaned.append(clean)
+        result = columns.per_strip(client, cleaned)
+        for spec in cleaned:
+            if spec.get("fx") is not None:
+                lightctl.record_fx_use(int(spec["fx"]), source="strips")
+        return f"Applied per-strip looks: {result}"
+
+    channels = args.get("channels") or []
+    if not isinstance(channels, list) or not channels:
+        raise ValueError("strips requires channels or assignments.")
+    channels = [str(channel).strip() for channel in channels]
+    _check_strip_channels(client, channels)
+    # 0 is a valid effect id (Solid); `or` would silently turn it into 9.
+    fx = int(args["fx"]) if args.get("fx") is not None else 9
+    _check_fx_allowed(client, ",".join(channels), fx)
+    opts: dict[str, Any] = {}
+    if args.get("speed") is not None:
+        opts["sx"] = args["speed"]
+    if args.get("intensity") is not None:
+        opts["ix"] = args["intensity"]
+    if args.get("colors") is not None:
+        opts["col"] = _strip_colors(args["colors"], field="colors")
+    result = columns.apply_channels(client, channels, fx, args.get("pal"), **opts)
+    lightctl.record_fx_use(fx, source="strips")
+    return f"Applied look to {', '.join(channels)}: {result}"
+
+
 def call_tool(
     client: lightctl.LightClient | fleet.LightFleet,
     name: str,
@@ -1560,6 +1896,14 @@ def call_tool(
     modes: lightctl.ReactiveThread,
 ) -> dict:
     args = arguments or {}
+    if name == "observe_lighting":
+        from lighting_context import observe_lighting
+        return text_result(json.dumps(observe_lighting(client),separators=(",",":")))
+    if name == "start_show":
+        if not _is_fleet(client):
+            raise ValueError("start_show requires fleet mode (run without --host).")
+        # Invalid steps must not revoke an existing owner before validation.
+        shows.validate_show(args.get("show"))
     # DDP/show workers can bypass fleet.post_state; hand off before spawning one.
     streaming = name in {"realtime_start", "start_show", "start_audio_reactive", "identify", "set_leds"}
     streaming = streaming or (name == "design_look" and bool(args.get("run")))
@@ -1804,32 +2148,9 @@ def call_tool(
     if name == "wall_mode":
         return text_result(_wall_mode(client, args))
     if name == "strips":
-        if not _is_fleet(client):
-            raise ValueError("strips requires fleet mode (run without --host).")
-        assignments = args.get("assignments")
-        if isinstance(assignments, list) and assignments:
-            for spec in assignments:
-                if isinstance(spec, dict) and spec.get("fx") is not None:
-                    _check_fx_allowed(client, str(spec.get("channel") or ""), int(spec["fx"]))
-            result = columns.per_strip(client, assignments)
-            for spec in assignments:
-                if isinstance(spec, dict) and spec.get("fx") is not None:
-                    lightctl.record_fx_use(int(spec["fx"]), source="strips")
-            return text_result(f"Applied per-strip looks: {result}")
-        channels = args.get("channels") or []
-        if not channels:
-            raise ValueError("strips requires channels or assignments.")
-        # 0 is a valid effect id (Solid); `or` would silently turn it into 9.
-        fx = int(args["fx"]) if args.get("fx") is not None else 9
-        _check_fx_allowed(client, ",".join(str(ch) for ch in channels), fx)
-        opts = {}
-        if args.get("speed") is not None:
-            opts["sx"] = args["speed"]
-        if args.get("intensity") is not None:
-            opts["ix"] = args["intensity"]
-        result = columns.apply_channels(client, list(channels), fx, args.get("pal"), **opts)
-        lightctl.record_fx_use(fx, source="strips")
-        return text_result(f"Applied look to {', '.join(channels)}: {result}")
+        return text_result(_strips_tool(client, args))
+    if name == "wled_reference":
+        return text_result(_wled_reference_tool(client, args))
     if name == "atmosphere":
         if not _is_fleet(client):
             raise ValueError("atmosphere requires fleet mode (run without --host).")
@@ -1924,8 +2245,6 @@ def call_tool(
     if name == "set_leds":
         return text_result(_set_leds_stream(client, args, target, segment))
     if name == "start_show":
-        if not _is_fleet(client):
-            raise ValueError("start_show requires fleet mode (run without --host).")
         # Raw-payload and wall_mode looks must obey the same live effect-safety
         # policy as set_effect/strips/dynamic_scene. Unlike those tools, a show's
         # ids are designed by the Music Director from the live catalog, so an

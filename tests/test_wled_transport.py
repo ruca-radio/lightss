@@ -83,6 +83,50 @@ class WledTransportTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "closed"):
             adapter.get_json("/json/state")
 
+    def test_close_releases_owned_session_when_client_close_fails(self):
+        adapter, devices = self.adapter()
+        adapter.get_json("/json/state")
+
+        class SessionBoundary:
+            closed = False
+
+            async def close(self):
+                self.closed = True
+
+        device = devices[0]
+        device.session = SessionBoundary()
+        device._close_session = True
+
+        async def failed_close():
+            raise RuntimeError("socket close failed")
+
+        device.close = failed_close
+        adapter.close()
+        self.assertTrue(device.session.closed)
+        self.assertFalse(adapter._thread.is_alive())
+
+    def test_close_releases_owned_session_when_client_close_stalls(self):
+        adapter, devices = self.adapter()
+        adapter.get_json("/json/state")
+
+        class SessionBoundary:
+            closed = False
+
+            async def close(self):
+                self.closed = True
+
+        device = devices[0]
+        device.session = SessionBoundary()
+        device._close_session = True
+
+        async def stalled_close():
+            await asyncio.Event().wait()
+
+        device.close = stalled_close
+        adapter.close()
+        self.assertTrue(device.session.closed)
+        self.assertFalse(adapter._thread.is_alive())
+
     def test_timeout_cancels_underlying_request(self):
         devices = []
 
@@ -126,7 +170,6 @@ class WledTransportTests(unittest.TestCase):
             adapter.get_json("/json/fxdata")
 
     def test_client_collection_releases_transport(self):
-        from wled_transport import WledHttpTransport
         client = lightctl.LightClient("wled.local", use_python_wled=True, min_request_interval=0)
         with patch("wled.WLED", DeviceBoundary):
             client.get_state()

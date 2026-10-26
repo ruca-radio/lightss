@@ -119,6 +119,16 @@ def _validate_look(look: object, step_index: int) -> dict:
             raise ValueError(f"Step {step_index}: 'payload' must be a dict.")
         if "target" in look and not isinstance(look["target"], str):
             raise ValueError(f"Step {step_index}: 'target' must be a string.")
+        payload = dict(look["payload"])
+        # WLED accepts a single segment object. Fleet fan-out expects a list,
+        # so normalize once before scheduling rather than iterating its keys.
+        if isinstance(payload.get("seg"), dict):
+            payload["seg"] = [dict(payload["seg"])]
+        try:
+            lightctl.validate_wled_payload(payload)
+        except ValueError as exc:
+            raise ValueError(f"Step {step_index}: {exc}") from exc
+        normalized["payload"] = payload
     return normalized
 
 

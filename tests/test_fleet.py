@@ -636,3 +636,58 @@ def test_builtin_topology_matches_the_verified_segment_ids():
     # Far-right is bus 1 on the right controller (GPIO 2, LEDs 47-87).
     assert lightctl.CHANNEL_TOPOLOGY["far-right"]["segment"] == 1
     assert lightctl.CHANNEL_TOPOLOGY["middle-right"]["segment"] == 0
+
+
+def test_combined_channel_reads_fetch_each_controller_once():
+    class CountingClient(RecordingClient):
+        reads = 0
+
+        def get_state(self):
+            self.reads += 1
+            return super().get_state()
+
+    left = CountingClient()
+    lights = make_fleet(left_client=left)
+    assert lights.get_state("far-left,middle-left") == {"left": left._state}
+    assert left.reads == 1
+
+
+def test_combined_channels_send_global_state_once_per_controller():
+    lights = make_fleet()
+    lights.post_state({"on": False}, target="far-left,middle-left")
+    assert lights.clients["left"].payloads == [{"on": False, "udpn": {"nn": True}}]
+
+
+def test_all_strip_templates_reach_every_selected_segment():
+    lights = make_fleet()
+    lights.post_state({"seg": [{"fx": 9}, {"sx": 180}]}, target="left")
+    assert lights.clients["left"].payloads == [{
+        "seg": [{"fx": 9, "id": 0}, {"sx": 180, "id": 0},
+                {"fx": 9, "id": 1}, {"sx": 180, "id": 1}],
+        "udpn": {"nn": True},
+    }]
+
+
+def test_addressed_combo_sends_one_payload_with_all_selected_segments():
+    lights = make_fleet()
+    lights.post_state({"seg": [{"id": 7, "fx": 9}]}, target="far-left,middle-left")
+    assert lights.clients["left"].payloads == [{
+        "seg": [{"id": 0, "fx": 9}, {"id": 1, "fx": 9}],
+        "udpn": {"nn": True},
+    }]
+
+
+def test_live_topology_check_treats_unusable_state_as_unavailable():
+    controller = default_controllers()[0]
+    lights = _wall_with(controller, {}, [])
+    problems = fleet.topology_mismatches(lights)
+    assert len(problems) == 1
+    assert "could not read usable segment state" in problems[0]
+    assert "no such segment" not in problems[0]
+
+
+def test_topology_comparison_tolerates_malformed_hardware_sections():
+    controller = default_controllers()[0]
+    state = {"seg": [{"id": 0, "start": 0, "stop": 34},
+                     {"id": 1, "start": 34, "stop": 81}]}
+    assert fleet.compare_controller_topology(controller, state, {"hw": None}) == []

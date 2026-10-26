@@ -38,6 +38,7 @@ py-modules = [
     "ai_chat",
     "atmospheres",
     "audio_player",
+    "boot_sequence",
     "calibrate",
     "color_lab",
     "columns",
@@ -61,7 +62,6 @@ py-modules = [
     "look_agents",
     "music_chapters",
     "look_memory",
-    "main",
     "mcp_light",
     "mood_orchestrator",
     "music_director",
@@ -73,12 +73,15 @@ py-modules = [
     "song_tracking",
     "tv_trivia",
     "wled_audio",
+    "wled_preview",
+    "lighting_context",
     "wled_observer",
     "wled_transport",
     "wled_files",
+    "wled_reference",
     "vision_calibration",
     "youtopia_bridge",
-    "youtopia_daemon",
+    "youtube_chapters",
 ]
 include-package-data = true
 
@@ -87,3 +90,4 @@ lightss_assets = ["wled-logo.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"

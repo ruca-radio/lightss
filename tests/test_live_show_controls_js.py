@@ -123,3 +123,77 @@ def test_shortcut_values_survive_apply_with_unsaved_tv_settings():
     assert result['form']['night_brightness']==.2
     assert result['dirty'] is True
     assert result['speed']=='1.25×'
+
+
+def run_spectrum_click(response, *, controller=False, energy=128):
+    html = light_gui.render_html()
+    code = html[html.index('// --- Creative + Capable Visualizer-driven features ---'):html.index('function flashOrb(')]
+    script = '''
+    const messages={},legacy=[],flashes=[],timeouts=[];
+    const setText=(id,text)=>messages[id]=text;
+    const controllerVizActive=()=>false;
+    const flashOrb=value=>flashes.push(value);
+    const sendBeatUpdate=async(values,timeoutMs)=>{legacy.push(values);timeouts.push(timeoutMs);return RESPONSE;};
+    '''.replace('RESPONSE', json.dumps(response)) + code + '''
+    (async()=>{
+      await creativeBoostBin(3,{source:SOURCE,energy:ENERGY,spectrum:Array(16).fill(128)});
+      console.log(JSON.stringify({messages,legacy,flashes,timeouts}));
+    })().catch(e=>{console.error(e);process.exit(1)});
+    '''.replace('SOURCE', json.dumps('controller' if controller else 'browser')).replace('ENERGY', str(energy))
+    result = subprocess.run(['node','-e',script], capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_spectrum_click_reports_rejected_write_without_flashing_success():
+    result = run_spectrum_click({'ok': False, 'error': 'Controller unavailable'})
+    assert 'Controller unavailable' in result['messages'].get('spectrumMessage', '')
+    assert result['flashes'] == []
+
+
+def test_spectrum_click_confirms_success_in_visible_panel():
+    result = run_spectrum_click({'ok': True})
+    assert 'Band 4' in result['messages'].get('spectrumMessage', '')
+    assert all(0 <= value <= 255 for value in result['legacy'][0].values())
+    assert result['flashes']
+
+
+def test_manual_spectrum_click_waits_for_controller_acknowledgement():
+    result = run_spectrum_click({'ok': True})
+    assert result['timeouts'] == [4000]
+
+
+def test_spectrum_click_uses_same_energy_scale_for_browser_and_controller():
+    browser = run_spectrum_click({'ok': True}, energy=128)
+    controller = run_spectrum_click({'ok': True}, controller=True, energy=128/255)
+    assert browser['legacy'] == controller['legacy']
+
+
+def test_spectrum_click_feedback_is_present_in_both_page_variants():
+    for player_enabled in (True, False):
+        html = light_gui.render_html(player_enabled=player_enabled)
+        assert html.count('id="spectrumMessage"') == 1
+
+
+def test_inactive_controller_stream_keeps_visible_unavailable_status():
+    html = light_gui.render_html()
+    code = html[html.index('function controllerAudioActive()'):html.index('function startControllerAudioStream()')]
+    script = '''
+    let controllerAudioStatus=null,controllerAudioAt=0,controllerAudioPending=null;
+    let controllerLastSequence=null,controllerLevelHistory=[],audioReactiveRunning=false;
+    const musicAnalysis={},messages={};const performance={now:()=>1000};
+    const controllerVizActive=()=>false;
+    const renderAnalyzerFrame=()=>{};
+    const resetAnalysisDisplay=()=>messages.reset=true;
+    const setText=(id,text)=>messages[id]=text;
+    '''+code+'''
+    renderControllerAudioTelemetry({active:false,fft:Array(16).fill(0),receive_sequence:null});
+    expireControllerAudioTelemetry();
+    console.log(JSON.stringify({messages,controllerAudioStatus}));
+    '''
+    result=subprocess.run(['node','-e',script],capture_output=True,text=True,timeout=5)
+    assert result.returncode==0,result.stderr
+    actual=json.loads(result.stdout)
+    assert actual['controllerAudioStatus'] is not None
+    assert 'Waiting for controller audio' in actual['messages']['vizStatus']
+    assert not actual['messages'].get('reset')

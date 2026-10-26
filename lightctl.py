@@ -1882,6 +1882,8 @@ class LightClient:
     use_python_wled: bool = False
     _wled_transport: Any = field(default=None, init=False, repr=False)
     _wled_observer: Any = field(default=None, init=False, repr=False)
+    _wled_preview: Any = field(default=None, init=False, repr=False)
+    _state_observed_at: float | None = field(default=None, init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
     _last_req_time: float = field(default=0.0, init=False, repr=False)
     _http_lock: threading.RLock = field(
@@ -2011,6 +2013,8 @@ class LightClient:
         if self._wled_observer is not None:
             snapshot = self._wled_observer.cached_json()
             if isinstance(snapshot, dict):
+                if url in (self.json_url,self.state_url):
+                    self._state_observed_at = self._wled_observer.observed_at()
                 if url == self.json_url:
                     return snapshot
                 key = "state" if url == self.state_url else "info" if url == self.info_url else None
@@ -2028,7 +2032,10 @@ class LightClient:
                         self._wled_transport = WledHttpTransport(self.host, self.timeout)
                         self._wled_transport_finalizer = weakref.finalize(self, self._wled_transport.close)
                     try:
-                        return self._wled_transport.get_json(url[len(self.host):])
+                        result = self._wled_transport.get_json(url[len(self.host):])
+                        if url in (self.json_url,self.state_url):
+                            self._state_observed_at = time.monotonic()
+                        return result
                     finally:
                         self._last_req_time = time.monotonic()
         request = urllib.request.Request(
@@ -2036,7 +2043,10 @@ class LightClient:
             headers={"Accept": "application/json", "User-Agent": "lightsctl/2"},
             method="GET",
         )
-        return self._decode_json_bytes(self._request_bytes(request), url)
+        result = self._decode_json_bytes(self._request_bytes(request), url)
+        if url in (self.json_url,self.state_url):
+            self._state_observed_at = time.monotonic()
+        return result
 
     def start_observing(self) -> None:
         """Opt in to read-only push observations for a persistent controller."""
@@ -2053,12 +2063,29 @@ class LightClient:
                 self._wled_observer = PythonWLEDObserver(self.host, self.timeout)
                 self._wled_observer_finalizer = weakref.finalize(self, self._wled_observer.close)
                 self._wled_observer.start()
+            self.get_led_preview()
+
+    def get_led_preview(self) -> dict:
+        """Share a read-only Peek subscriber; report unknown until a real frame arrives."""
+        from wled_transport import WledHttpTransport
+        with self._http_lock:
+            if self._closed or self.dry_run or not self.use_python_wled or not WledHttpTransport.supports_host(self.host):
+                return {"active": False, "status": "unavailable"}
+            if self._wled_preview is None:
+                from wled_preview import WLEDPreviewObserver
+                self._wled_preview = WLEDPreviewObserver(self.host)
+                self._wled_preview_finalizer = weakref.finalize(self,self._wled_preview.close)
+                self._wled_preview.start()
+            return self._wled_preview.snapshot()
 
     def close(self) -> None:
         """Release optional async sessions and observation worker threads."""
         with self._http_lock:
             self._closed = True
-            for name in ("_wled_observer", "_wled_transport"):
+            monitor = getattr(self,"_controller_audio_monitor",None)
+            if monitor is not None:
+                monitor.stop()
+            for name in ("_wled_preview", "_wled_observer", "_wled_transport"):
                 resource = getattr(self, name, None)
                 if resource is not None:
                     resource.close()
@@ -2179,6 +2206,7 @@ class LightClient:
         safe_ids = safe_effect_ids(effect_names)
         return {
             "host": self.host,
+            "observation": {"source": "controller_json", "age_s": max(0,time.monotonic()-self._state_observed_at) if self._state_observed_at is not None else None},
             "state": combined.get("state")
             or self._snapshot_part("state", self.get_state),
             "info": combined.get("info") or self._snapshot_part("info", self.get_info),

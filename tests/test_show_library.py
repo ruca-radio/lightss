@@ -42,6 +42,8 @@ def test_candidates_are_a_short_audio_list_without_special_palettes():
 
     assert loud["effects"] == [{
         "id": 2, "name": "Fireworks", "audio": "v", "energy": "high", "motion": "punch",
+        "description": "Random color blobs light up, then fade again",
+        "intensity": "Amount of fireworks",
     }]
     assert quiet["effects"][0]["id"] == 1
     assert quiet["effects"][0]["energy"] == "low"
@@ -49,6 +51,9 @@ def test_candidates_are_a_short_audio_list_without_special_palettes():
     assert [palette["name"] for palette in full["palettes"]] == ["Default", "Ocean", "Lava"]
     assert full["palettes"][1]["temperature"] == "cold"
     assert full["palettes"][2]["temperature"] == "warm"
+    # Wiki descriptions ride along so the chapter model knows what each choice does.
+    assert full["palettes"][1]["description"] == "Blue, teal and white colors"
+    assert full["palettes"][0]["description"].startswith("The palette is automatically selected")
 
 
 def test_annotate_keeps_only_known_ids_and_enums():
